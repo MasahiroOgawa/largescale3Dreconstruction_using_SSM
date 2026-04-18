@@ -81,6 +81,51 @@ def test_cross_mask_column_decay_monotonic_from_right():
     assert torch.allclose(row[..., -1], delta[..., -1], atol=1e-5)
 
 
+def test_three_term_mask_matches_direct_recurrence():
+    """Build the three-term mask two ways:
+
+    (a) the log-space closed form in build_three_term_mask, and
+    (b) an independent direct iteration of the recurrence
+
+          h_t = α_t h_{t-1} + β_t (B_{t-1} x_{t-1}) + γ_t (B_t x_t)
+          y_t = C_t · h_t
+
+        with B and C set to 1-D identity projectors so y_t reduces to a linear
+        combination of x_j with coefficients exactly L[t, j].
+
+    An incorrect index in the β band would make these disagree.
+    """
+    torch.manual_seed(0)
+    T = 6
+    delta = torch.rand(T) * 0.5 + 0.1
+    A_log = -(torch.rand(T) * 2.0 + 0.1)
+    lam = torch.rand(T) * 0.9 + 0.05  # strictly in (0, 1) so β ≠ 0
+
+    L_closed = build_three_term_mask(delta.view(1, 1, T), A_log.view(1, 1, T), lam.view(1, 1, T))[0, 0]
+
+    # Direct recurrence, state is scalar (N=1, D=1).
+    alpha = (delta * A_log).exp()
+    beta = (1.0 - lam) * delta * alpha
+    gamma = lam * delta
+
+    L_direct = torch.zeros(T, T)
+    for j in range(T):
+        # Inject a unit impulse at position j (x_j=1, others 0).
+        h = 0.0
+        x_prev = 0.0  # x_{t-1} at t=0 doesn't exist
+        for t in range(T):
+            x_t = 1.0 if t == j else 0.0
+            # y_t contribution from this impulse
+            new_h = alpha[t].item() * h + beta[t].item() * x_prev + gamma[t].item() * x_t
+            h = new_h
+            L_direct[t, j] = h
+            x_prev = x_t
+
+    assert torch.allclose(L_closed, L_direct, atol=1e-5), (
+        f"closed-form and direct-recurrence masks disagree:\nclosed=\n{L_closed}\ndirect=\n{L_direct}"
+    )
+
+
 def test_mask_underflow_graceful_with_large_decay():
     # Very steep decay shouldn't produce NaNs/Infs.
     delta = torch.full((1, 1, 100), 0.5)

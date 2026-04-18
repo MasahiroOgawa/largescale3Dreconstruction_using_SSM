@@ -89,11 +89,11 @@ def build_three_term_mask(delta: Tensor, A_log: Tensor, lam: Tensor) -> Tensor:
     first = first_log.masked_fill(~tri, float("-inf")).exp()
 
     # Second term: (∏_{k=j+2..t} α_k) · β_{j+1}
-    # Equivalent: (∏_{k=(j+1)+1..t} α_k) · β_{j+1} — the "(j+1)-th column of a two-term mask weighted by β".
-    # We need β at position j+1. Slide β right by 1 (pad with 0 on the left).
-    beta_shift = torch.nn.functional.pad(beta[..., :-1], (1, 0), value=0.0)  # β_{j+1} at position j
+    # At 0-indexed column k we want beta[k+1] (which is β_{k+2} in 1-indexed =
+    # β_{j+1} in the 1-indexed formula). Shift β left by one (drop β_1, append 0).
+    beta_shift = torch.nn.functional.pad(beta[..., 1:], (0, 1), value=0.0)  # β_{j+1} at 0-indexed col j
     # Exponent: Σ_{k=j+2..t} log α_k = S_t - S_{j+1}
-    S_shift = torch.nn.functional.pad(S[..., 1:], (0, 1), value=0.0)  # S_{j+1} at position j
+    S_shift = torch.nn.functional.pad(S[..., 1:], (0, 1), value=0.0)  # S_{j+1} at 0-indexed col j
     second_log = S.unsqueeze(-1) - S_shift.unsqueeze(-2) + torch.log(beta_shift.clamp_min(1e-20)).unsqueeze(-2)
     # Second term is 0 for j == t (since β_{t+1} doesn't exist) and for j > t
     strict_tri = torch.tril(torch.ones(T, T, device=delta.device, dtype=torch.bool), diagonal=-1)
