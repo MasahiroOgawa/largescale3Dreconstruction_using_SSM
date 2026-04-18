@@ -23,6 +23,7 @@ from ssm3d.data.eth3d import download_eth3d_terrains, load_eth3d_scene
 from ssm3d.mamba3 import Mamba3CrossAttention, RoPE2D
 from ssm3d.model import SSM3DNet
 from ssm3d.train.overfit import overfit_run
+from ssm3d.weights import load_dinov2_backbone
 from ssm3d.viz import (
     TinyInstanceSegHead,
     save_cross_attention_heatmap,
@@ -38,6 +39,50 @@ def _patch_grid(img_size: int, patch_size: int) -> tuple[int, int]:
     return s, s
 
 
+def collapse_smoke_check(
+    net: SSM3DNet, images: torch.Tensor, cross_attn: torch.Tensor | None = None
+) -> None:
+    """Print diagnostic numbers flagged in PLAN.md §3. Warn when outputs look flat.
+
+    - feat_cos_mean: mean off-diagonal cosine sim between patch tokens in view 0.
+      > 0.7 means features have collapsed.
+    - depth_std: std of predicted depth for view 0 over [0, 1].
+      < 0.02 means depth is effectively constant.
+    - cross_attn_row_max: max of the (softmaxed) cross-attn row for the centre query.
+      < 2 / T_kv means the attention is flatter than 2x uniform.
+    """
+    net.eval()
+    with torch.no_grad():
+        out = net(images.unsqueeze(0))
+    feats = out["features"][0, 0]  # (N, C)
+    depth0 = out["depth"][0, 0]  # (1, H, W)
+
+    fn = torch.nn.functional.normalize(feats, dim=-1)
+    cos = fn @ fn.transpose(0, 1)
+    n = cos.shape[0]
+    off_diag = (cos.sum() - cos.diagonal().sum()) / (n * (n - 1))
+    feat_cos_mean = float(off_diag)
+    depth_std = float(depth0.std())
+
+    warn = []
+    print(f"  feat_cos_mean (patches): {feat_cos_mean:.3f}   (warn if > 0.7)")
+    if feat_cos_mean > 0.7:
+        warn.append("feat_cos_mean")
+    print(f"  depth_std (view 0):      {depth_std:.4f}       (warn if < 0.02)")
+    if depth_std < 0.02:
+        warn.append("depth_std")
+    if cross_attn is not None:
+        T_kv = cross_attn.shape[-1]
+        row = torch.softmax(cross_attn[0].mean(dim=0), dim=-1)  # (T_q, T_kv)
+        cross_row_max = float(row.max())
+        thresh = 2.0 / T_kv
+        print(f"  cross_attn_row_max:      {cross_row_max:.4f}     (warn if < {thresh:.4f})")
+        if cross_row_max < thresh:
+            warn.append("cross_attn_row_max")
+    if warn:
+        print(f"[WARN] outputs are likely to look flat; see PLAN.md §3 ({', '.join(warn)})")
+
+
 def run_feature_and_depth_visuals(
     net: SSM3DNet, images: torch.Tensor, out_root: Path
 ) -> None:
@@ -49,14 +94,20 @@ def run_feature_and_depth_visuals(
     feats = out["features"][0]  # (S, N, C)
     h, w = out["grid_hw"]
     depth = out["depth"][0]  # (S, 1, H, W)
+    img_h, img_w = images.shape[-2:]
     for i in range(feats.shape[0]):
-        save_feature_pca(feats[i], out_root / f"feature_pca_view{i}.png", spatial_hw=(h, w))
+        save_feature_pca(
+            feats[i],
+            out_root / f"feature_pca_view{i}.png",
+            spatial_hw=(h, w),
+            upsample_to=(img_h, img_w),
+        )
         save_depth_colormap(depth[i], out_root / f"depth_view{i}.png")
 
 
 def run_cross_attention_visual(
     net: SSM3DNet, images: torch.Tensor, out_root: Path
-) -> None:
+) -> torch.Tensor:
     """Attach a Mamba3CrossAttention to the backbone's final-layer features
     between view 0 (query) and view 1 (kv). Save an attention heatmap.
     """
@@ -74,7 +125,9 @@ def run_cross_attention_visual(
     xs = torch.arange(w).view(1, w).expand(h, w)
     pos = torch.stack([ys, xs], dim=-1).reshape(-1, 2)  # (N, 2)
 
-    cross = Mamba3CrossAttention(dim_q=C, dim_kv=C, num_heads=6, state_dim=32, variant="B")
+    cross = Mamba3CrossAttention(
+        dim_q=C, dim_kv=C, num_heads=6, state_dim=32, variant="B", bidirectional_mask=True
+    )
     rope = RoPE2D(base_frequency=100.0)
 
     q_tokens = feats[0:1]  # (1, N, C)
@@ -92,6 +145,7 @@ def run_cross_attention_visual(
         query_index=query_index,
         path=out_root / "cross_attention.png",
     )
+    return attn
 
 
 def run_coco_seg_visual(
@@ -125,11 +179,17 @@ def main() -> None:
     ap.add_argument("--data-root", type=Path, default=Path("data"))
     ap.add_argument("--out-root", type=Path, default=Path("outputs"))
     ap.add_argument("--img-size", type=int, default=224)
-    ap.add_argument("--depth", type=int, default=2, help="number of transformer blocks")
+    ap.add_argument("--depth", type=int, default=12, help="number of transformer blocks")
     ap.add_argument("--overfit-iters", type=int, default=30)
-    ap.add_argument("--seg-iters", type=int, default=100)
+    ap.add_argument("--seg-iters", type=int, default=300)
     ap.add_argument("--num-views", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--pretrained",
+        type=Path,
+        default=None,
+        help="path to a DINOv2-compatible checkpoint (non-attention weights only)",
+    )
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -148,6 +208,8 @@ def main() -> None:
         depth=args.depth,
         head_hidden=64,
     )
+    if args.pretrained is not None:
+        load_dinov2_backbone(net.backbone.vit, args.pretrained)
 
     print(f"[3/5] short overfit ({args.overfit_iters} iters, self-consistency loss) ...")
     batch = sample.images.unsqueeze(0)  # (1, S, 3, H, W)
@@ -156,11 +218,16 @@ def main() -> None:
 
     print("[4/5] writing feature-PCA + depth + cross-view visuals ...")
     run_feature_and_depth_visuals(net, sample.images, args.out_root)
-    if args.num_views >= 2:
+    attn = (
         run_cross_attention_visual(net, sample.images, args.out_root)
+        if args.num_views >= 2
+        else None
+    )
+    print("  collapse smoke-check:")
+    collapse_smoke_check(net, sample.images, cross_attn=attn)
 
     print("[5/5] COCO-mini instance-seg demo ...")
-    run_coco_seg_visual(net, args.data_root, args.out_root, num_images=6, iters=args.seg_iters)
+    run_coco_seg_visual(net, args.data_root, args.out_root, num_images=15, iters=args.seg_iters)
 
     print("done. outputs:")
     for p in sorted(args.out_root.glob("*.png")):

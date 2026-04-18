@@ -48,6 +48,7 @@ class Mamba3CrossAttention(nn.Module):
         variant: str = "B",
         out_proj: bool = True,
         proj_bias: bool = True,
+        bidirectional_mask: bool = False,
     ) -> None:
         super().__init__()
         assert variant in ("A", "B")
@@ -58,6 +59,7 @@ class Mamba3CrossAttention(nn.Module):
         self.num_heads = num_heads
         self.state_dim = state_dim
         self.variant = variant
+        self.bidirectional_mask = bidirectional_mask
         self.head_dim_kv = dim_kv // num_heads
 
         self.q_proj = AttentionProjections(dim_q, num_heads, state_dim)
@@ -112,7 +114,7 @@ class Mamba3CrossAttention(nn.Module):
         return_attn: bool,
     ) -> Tensor | tuple[Tensor, Tensor]:
         T_q = Cq.shape[-2]
-        L = build_cross_mask(delta_kv, A_log_kv, T_q)  # (B, H, T_q, T_kv)
+        L = build_cross_mask(delta_kv, A_log_kv, T_q, bidirectional=self.bidirectional_mask)  # (B, H, T_q, T_kv)
         sim = torch.matmul(Cq, Bkv.transpose(-2, -1))  # (B, H, T_q, T_kv)
         weighted = sim * L
         y = torch.matmul(weighted, Vkv)  # (B, H, T_q, head_dim_kv)

@@ -30,6 +30,44 @@ def _scale_invariant_l1(pred: torch.Tensor, target: torch.Tensor, eps: float = 1
     return torch.abs(pred * scale - target).mean()
 
 
+def _edge_aware_smoothness(depth: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
+    """Standard edge-aware smoothness: penalize depth gradients where image is smooth.
+
+    depth: (..., 1, H, W); image: (..., 3, H, W) in [0, 1]. Both must share the
+    leading dims.
+    """
+    d = depth / depth.mean(dim=(-1, -2), keepdim=True).clamp_min(1e-6)
+    dx = (d[..., :, 1:] - d[..., :, :-1]).abs()
+    dy = (d[..., 1:, :] - d[..., :-1, :]).abs()
+    ix = (image[..., :, 1:] - image[..., :, :-1]).abs().mean(dim=-3, keepdim=True)
+    iy = (image[..., 1:, :] - image[..., :-1, :]).abs().mean(dim=-3, keepdim=True)
+    return (dx * torch.exp(-ix)).mean() + (dy * torch.exp(-iy)).mean()
+
+
+def _no_gt_loss(
+    pred: torch.Tensor,
+    images: torch.Tensor,
+    smooth_w: float = 1.0,
+    var_target: float = 0.1,
+    anti_collapse_w: float = 1.0,
+) -> torch.Tensor:
+    """Non-degenerate self-supervised loss (no GT depth).
+
+    Composed of:
+      - edge-aware smoothness (structure without trivial constant solution),
+      - anti-collapse hinge: ReLU(σ_target − pred.std()) penalizes near-constant
+        predictions,
+      - small cross-view mean-consistency term (predictions should be comparable
+        across views of the same scene, but this term alone is degenerate —
+        stays with small weight).
+    """
+    mean_depth = pred.mean(dim=1, keepdim=True)
+    consistency = (pred - mean_depth).abs().mean()
+    smoothness = _edge_aware_smoothness(pred, images)
+    collapse_hinge = torch.relu(var_target - pred.std())
+    return smoothness * smooth_w + anti_collapse_w * collapse_hinge + 0.1 * consistency
+
+
 def overfit_run(
     net: torch.nn.Module,
     images: torch.Tensor,  # (B, S, 3, H, W)
@@ -52,10 +90,7 @@ def overfit_run(
         if gt_depth is not None:
             loss = _scale_invariant_l1(pred, gt_depth)
         else:
-            # Self-consistency: minimize variance across views of predicted depth
-            # (each view's depth should be close to the multi-view mean).
-            mean_depth = pred.mean(dim=1, keepdim=True)
-            loss = (pred - mean_depth).abs().mean()
+            loss = _no_gt_loss(pred, images)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()

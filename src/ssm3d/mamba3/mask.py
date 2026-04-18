@@ -102,19 +102,24 @@ def build_three_term_mask(delta: Tensor, A_log: Tensor, lam: Tensor) -> Tensor:
     return first + second
 
 
-def build_cross_mask(delta_kv: Tensor, A_log_kv: Tensor, T_q: int) -> Tensor:
+def build_cross_mask(delta_kv: Tensor, A_log_kv: Tensor, T_q: int, bidirectional: bool = False) -> Tensor:
     """Rectangular column-decay mask for cross-attention variant B.
 
-    L_cross[..., i, j] = γ_j · ∏_{k=j+1..T_kv} α_k   (same for every query i)
+    Unidirectional (default, matches \\eqref{eq:Lcross} in the tex):
+        L_cross[..., i, j] = γ_j · ∏_{k=j+1..T_kv} α_k
 
-    The mask is effectively rank-1: all T_q rows are identical, encoding
-    "how much each kv token contributes overall, decaying from its index to
-    the end of the kv sequence".
+    Bidirectional (matches \\eqref{eq:Lcross-bi}, added to tex for
+    permutation-invariant kv such as images):
+        L_cross_bi[..., i, j] = γ_j · [∏_{k=j+1..T_kv} α_k + ∏_{k=1..j-1} α_k]
+
+    The mask is rank-1 across the query axis: all T_q rows are identical
+    (the mask is data-dependent on the kv side only).
 
     Args:
         delta_kv:  (..., T_kv) positive step sizes
         A_log_kv:  (..., T_kv) negative log-rates
         T_q:       number of query tokens
+        bidirectional: if True, use the symmetrised bidirectional mask.
 
     Returns:
         L_cross of shape (..., T_q, T_kv)
@@ -122,13 +127,18 @@ def build_cross_mask(delta_kv: Tensor, A_log_kv: Tensor, T_q: int) -> Tensor:
     assert delta_kv.shape == A_log_kv.shape
     T_kv = delta_kv.shape[-1]
     log_alpha = delta_kv * A_log_kv
-    log_gamma = torch.log(delta_kv.clamp_min(1e-20))
+    gamma = delta_kv  # γ_j = Δ_j  (two-term form)
 
-    # S_j = Σ_{k=1..j} log α_k ; S_{T_kv} = Σ_{k=1..T_kv} log α_k
     S = _log_cumsum_along(log_alpha, dim=-1)
-    S_total = S[..., -1:]  # (..., 1)
-    # Σ_{k=j+1..T_kv} log α_k = S_total - S_j
-    log_col_vec = log_gamma + (S_total - S)  # (..., T_kv)
-    col_vec = log_col_vec.exp()  # (..., T_kv)
-    # Broadcast to (..., T_q, T_kv)
+    S_total = S[..., -1:]
+    fwd = (S_total - S).exp()  # ∏_{k=j+1..T_kv} α_k
+
+    if bidirectional:
+        # ∏_{k=1..j-1} α_k = exp(S_{j-1}) with S_0 := 0
+        S_prev = torch.nn.functional.pad(S[..., :-1], (1, 0), value=0.0)
+        rev = S_prev.exp()
+        col_vec = gamma * (fwd + rev)
+    else:
+        col_vec = gamma * fwd
+
     return col_vec.unsqueeze(-2).expand(*col_vec.shape[:-1], T_q, T_kv).contiguous()

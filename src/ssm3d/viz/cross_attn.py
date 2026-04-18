@@ -24,6 +24,7 @@ def save_cross_attention_heatmap(
     path: Path,
     alpha: float = 0.6,
     cmap: str = "inferno",
+    sharpen: bool = True,
 ) -> Path:
     """
     Args:
@@ -32,13 +33,22 @@ def save_cross_attention_heatmap(
         kv_grid_hw: (h, w) of the kv patch grid so h*w = T_kv
         query_index: which query token to visualize
         path: output image path
+        sharpen: if True, take max over heads and apply row-wise softmax (so
+            the heat-map is a probability distribution over kv tokens, not a
+            raw signed similarity). When False, average over heads and min-max
+            normalize — original behavior, kept for debugging.
     """
     assert attn_map.ndim == 4 and attn_map.shape[0] == 1
     attn = attn_map.detach().cpu().float()
-    row = attn[0, :, query_index, :].mean(dim=0)  # average over heads -> (T_kv,)
     h, w = kv_grid_hw
-    assert row.numel() == h * w, f"expected {h*w} kv tokens, got {row.numel()}"
 
+    if sharpen:
+        rows = torch.softmax(attn[0, :, query_index, :], dim=-1)  # (H_heads, T_kv)
+        row = rows.max(dim=0).values  # (T_kv,)
+    else:
+        row = attn[0, :, query_index, :].mean(dim=0)
+
+    assert row.numel() == h * w, f"expected {h*w} kv tokens, got {row.numel()}"
     heat = row.view(h, w).numpy()
     heat = (heat - heat.min()) / max(heat.max() - heat.min(), 1e-8)
 

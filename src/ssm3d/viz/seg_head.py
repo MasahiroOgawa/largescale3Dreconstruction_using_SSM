@@ -89,18 +89,19 @@ def save_seg_overlay(
     feature_extractor,
     sample,
     path: Path,
-    alpha: float = 0.5,
-    threshold: float = 0.5,
+    alpha: float = 0.6,
+    cmap: str = "viridis",
 ) -> Path:
+    """Overlay the per-pixel foreground probability (not a binary mask)."""
     head.eval()
     feats = feature_extractor(sample.image).unsqueeze(0)
     logits = head(feats).squeeze()  # (H, W)
     prob = torch.sigmoid(logits).cpu().numpy()
-    mask = (prob > threshold).astype(np.float32)
 
     img = sample.image.cpu().permute(1, 2, 0).numpy()  # (H, W, 3)
-    heat = cm.get_cmap("spring")(prob)[..., :3]
-    overlay = (1 - alpha) * img + alpha * heat * mask[..., None]
+    heat = cm.get_cmap(cmap)(prob)[..., :3]
+    weight = alpha * prob[..., None]
+    overlay = (1 - weight) * img + weight * heat
     overlay = (overlay.clip(0, 1) * 255).astype(np.uint8)
 
     path = Path(path)
