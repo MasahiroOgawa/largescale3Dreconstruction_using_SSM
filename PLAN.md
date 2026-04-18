@@ -154,3 +154,163 @@ against the implementation surfaced three items:
 - Full DA3 training schedule.
 - Loading the DA3 depth/ray heads (those expect specific backbone statistics we won't reproduce without training).
 - Any GPU-specific kernels or `torch.compile`.
+
+## 8. Post-Fix diagnosis — outputs are still bad, and the Fix-3 loss made things worse
+
+After applying Fixes 1, 3, 4, 5, 6, 7 (Fix 2 mechanism is in place but no
+compatible checkpoint is loaded by default), `outputs/*.png` remains
+unusable. Running the same cosine diagnostic reveals that the overfit step
+**destroys** the modest feature structure that was present at init:
+
+| stage                                    | feat_cos_mean (patches) |
+|------------------------------------------|--------------------------|
+| depth=12, random init, real ETH3D image  | **0.584** (modest structure) |
+| same, after 15 iters of Fix-3 overfit    | **0.999** (fully collapsed)  |
+| same, but backbone frozen during overfit | **0.584** (preserved)        |
+
+Depth-vs-luminance Pearson correlation is `-0.06`: the "predicted depth"
+has no relationship to the input image. The depth map is a random
+amplification of whatever axis the anti-collapse hinge latched onto.
+
+Root causes newly identified:
+
+1. **Fix-3's anti-collapse hinge `relu(0.1 − pred.std())` back-propagates
+   into the backbone.** The cheapest way for the network to satisfy the
+   hinge is to re-wire one axis of backbone variance to drive the depth
+   head, which inevitably collapses all tokens onto that axis. The
+   remedy is to *not* train the backbone during the demo — freeze it,
+   train only the head (or skip the demo overfit entirely).
+
+2. **`run_cross_attention_visual` constructs `Mamba3CrossAttention` with
+   random weights and never trains it.** The heatmap is driven by the
+   decay mask $\bm{L}^{\text{cross}}$'s raster-order shape, not by the
+   similarity $C^q (B^{kv})^\top$. With random $B^{kv}$ the similarity
+   has zero mean and the mask's corner-weighting dominates — exactly
+   what `cross_attention.png` shows (hotspots at image corners, not at
+   the query's correspondent point). Making the mask bidirectional in
+   Fix 5 only redistributes the artifact, it does not fix it. The fix is
+   either to warm-start the cross module by copying backbone B/C/V from
+   a DINOv2-equivalent pretrained state, or to use DINOv2's attention
+   layer directly for the cross-view viz (the point of the viz is "show
+   which kv patch the query attends to"; it doesn't have to run through
+   Mamba-3).
+
+3. **Feature PCA at `feat_cos_mean = 0.58` is blocky and uninformative
+   even after `upsample_to`.** Nearest-neighbor upsampling of a 14×14
+   grid keeps the visible blockiness. The information bottleneck is 196
+   tokens — we cannot visualize sub-patch structure this way. Upgrading
+   to `patch_size=14` on a 224 image yields 16×16 = 256 tokens (tiny
+   improvement); the real gain requires either smaller patches
+   (patch_size=8 → 28×28 = 784 tokens, 4× compute) or bilinear
+   upsampling *of the PCA output* (smoother, but no extra information).
+
+4. **Mamba-3 blocks are random-init, and Fix 2 does not fix this.**
+   `load_dinov2_backbone` correctly loads patch_embed, norms, MLPs,
+   cls/register/mask tokens, and RoPE freqs — but the attention
+   parameters (`B, C, V, Δ, A, λ` projections) have no counterpart in
+   DINOv2's qkv attention, so 12 attention blocks remain random. Every
+   MLP output feeds the next block's random attention, which destroys
+   the DINOv2 MLP structure by block 2 or 3. **Partial-load Fix 2 alone
+   is not sufficient.**
+
+5. **Architecture mismatch blocks even partial Fix 2.** DINOv2-small
+   ships with `patch_size=14`. Our demo uses `patch_size=16`. The
+   `patch_embed.proj.weight` shape differs (384×3×16×16 vs 384×3×14×14),
+   so the single most important weight — the embedding that turns pixels
+   into tokens — is always shape-mismatched and silently skipped.
+
+## 9. Fix plan v2 — what to do next, in order of impact
+
+### 9a. Freeze the backbone during the demo overfit (≈ 5 lines, biggest immediate win)
+
+`overfit.py` currently trains everything. Change `scripts/run_demo.py` to
+either skip `overfit_run` entirely, or (preferred) call it with
+`trainable="head"` and pass `net.depth_head.parameters()` to AdamW.
+Expected effect: `feat_cos_mean` stays at 0.58 instead of collapsing to
+0.999, and feature-PCA/cross-attn viz show the same structure-at-init
+that the network produced before training. This is a negative-impact
+*removal*, not a positive gain — the overfit step was hurting us.
+
+Acceptance: `feat_cos_mean` after the demo ≤ 0.60 (equal to init).
+
+### 9b. Match DINOv2's patch size (`patch_size=14`, `img_size=224`)
+
+Change the demo's `patch_size=16` default to `14`. With 16×16 = 256
+tokens we stay cheap on CPU, the patch grid resolution improves 14%, and
+— critically — `patch_embed.proj.weight` now matches DINOv2-small's
+shipped shape. This unblocks loading DINOv2 weights as-is.
+
+Follow-up: update any tests that hard-code `patch_size=16` (at least
+`test_swap_matches_signature.py` does not).
+
+### 9c. Actually load a DINOv2-small checkpoint in the demo (Fix 2 activated)
+
+The code path exists. Add `scripts/download_dinov2.py` that fetches
+`dinov2_vits14_pretrain.pth` via `torch.hub.download_url_to_file` from
+`https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14/dinov2_vits14_pretrain.pth`
+(≈ 84 MB), and wire `--pretrained` in `run_demo.py` to auto-download on
+first run. Confirm via the unit test that `counters["loaded"]` is ≥ 50.
+
+Acceptance: after `uv run python scripts/run_demo.py`, `feat_cos_mean`
+drops below **0.5** and feature-PCA tracks visible scene boundaries
+(grass / rocks / sky). This is what the original §5 target was aiming
+for.
+
+### 9d. Warm-start Mamba-3 attention from DINOv2 qkv
+
+This is the fix that actually makes `feat_cos_mean < 0.3` and produces
+usable depth/cross-attn outputs without any end-to-end training.
+
+The Mamba-3 $B, C$ projections are rank-N approximations of keys and
+queries; the $V$ projection is literally a value projection. Initialise:
+
+- `B_proj.weight ← K_proj.weight[:state_dim]` (first N rows of DINOv2
+  K-projection, per head).
+- `C_proj.weight ← Q_proj.weight[:state_dim]`.
+- `V_proj.weight ← V_proj.weight` (unchanged).
+- `A_log, Δ, λ` get small-random init so that on day 0 the SSD output is
+  close to $(Q K^\top) V$ with mild recency bias.
+
+This is an explicit cast from softmax attention to SSD attention;
+accuracy is approximate but the representation is "DINOv2-like" from
+step 0 instead of random. Add `ssm3d.weights.warm_start_mamba3_from_qkv`.
+
+Acceptance: `feat_cos_mean` < 0.30, and `feature_pca_view0.png` clearly
+tracks the scene layout.
+
+### 9e. Honest visualisations where the demo cannot predict without training
+
+- **Depth map**: with no depth GT and a random depth head, stop
+  pretending the output is "predicted depth". Either:
+  (a) remove the depth visualization, or
+  (b) re-label it as "depth-head activation" in the filename and
+      caption, so the viewer knows it's the head's untrained response,
+      or
+  (c) replace the depth head with a simple "feature magnitude" or
+      "DINOv2 first-PCA channel" map — visually plausible and honest.
+- **Cross-attention**: replace the random `Mamba3CrossAttention` in
+  `run_cross_attention_visual` with a direct query→kv similarity using
+  backbone features (cosine-sim of `feats[query_index]` against all kv
+  tokens, softmax over kv). This *is* the quantity we wanted to
+  visualize. The Mamba-3 cross module itself is proven out by the
+  existing unit tests; it does not need to be in the demo.
+
+### 9f. Regenerate the PCA-depth-attn outputs at native image resolution via bilinear
+
+Change `save_feature_pca`'s upsample from `NEAREST` to `BILINEAR`. PCA
+output is continuous; `NEAREST` artificially block-quantizes it. This
+is a one-line fix in `src/ssm3d/viz/feature_pca.py`.
+
+## 10. Revised acceptance criteria (after §9 fixes)
+
+- `feat_cos_mean` (post-demo) < 0.5 (random init is already 0.58; the
+  loss should not make it worse). With §9d warm-start: < 0.3.
+- `feature_pca_view0.png` visibly traces grass / building edges / sky
+  on the ETH3D terrain image.
+- `cross_attention.png` shows a localised blob **at the correspondent
+  scene patch** of the query, not at the image corners.
+- `depth_view0.png` either (a) correlates with image luminance or
+  structure at |ρ| > 0.3, or (b) is honestly re-labeled as an
+  activation map.
+- `seg_overlay_coco*.png` with backbone frozen and 500+ iters head
+  training shows heat concentrated on annotated instances.
