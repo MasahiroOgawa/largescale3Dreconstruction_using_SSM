@@ -55,11 +55,11 @@ def _arrow(ax, x0, y0, x1, y1, *, color=EDGE_MUTED, lw=1.4):
     )
 
 
-def _pipeline(ax, title, *, attn_short, attn_formula,
+def _pipeline(ax, title, *, block_label, attn_short, attn_formula,
               attn_fill, attn_edge, attn_bold,
               head_label, head_sub, muted=False, show_formula=True):
-    """Draw the DA3-style pipeline with the attention sub-module nested inside
-    the 12× ViT block container (that is where the swap actually happens)."""
+    """Draw the DA3-style pipeline with the token-mixer sub-module nested
+    inside the per-block container (that is where the swap lives)."""
     ax.set_xlim(0, 10)
     ax.set_ylim(0, 16)
     ax.axis("off")
@@ -79,12 +79,12 @@ def _pipeline(ax, title, *, attn_short, attn_formula,
     vbox(12.8, 1.0, "PatchEmbed\nConv2d 14×14")
     vbox(11.3, 1.0, "[CLS] + [REG] tokens\n+ 2D RoPE")
 
-    # --- ViT container (attention lives INSIDE this block) ---
+    # --- Per-block container (token-mixer lives INSIDE this block) ---
     cont_x, cont_y, cont_w, cont_h = 0.6, 6.4, 8.8, 4.4
     _box(ax, cont_x, cont_y, cont_w, cont_h, "",
          fill=fill, edge=edge, lw=1.4)
     ax.text(cont_x + cont_w / 2, cont_y + cont_h - 0.25,
-            "12× ViT Block   (×12 stack, residual stream — swap lives here)",
+            block_label,
             ha="center", va="top", fontsize=9, weight="bold", color=tc)
 
     # Inline residual block: x → LN → ATTN → ⊕ → LN → MLP → ⊕
@@ -146,6 +146,7 @@ def _render_da3(path: Path) -> Path:
     fig, ax = plt.subplots(figsize=(7, 11))
     _pipeline(
         ax, "Depth-Anything-3 (DA3)",
+        block_label="12× ViT Block   (×12 stack, residual stream — softmax attention inside)",
         attn_short="softmax\nattention",
         attn_formula="softmax(QKᵀ/√d) · V   (per-block, inside every ViT block)",
         attn_fill=BOX_ACTIVE, attn_edge="#2b6cb0", attn_bold=False,
@@ -163,6 +164,7 @@ def _render_ssm3d(path: Path) -> Path:
     fig, ax = plt.subplots(figsize=(7, 11))
     _pipeline(
         ax, "SSM-3D (this repo)",
+        block_label="12× SSM Block   (×12 stack, residual stream — Mamba-3 SSD as token mixer)",
         attn_short="Mamba-3\nSSD",
         attn_formula="(L ⊙ CBᵀ) · V  +  reverse   [bidirectional Mamba-3 SSD, per-block]",
         attn_fill=BOX_DIFF, attn_edge=EDGE_DIFF, attn_bold=True,
@@ -181,6 +183,7 @@ def _render_diff(path: Path) -> Path:
 
     _pipeline(
         axes[0], "DA3 (reference)",
+        block_label="12× ViT Block   (softmax attention)",
         attn_short="softmax",
         attn_formula="softmax(QKᵀ/√d)·V",
         attn_fill=BOX_ACTIVE, attn_edge="#2b6cb0", attn_bold=True,
@@ -190,6 +193,7 @@ def _render_diff(path: Path) -> Path:
     )
     _pipeline(
         axes[1], "SSM-3D (ours)",
+        block_label="12× SSM Block   (Mamba-3 SSD token mixer)",
         attn_short="Mamba-3\nSSD",
         attn_formula="(L⊙CBᵀ)·V + reverse",
         attn_fill=BOX_DIFF, attn_edge=EDGE_DIFF, attn_bold=True,
