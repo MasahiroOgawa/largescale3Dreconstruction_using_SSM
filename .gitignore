@@ -16,3 +16,4 @@ uv.lock
 *.zip
 
 .DS_Store
+.claude/

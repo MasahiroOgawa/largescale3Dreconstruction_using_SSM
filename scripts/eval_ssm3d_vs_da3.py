@@ -1,23 +1,26 @@
 """End-to-end evaluation: SSM-3D vs. original Depth-Anything-3 on ETH3D.
 
-Pipeline (see plan at ~/.claude/plans/evalutate-this-algirhtym-...md §§1-6):
+Pipeline (see plan at ~/.claude/plans/evalutate-this-algirhtym-...md §§1-6, §8):
   1. Download ETH3D `terrains` RGB + GT depth (~0.5 GB).
   2. Build SSM-3D (ViT-Small, Mamba3 attn), load DINOv2 weights (no warm-start).
   3. Load DA3-SMALL (`depth-anything/DA3-SMALL`).
-  4. Per image: run DA3 inference → depth + features; run SSM-3D → features only
-     (no trained depth head; its SimpleDepthHead output is just labeled and
-     shown as "head activation" in the existing run_demo).
+  4. Per image:
+       - DA3: inference → depth + features.
+       - SSM-3D: backbone features (final + layers [5,7,9,11]). For the depth
+         panel, feed the 4 intermediate layers through DA3's own DualDPT
+         (shared-DPT smoke test; 384-d features duplicated → 768-d to match
+         DA3's cat_token=True).
   5. Metrics
        Depth (DA3 vs GT, median-aligned): abs_rel, δ<1.25, δ<1.25^2, rmse, log10.
        Repr (head-to-head):              feat_cos_mean, effective_rank,
                                           cross_view_nn_agreement (GT-warped).
-  6. Visualizations:
-       depth_grid_{i}.png, error_{i}.png, features_{i}.png,
-       metric_bars_{depth,repr}.png, summary.md.
-
-Depth is NOT compared side-by-side because DA3-SMALL uses `cat_token=True`
-(768-dim features) and different `out_layers=[5,7,9,11]`, so DA3's DualDPT
-cannot run on SSM-3D's 384-dim features without retraining.
+  6. Memory: param counts + peak RSS delta around one warm forward pass each.
+  7. Visualizations:
+       depth_grid_{i}.png   (2x2: Input | GT / DA3 | SSM-3D),
+       error_{i}.png        (1x2: |DA3-GT| | |SSM-3D-GT|, shared scale),
+       features_{i}.png,
+       arch_da3/ssm3d/diff.png (emitted once at end),
+       metric_bars_{depth,repr,memory}.png, summary.md.
 """
 
 from __future__ import annotations
@@ -32,9 +35,19 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from download_dinov2 import ensure_dinov2_vits14  # noqa: E402
 
+from render_architecture_diagrams import render_all as render_arch_diagrams  # noqa: E402
+
 from ssm3d.data.eth3d import download_eth3d_terrains, load_eth3d_scene
 from ssm3d.eval.da3_reference import DEFAULT_HF_MODEL, da3_depth, da3_features, load_da3
+from ssm3d.eval.dpt_adapter import SHARED_DPT_LAYERS, get_dualdpt, shared_dpt_depth
 from ssm3d.eval.eth3d_gt import load_eth3d_cams
+from ssm3d.eval.memory import (
+    MemoryReport,
+    RSSPoller,
+    param_count,
+    reset_cuda_peak,
+    snapshot_cuda_peak,
+)
 from ssm3d.eval.metrics import (
     cross_view_nn_agreement,
     depth_metrics,
@@ -46,6 +59,7 @@ from ssm3d.eval.visualize import (
     save_depth_metric_bars,
     save_error_heatmap,
     save_feature_comparison,
+    save_memory_bars,
     save_repr_metric_bars,
     write_summary_md,
 )
@@ -107,6 +121,7 @@ def main() -> None:
 
     da3 = None
     da3_depth_preds: list[torch.Tensor] = []
+    ssm_depth_preds: list[torch.Tensor | None] = []
     da3_feats_all: list[torch.Tensor] = []
     da3_grid: tuple[int, int] = (0, 0)
     if not args.skip_da3:
@@ -118,6 +133,16 @@ def main() -> None:
             traceback.print_exc()
             print("  -> continuing with --skip-da3 semantics")
             args.skip_da3 = True
+
+    shared_dpt = None
+    if da3 is not None:
+        try:
+            shared_dpt = get_dualdpt(da3)
+            print(f"  shared-DPT: using DA3's DualDPT on SSM-3D layers {SHARED_DPT_LAYERS} "
+                  "(384→768 via channel duplication; smoke test)")
+        except Exception:
+            print("  !! could not bind shared DualDPT:")
+            traceback.print_exc()
 
     per_image_depth: list[dict[str, float]] = []
     per_image_repr_da3: list[dict[str, float]] = []
@@ -156,6 +181,19 @@ def main() -> None:
         else:
             da3_depth_preds.append(torch.full_like(gt, float("nan")))
             per_image_depth.append({})
+
+        if shared_dpt is not None:
+            try:
+                ssm_dep = shared_dpt_depth(
+                    ssm, shared_dpt, rgb.unsqueeze(0).to(args.device)
+                )[0]
+            except Exception:
+                print(f"  !! shared-DPT failed for image {i}:")
+                traceback.print_exc()
+                ssm_dep = None
+            ssm_depth_preds.append(ssm_dep)
+        else:
+            ssm_depth_preds.append(None)
 
         # --- Representation metrics (per image; cross-view is added after loop) ---
         ssm_feats_i = ssm_feats_all[i]
@@ -207,19 +245,48 @@ def main() -> None:
             )
             per_image_repr_da3[i]["cross_view_nn_agreement"] = agree_da3
 
+    mem_da3 = MemoryReport(param_count=0, peak_rss_delta_mb=0.0)
+    mem_ssm = MemoryReport(param_count=0, peak_rss_delta_mb=0.0)
+    if da3 is not None:
+        print("[4.5/5] measuring memory (one forward each, warm) ...")
+        rgb0 = sample.images[0]
+        reset_cuda_peak(args.device)
+        with RSSPoller() as poller:
+            _ = da3_depth(da3, rgb0.unsqueeze(0), process_res=args.da3_process_res)
+        mem_da3 = MemoryReport(
+            param_count=param_count(da3.model.backbone),
+            peak_rss_delta_mb=poller.peak_delta_mb,
+            peak_cuda_mb=snapshot_cuda_peak(args.device),
+        )
+        reset_cuda_peak(args.device)
+        with RSSPoller() as poller:
+            _ = ssm.backbone(rgb0.unsqueeze(0).unsqueeze(0).to(args.device))
+        mem_ssm = MemoryReport(
+            param_count=param_count(ssm.backbone),
+            peak_rss_delta_mb=poller.peak_delta_mb,
+            peak_cuda_mb=snapshot_cuda_peak(args.device),
+        )
+        print(f"  DA3   : {mem_da3.param_count/1e6:.2f} M params, "
+              f"{mem_da3.peak_rss_delta_mb:.1f} MB RSS-delta")
+        print(f"  SSM-3D: {mem_ssm.param_count/1e6:.2f} M params, "
+              f"{mem_ssm.peak_rss_delta_mb:.1f} MB RSS-delta")
+
     print("[5/5] writing visualizations ...")
     for i in range(N):
         rgb = sample.images[i]
         gt = sample.gt_depth[i]
         valid = sample.valid_mask[i]
         if da3 is not None and torch.isfinite(da3_depth_preds[i]).any():
+            ssm_pred = ssm_depth_preds[i] if i < len(ssm_depth_preds) else None
             save_depth_grid(
                 rgb, gt, da3_depth_preds[i], valid,
                 args.out_root / f"depth_grid_{i:02d}.png",
+                pred_ssm=ssm_pred,
             )
             save_error_heatmap(
                 da3_depth_preds[i], gt, valid,
                 args.out_root / f"error_{i:02d}.png",
+                pred_ssm=ssm_pred,
             )
         if len(da3_feats_all) > i:
             save_feature_comparison(
@@ -233,10 +300,34 @@ def main() -> None:
     save_repr_metric_bars(
         per_image_repr_da3, per_image_repr_ssm, args.out_root / "metric_bars_repr.png"
     )
+    if da3 is not None:
+        save_memory_bars(
+            mem_da3.as_dict(), mem_ssm.as_dict(),
+            args.out_root / "metric_bars_memory.png",
+        )
+    print("  rendering architecture diagrams ...")
+    for p in render_arch_diagrams(args.out_root):
+        print(f"    {p}")
+    memory_note = (
+        "**Memory note.** Parameters reported are **backbone only** so the comparison "
+        "reflects the architectural change (DA3 softmax attention vs. SSM-3D "
+        "Mamba-3 SSD). DA3's full published model is ~34 M because it ships "
+        "additional DPT, cam-enc and cam-dec heads (~12 M). Peak RSS is the "
+        "delta during one warm forward pass: DA3 uses its standard `inference()` "
+        "path at process_res=504, SSM-3D uses `backbone.forward` at img_size "
+        "(typically 224). Numbers are comparable as \"what the deployed "
+        "inference path costs,\" not as an isolated activation-memory benchmark.\n\n"
+    )
     note = (
+        memory_note +
         "DA3-SMALL features are 768-dim (`cat_token=True`); SSM-3D features are "
         "384-dim. Representation metrics are dim-invariant and compared as scores. "
-        "Depth is DA3 vs GT only — SSM-3D has no trained depth head.\n\n"
+        "Depth numbers in this table are DA3 vs GT. SSM-3D's depth panel in "
+        "`depth_grid_*.png` / `error_*.png` comes from a **shared-DPT smoke test**: "
+        "DA3's pretrained DualDPT is bolted onto SSM-3D's 4 intermediate layers "
+        "(384-dim features duplicated to 768-dim to match DA3's cat_token format). "
+        "The SSM-3D side of those figures is therefore qualitative, not a trained "
+        "depth head.\n\n"
         "Interpretation: **lower** `feat_cos_mean` is better (less token collapse); "
         "**higher** `effective_rank` and `cross_view_nn_agreement` are better. "
         "DA3's high `feat_cos_mean` is a known property of `cat_token=True`: each "
@@ -254,6 +345,8 @@ def main() -> None:
         da3_repr=per_image_repr_da3,
         ssm_repr=per_image_repr_ssm,
         note=note,
+        memory_da3=mem_da3.as_dict() if da3 is not None else None,
+        memory_ssm=mem_ssm.as_dict() if da3 is not None else None,
     )
 
     print("\ndone. Outputs:")

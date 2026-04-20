@@ -1,16 +1,15 @@
 """Visualizations for the SSM-3D vs. DA3 ETH3D comparison.
 
-Three artifact types:
-  - depth_grid_{i}.png       : RGB | GT | DA3 depth (shared colormap + clip).
-  - error_{i}.png            : |DA3 − GT|, shared color scale.
+Artifact types:
+  - depth_grid_{i}.png       : 2x2 corners — Input | GT / DA3 | SSM-3D (shared clip).
+  - error_{i}.png            : 1x2 — |DA3 − GT| | |SSM-3D − GT| (shared scale).
   - features_{i}.png         : RGB | DA3 feat-PCA | SSM-3D feat-PCA.
   - metric_bars_depth.png    : DA3 metrics per image (abs_rel, δ<1.25, rmse).
   - metric_bars_repr.png     : feat_cos_mean + effective_rank, DA3 vs SSM-3D.
   - summary.md               : averaged metrics, stdev, per-image table.
 
-SSM-3D has no trained depth head; we do NOT compare depth between models
-(architectural mismatch prevents shared-DPT). Depth comparison is DA3 vs GT only.
-Feature comparison is head-to-head on ETH3D patch features.
+SSM-3D depth is the shared-DPT smoke test (DA3's pretrained DualDPT bolted
+onto SSM-3D 384→768 duplicated features, not retrained). Figures label it so.
 """
 
 from __future__ import annotations
@@ -43,14 +42,30 @@ def _colorize(arr: np.ndarray, lo: float, hi: float, cmap: str = "turbo", invert
     return (cm.get_cmap(cmap)(norm)[..., :3] * 255).astype(np.uint8)
 
 
+def _median_align(pred: np.ndarray, gt: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    pv = pred[valid]
+    gv = gt[valid]
+    if pv.size == 0 or gv.size == 0:
+        return pred
+    p_med = float(np.median(pv))
+    if abs(p_med) < 1e-8:
+        return pred
+    return pred * (float(np.median(gv)) / p_med)
+
+
 def save_depth_grid(
     rgb: Tensor,
     gt: Tensor,
     pred_da3: Tensor,
     valid: Tensor,
     path: Path,
+    pred_ssm: Tensor | None = None,
 ) -> Path:
-    """3-panel grid: RGB | GT depth | DA3 depth. Shared colormap + clip range."""
+    """2x2 corner grid: Input | GT / DA3 | SSM-3D. Shared colormap + clip range.
+
+    If `pred_ssm` is None, the bottom-right cell is drawn as a labelled
+    "N/A" placeholder so the layout is stable across runs.
+    """
     rgb_np = (rgb.clamp(0, 1) * 255).byte().permute(1, 2, 0).cpu().numpy()
     gt_np = gt.float().cpu().numpy()
     pred_np = pred_da3.float().cpu().numpy()
@@ -61,17 +76,32 @@ def save_depth_grid(
     lo, hi = _percentile_clip(ref)
 
     gt_rgb = _colorize(np.where(valid_np, gt_np, np.nan), lo, hi)
-    gt_rgb[~valid_np] = (40, 40, 40)  # grey out invalid
-    pred_rgb = _colorize(pred_np, lo, hi)
+    gt_rgb[~valid_np] = (40, 40, 40)
+    da3_aligned = _median_align(pred_np, gt_np, valid_np)
+    da3_rgb = _colorize(da3_aligned, lo, hi)
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    for ax, img, title in zip(
-        axes, [rgb_np, gt_rgb, pred_rgb], ["RGB", "GT depth", "DA3 depth"]
-    ):
+    if pred_ssm is not None:
+        ssm_np = pred_ssm.float().cpu().numpy()
+        ssm_aligned = _median_align(ssm_np, gt_np, valid_np)
+        ssm_rgb = _colorize(ssm_aligned, lo, hi)
+        ssm_title = "SSM-3D depth (shared-DPT smoke test, median-aligned)"
+    else:
+        ssm_rgb = np.full_like(rgb_np, 200)
+        ssm_title = "SSM-3D depth (unavailable)"
+
+    fig, axes = plt.subplots(2, 2, figsize=(9, 8))
+    panels = [
+        (axes[0, 0], rgb_np, "Input"),
+        (axes[0, 1], gt_rgb, "GT depth"),
+        (axes[1, 0], da3_rgb, "DA3 depth (median-aligned)"),
+        (axes[1, 1], ssm_rgb, ssm_title),
+    ]
+    for ax, img, title in panels:
         ax.imshow(img)
         ax.set_title(title, fontsize=10)
         ax.axis("off")
-    plt.tight_layout()
+    plt.suptitle(f"depth (clip {lo:.2f}–{hi:.2f} m)", fontsize=11)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
@@ -83,23 +113,61 @@ def save_error_heatmap(
     gt: Tensor,
     valid: Tensor,
     path: Path,
+    pred_ssm: Tensor | None = None,
 ) -> Path:
-    """|pred − gt| absolute error heatmap, masked to valid pixels."""
-    pred_np = pred_da3.float().cpu().numpy()
+    """1x2 side-by-side error heatmaps with a shared color scale.
+
+    Left panel: |DA3 − GT|. Right panel: |SSM-3D − GT| (median-aligned first,
+    since the shared-DPT smoke-test output is scale-ambiguous). The shared
+    clip is p95 of the UNION of both error maps so the two halves are
+    directly comparable.
+    """
     gt_np = gt.float().cpu().numpy()
     valid_np = valid.bool().cpu().numpy()
-    err = np.abs(pred_np - gt_np)
-    err[~valid_np] = np.nan
-    lo = 0.0
-    hi = np.nanpercentile(err, 95) if np.isfinite(err).any() else 1.0
-    err_rgb = _colorize(np.where(valid_np, err, 0), lo, hi, cmap="magma", invert=False)
-    err_rgb[~valid_np] = (40, 40, 40)
+    da3_aligned = _median_align(pred_da3.float().cpu().numpy(), gt_np, valid_np)
+    err_da3 = np.abs(da3_aligned - gt_np)
+    err_da3[~valid_np] = np.nan
 
-    fig, ax = plt.subplots(1, 1, figsize=(5, 4))
-    ax.imshow(err_rgb)
-    ax.set_title(f"|DA3 − GT|  (white=high, capped at p95={hi:.2f}m)", fontsize=10)
-    ax.axis("off")
-    plt.tight_layout()
+    if pred_ssm is not None:
+        ssm_np = pred_ssm.float().cpu().numpy()
+        ssm_aligned = _median_align(ssm_np, gt_np, valid_np)
+        err_ssm = np.abs(ssm_aligned - gt_np)
+        err_ssm[~valid_np] = np.nan
+        stacked = np.concatenate(
+            [err_da3[np.isfinite(err_da3)], err_ssm[np.isfinite(err_ssm)]]
+        )
+        hi = float(np.percentile(stacked, 95)) if stacked.size else 1.0
+    else:
+        err_ssm = None
+        hi = float(np.nanpercentile(err_da3, 95)) if np.isfinite(err_da3).any() else 1.0
+    lo = 0.0
+
+    def _panel(err: np.ndarray) -> np.ndarray:
+        rgb = _colorize(np.where(valid_np, err, 0), lo, hi, cmap="magma", invert=False)
+        rgb[~valid_np] = (40, 40, 40)
+        return rgb
+
+    da3_rgb = _panel(err_da3)
+    da3_p95 = float(np.nanpercentile(err_da3, 95)) if np.isfinite(err_da3).any() else float("nan")
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    axes[0].imshow(da3_rgb)
+    axes[0].set_title(f"|DA3 − GT|  (median-aligned; p95={da3_p95:.2f} m)", fontsize=10)
+    axes[0].axis("off")
+    if err_ssm is not None:
+        ssm_p95 = (
+            float(np.nanpercentile(err_ssm, 95)) if np.isfinite(err_ssm).any() else float("nan")
+        )
+        axes[1].imshow(_panel(err_ssm))
+        axes[1].set_title(
+            f"|SSM-3D − GT| (shared-DPT, median-aligned; p95={ssm_p95:.2f} m)", fontsize=10
+        )
+    else:
+        axes[1].imshow(np.full_like(da3_rgb, 200))
+        axes[1].set_title("SSM-3D error (unavailable)", fontsize=10)
+    axes[1].axis("off")
+    plt.suptitle(f"absolute depth error (shared scale, capped at p95={hi:.2f} m)", fontsize=11)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
@@ -183,6 +251,50 @@ def save_repr_metric_bars(
     return path
 
 
+def save_memory_bars(
+    da3_report: dict[str, float],
+    ssm_report: dict[str, float],
+    path: Path,
+) -> Path:
+    """Side-by-side bar chart: parameter count and peak RSS delta, DA3 vs SSM-3D.
+
+    Separate subplots because the two axes differ by ~3 orders of magnitude
+    (params in millions, RSS in MB) and a shared axis would squash one bar.
+    If `peak_cuda_mb` is non-zero in either report, a third subplot is added.
+    """
+    labels = ["DA3", "SSM-3D"]
+    params_m = [da3_report.get("param_count", 0.0) / 1e6,
+                ssm_report.get("param_count", 0.0) / 1e6]
+    rss_mb = [da3_report.get("peak_rss_delta_mb", 0.0),
+              ssm_report.get("peak_rss_delta_mb", 0.0)]
+    cuda_mb = [da3_report.get("peak_cuda_mb", 0.0),
+               ssm_report.get("peak_cuda_mb", 0.0)]
+    use_cuda = any(v > 0 for v in cuda_mb)
+
+    n = 3 if use_cuda else 2
+    fig, axes = plt.subplots(1, n, figsize=(4 * n, 3.5))
+    colors = ["#4C72B0", "#DD8452"]
+
+    def _bar(ax, vals, title, ylabel):
+        ax.bar(labels, vals, color=colors)
+        ax.set_title(title, fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=9)
+        for i, v in enumerate(vals):
+            ax.text(i, v, f"{v:.1f}", ha="center", va="bottom", fontsize=9)
+
+    _bar(axes[0], params_m, "Parameters", "M params")
+    _bar(axes[1], rss_mb, "Peak RSS delta (inference)", "MB")
+    if use_cuda:
+        _bar(axes[2], cuda_mb, "Peak CUDA memory", "MB")
+
+    plt.suptitle("Memory usage: DA3 vs SSM-3D", fontsize=11)
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
 def _mean_std(values: Sequence[float]) -> tuple[float, float]:
     arr = np.asarray([v for v in values if np.isfinite(v)], dtype=np.float64)
     if arr.size == 0:
@@ -196,6 +308,8 @@ def write_summary_md(
     da3_repr: list[dict[str, float]],
     ssm_repr: list[dict[str, float]],
     note: str = "",
+    memory_da3: dict[str, float] | None = None,
+    memory_ssm: dict[str, float] | None = None,
 ) -> Path:
     lines = [
         "# SSM-3D vs. Depth-Anything-3 on ETH3D `terrains`",
@@ -222,6 +336,25 @@ def write_summary_md(
         d_m, d_s = _mean_std([d.get(key, float("nan")) for d in da3_repr])
         s_m, s_s = _mean_std([d.get(key, float("nan")) for d in ssm_repr])
         lines.append(f"| {key} | {d_m:.4f} ± {d_s:.4f} | {s_m:.4f} ± {s_s:.4f} |")
+
+    if memory_da3 is not None and memory_ssm is not None:
+        lines += [
+            "",
+            "## Memory usage",
+            "",
+            "| Metric | DA3 | SSM-3D |",
+            "|---|---|---|",
+            f"| Parameters (M) | {memory_da3.get('param_count', 0) / 1e6:.2f} | "
+            f"{memory_ssm.get('param_count', 0) / 1e6:.2f} |",
+            f"| Peak RSS delta during inference (MB) | "
+            f"{memory_da3.get('peak_rss_delta_mb', 0):.1f} | "
+            f"{memory_ssm.get('peak_rss_delta_mb', 0):.1f} |",
+        ]
+        if memory_da3.get("peak_cuda_mb", 0) > 0 or memory_ssm.get("peak_cuda_mb", 0) > 0:
+            lines.append(
+                f"| Peak CUDA memory (MB) | {memory_da3.get('peak_cuda_mb', 0):.1f} | "
+                f"{memory_ssm.get('peak_cuda_mb', 0):.1f} |"
+            )
 
     if note:
         lines += ["", "## Notes", "", note]

@@ -83,13 +83,21 @@ class SSM3DBackbone(nn.Module):
         s = self.img_size // self.patch_size
         return (s, s)
 
-    def forward(self, x: torch.Tensor) -> BackboneOutput:
+    def forward(
+        self,
+        x: torch.Tensor,
+        export_feat_layers: Optional[list[int]] = None,
+    ) -> BackboneOutput:
         """
         Args:
             x: (B, S, 3, H, W)
+            export_feat_layers: per-call override of the constructor value. Lets
+                callers request intermediate-layer features without rebuilding
+                the backbone (used by the shared-DPT eval adapter).
         """
+        layers = self.export_feat_layers if export_feat_layers is None else list(export_feat_layers)
         outs, aux = self.vit.get_intermediate_layers(
-            x, n=1, export_feat_layers=self.export_feat_layers
+            x, n=1, export_feat_layers=layers
         )
         # outs is a tuple of (output_tokens, camera_tokens)
         tokens, _cls = outs[0]
