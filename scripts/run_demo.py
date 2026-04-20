@@ -210,6 +210,10 @@ def main() -> None:
             "a starting point only once downstream training is added."
         ),
     )
+    ap.add_argument(
+        "--chunk-size", type=int, default=None,
+        help="chunked SSD query-axis chunk size (None = full T×T mask)",
+    )
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -227,6 +231,7 @@ def main() -> None:
         patch_size=args.patch_size,
         depth=args.depth,
         head_hidden=64,
+        chunk_size=args.chunk_size,
     )
     if not args.no_pretrained:
         ckpt = args.pretrained or ensure_dinov2_vits14()

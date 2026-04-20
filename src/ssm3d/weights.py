@@ -90,6 +90,26 @@ def load_dinov2_backbone(
     return counters
 
 
+def load_da3_backbone(
+    vit: nn.Module,
+    da3_model,
+    verbose: bool = True,
+) -> dict[str, int]:
+    """Load DA3's published backbone weights (non-attention) into our ViT.
+
+    DA3 fine-tuned its DINOv2 backbone jointly with the DualDPT head. Loading
+    PatchEmbed, MLPs, norms, and RoPE freqs from the DA3 checkpoint (instead of
+    upstream DINOv2) gives the SSM-3D backbone a head start that is one
+    attention-training-step away from the teacher, which is what Phase B will
+    close (PLAN §9, R6).
+
+    Uses the same .attn.* filter as `load_dinov2_backbone` — the Mamba-3 mixer
+    has no DA3-compatible attention params to load.
+    """
+    backbone_state = da3_model.model.backbone.state_dict()
+    return load_dinov2_backbone(vit, backbone_state, verbose=verbose)
+
+
 def _uniform_delta_bias(num_tokens: int) -> float:
     """Pre-softplus value so softplus(bias) ≈ 1/T.
 

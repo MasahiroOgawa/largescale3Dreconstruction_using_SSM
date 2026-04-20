@@ -374,3 +374,106 @@ Open follow-ups (left for when training is added):
 - Consider a scale match inside `warm_start_mamba3_from_qkv` so day-0
   SSD output magnitudes approximate softmax's (unit-sum rows) — e.g.,
   divide the copied Q/K rows by `sqrt(head_dim)` or rescale V.
+
+## 12. Countermeasure plan — exceed DA3 on ETH3D `terrains` with lower memory
+
+Mirrors §9 of the out-of-repo evaluation plan
+(`~/.claude/plans/evalutate-this-algirhtym-comparing-robust-russell.md`).
+This section is the in-repo landing page for the architectural + training
+changes landed in commits following the first eval (2026-04-20).
+
+### Ranked failure reasons (from first eval)
+
+- **R1** Mamba-3 SSD mixer is random-init at every layer. DA3 published
+  weights include a softmax attention stack trained end-to-end; we discard
+  that signal when we replace attention.
+- **R2** Bidirectional pass was a plain unweighted add (`y = y + y_rev`).
+  At random init the reverse direction is noise on top of the forward — SNR halved.
+- **R3** No post-SSD LayerNorm before `proj`. DA3 DualDPT was trained
+  downstream of row-normalised softmax attention — SSD output scale drifts
+  per layer without LN.
+- **R4** SSD output was not row-renormalised. Softmax attention gets this
+  for free; without it the contract with the MLP block and DualDPT changes.
+- **R5** Shared-DPT smoke test used `cat([f,f], -1)` to bridge 384 → 768.
+  The DualDPT's two channel halves expect DIFFERENT streams — duplication
+  gives the head redundant data and halves its effective capacity.
+- **R6** DA3 backbone weights were never loaded — only upstream DINOv2.
+  DA3's backbone was fine-tuned end-to-end with its DualDPT; ignoring those
+  weights discards free signal.
+- **R7** Full T×T decay mask materialised in fp32 blocks the hoped-for
+  memory win at higher resolutions (e.g. img_size=504, T ≈ 1301).
+- **R8** Per-image median-alignment hides bad depth-variance behaviour.
+  A constant depth with the right median scores okay on abs_rel.
+
+### Phase A — architectural fixes (no training)
+
+Implemented in:
+
+- `src/ssm3d/mamba3/self_attention.py`
+  - **Post-SSD LayerNorm** (R3) added via `post_norm=True`.
+  - **Zero-init per-head reverse gate** (R2): `rev_gate = nn.Parameter(zeros)`.
+    Bidirectional add becomes `y = y + tanh(rev_gate) * y_rev`; at init the
+    layer is forward-only.
+  - **Row-renormalization** (R4): `row_renorm=True` divides weighted-mask rows
+    by `sum(|...|)` before the V multiply, restoring softmax-like contract.
+- `src/ssm3d/bridge.py` — `DimBridge(384→768)` (R5) with
+  identity-over-identity init so at-init it reproduces `cat([f, f], -1)`,
+  and trains in Phase C.
+- `src/ssm3d/weights.py` — `load_da3_backbone(vit, da3_model)` (R6)
+  pulls non-`.attn.*` keys from DA3 into the student.
+
+Tests: `tests/unit/test_self_attention.py`, `test_bridge.py` — 62 green.
+
+### Phase B — feature distillation from DA3 teacher (R1)
+
+- `src/ssm3d/data/eth3d_multi.py` — multi-scene loader over 10 ETH3D
+  non-terrains scenes. `terrains` is hard-rejected (`_assert_no_heldout`).
+- `src/ssm3d/train/distill.py` — teacher frozen DA3-SMALL; student is
+  SSM-3D with Phase A fixes + `load_da3_backbone`. Trains only `.attn.*`
+  params on intermediate layers `(5, 7, 9, 11)`. Loss per layer:
+  `λ_l2 · ||f_s − f_t||² / C + λ_cos · (1 − cos)`. AdamW, bf16 autocast,
+  cosine schedule, 6000 steps.
+- `scripts/train_distill.py` — CLI.
+
+### Phase C — depth fine-tune on ETH3D GT (headline metric)
+
+- `src/ssm3d/train/depth_ft.py` — DA3 DualDPT frozen. Trainables: SSM-3D
+  `.attn.*` + `DimBridge`. Loss = SILog (scale-invariant log-RMSE, Eigen
+  2014) + `λ_edge · edge_aware_smoothness`. 2000 steps.
+- `scripts/train_depth.py` — CLI, loads Phase-B student + bridge.
+
+### Phase D — memory wins at inference (R7)
+
+- `src/ssm3d/mamba3/mask.py` — `build_two_term_mask_rows` and
+  `build_three_term_mask_rows`: compute only rows `[q0, q1)` of the mask,
+  O(chunk · T) per chunk.
+- `src/ssm3d/mamba3/self_attention.py` — `ssd_forward_chunked(...)`
+  drives the chunked path; `Mamba3SelfAttention` gained a `chunk_size`
+  constructor kwarg that flows through `_one_direction`.
+- `src/ssm3d/da3_adapter.py`, `src/ssm3d/model.py` — `chunk_size`
+  plumbed through `Mamba3Attention`, `SSM3DBackbone`, `SSM3DNet`.
+- `scripts/eval_ssm3d_vs_da3.py` — new flags:
+  - `--chunk-size INT` for the memory path.
+  - `--dtype {fp32,bf16,fp16}` for autocast (present but dtype application
+    is a follow-up; flag already accepted so runs don't change CLI).
+  - `--student-ckpt PATH` to load Phase-C state (student + bridge).
+  - `--head {shared_dpt,simple}` for the lightweight-head ablation.
+- `scripts/run_demo.py` — `--chunk-size INT`.
+
+Tests: `tests/unit/test_chunked_ssd.py` — 7 tests pin chunked ≡ full to
+fp32 tolerance across both mask variants, including row-renorm and the
+full-module end-to-end check.
+
+### Acceptance gates (all must hold on held-out `terrains`)
+
+| Gate                                                 | Threshold  |
+|------------------------------------------------------|------------|
+| `abs_rel` (DA3 SSM student depth vs GT, median-aligned) | ≤ 0.073 |
+| `δ<1.25`                                             | ≥ 0.935    |
+| `rmse` (raw, not median-aligned)                     | ≤ 0.29     |
+| `cross_view_nn_agreement`                            | ≥ 0.55     |
+| `effective_rank`                                     | ≥ 150      |
+| `peak_rss_delta_mb` (img_size=504)                   | ≤ 70       |
+
+If any gate fails after the 1-day GPU budget, write the failure and best
+achieved numbers into `outputs/eval/summary.md` rather than papering over it.

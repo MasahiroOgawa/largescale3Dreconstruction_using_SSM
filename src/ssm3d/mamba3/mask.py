@@ -102,6 +102,69 @@ def build_three_term_mask(delta: Tensor, A_log: Tensor, lam: Tensor) -> Tensor:
     return first + second
 
 
+def build_two_term_mask_rows(
+    delta: Tensor, A_log: Tensor, q_start: int, q_end: int
+) -> Tensor:
+    """Return rows [q_start, q_end) of `build_two_term_mask` without materializing
+    the full (T, T) tensor. Peak memory is O((q_end-q_start) * T)."""
+    assert delta.shape == A_log.shape
+    T = delta.shape[-1]
+    device = delta.device
+
+    log_alpha = delta * A_log
+    log_gamma = torch.log(delta.clamp_min(1e-20))
+
+    S = _log_cumsum_along(log_alpha, dim=-1)
+    S_q = S[..., q_start:q_end]
+
+    log_diff = S_q.unsqueeze(-1) - S.unsqueeze(-2)
+    log_L = log_gamma.unsqueeze(-2) + log_diff
+
+    rows = torch.arange(q_start, q_end, device=device)
+    cols = torch.arange(T, device=device)
+    tri = cols[None, :] <= rows[:, None]
+    log_L = log_L.masked_fill(~tri, float("-inf"))
+    return log_L.exp()
+
+
+def build_three_term_mask_rows(
+    delta: Tensor, A_log: Tensor, lam: Tensor, q_start: int, q_end: int
+) -> Tensor:
+    """Return rows [q_start, q_end) of `build_three_term_mask` without materializing
+    the full (T, T) tensor. Peak memory is O((q_end-q_start) * T)."""
+    assert delta.shape == A_log.shape == lam.shape
+    T = delta.shape[-1]
+    device = delta.device
+
+    log_alpha = delta * A_log
+    gamma = lam * delta
+    alpha = log_alpha.exp()
+    beta = (1.0 - lam) * delta * alpha
+
+    S = _log_cumsum_along(log_alpha, dim=-1)
+    S_q = S[..., q_start:q_end]
+
+    rows = torch.arange(q_start, q_end, device=device)
+    cols = torch.arange(T, device=device)
+    tri = cols[None, :] <= rows[:, None]
+    strict_tri = cols[None, :] < rows[:, None]
+
+    log_diff = S_q.unsqueeze(-1) - S.unsqueeze(-2)
+    first_log = log_diff + torch.log(gamma.clamp_min(1e-20)).unsqueeze(-2)
+    first = first_log.masked_fill(~tri, float("-inf")).exp()
+
+    beta_shift = torch.nn.functional.pad(beta[..., 1:], (0, 1), value=0.0)
+    S_shift = torch.nn.functional.pad(S[..., 1:], (0, 1), value=0.0)
+    second_log = (
+        S_q.unsqueeze(-1)
+        - S_shift.unsqueeze(-2)
+        + torch.log(beta_shift.clamp_min(1e-20)).unsqueeze(-2)
+    )
+    second = second_log.masked_fill(~strict_tri, float("-inf")).exp()
+
+    return first + second
+
+
 def build_cross_mask(delta_kv: Tensor, A_log_kv: Tensor, T_q: int, bidirectional: bool = False) -> Tensor:
     """Rectangular column-decay mask for cross-attention variant B.
 

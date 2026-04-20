@@ -29,20 +29,52 @@ def test_forward_is_differentiable():
     assert has_grad
 
 
-def test_bidirectional_equals_forward_plus_reverse():
-    # Build a bidirectional module and an equivalent directional module, confirm
-    # bidi output = directional(x) + reverse(directional(reverse(x)))-equivalent.
-    # Easier path: compare attn.forward with bidirectional=True against manual sum.
+def test_bidirectional_equals_forward_plus_gated_reverse():
+    # Zero-init `rev_gate` → tanh(0)=0 → reverse stream silenced at init.
+    # When we open the gate manually, bidi output should equal
+    # forward + tanh(gate) · reverse, per-head.
     torch.manual_seed(42)
-    bidi = Mamba3SelfAttention(dim=16, num_heads=2, state_dim=4, bidirectional=True, out_proj=False)
-    uni = Mamba3SelfAttention(dim=16, num_heads=2, state_dim=4, bidirectional=False, out_proj=False)
-    uni.load_state_dict(bidi.state_dict())
+    bidi = Mamba3SelfAttention(
+        dim=16, num_heads=2, state_dim=4, bidirectional=True, out_proj=False, post_norm=False
+    )
+    uni = Mamba3SelfAttention(
+        dim=16, num_heads=2, state_dim=4, bidirectional=False, out_proj=False, post_norm=False
+    )
+    # Set gates so tanh maps cleanly to known ratios — different per head to
+    # exercise the broadcast.
+    with torch.no_grad():
+        bidi.rev_gate.copy_(torch.tensor([0.5, 1.2]))
+    # Load matching weights (uni has no rev_gate; filter it).
+    uni_state = {k: v for k, v in bidi.state_dict().items() if k != "rev_gate"}
+    uni.load_state_dict(uni_state, strict=False)
 
     x = torch.randn(1, 10, 16)
     y_bidi = bidi(x)
     y_fwd = uni(x)
     y_rev = uni(x.flip(dims=(1,))).flip(dims=(1,))
-    assert torch.allclose(y_bidi, y_fwd + y_rev, atol=1e-5)
+
+    # y_fwd/y_rev come out post-head-merge as (B, T, H*hd); reshape to (B, T, H, hd)
+    # so we can scale per-head, then flatten again.
+    B, T, D = y_fwd.shape
+    H = 2
+    gate = torch.tanh(bidi.rev_gate)  # (H,)
+    y_rev_scaled = (y_rev.view(B, T, H, D // H) * gate[None, None, :, None]).reshape(B, T, D)
+    assert torch.allclose(y_bidi, y_fwd + y_rev_scaled, atol=1e-5)
+
+
+def test_bidirectional_zero_init_silences_reverse():
+    # At init, rev_gate=0, tanh(0)=0, so bidi == forward-only.
+    torch.manual_seed(0)
+    bidi = Mamba3SelfAttention(
+        dim=16, num_heads=2, state_dim=4, bidirectional=True, out_proj=False, post_norm=False
+    )
+    uni = Mamba3SelfAttention(
+        dim=16, num_heads=2, state_dim=4, bidirectional=False, out_proj=False, post_norm=False
+    )
+    uni_state = {k: v for k, v in bidi.state_dict().items() if k != "rev_gate"}
+    uni.load_state_dict(uni_state, strict=False)
+    x = torch.randn(1, 10, 16)
+    assert torch.allclose(bidi(x), uni(x), atol=1e-6)
 
 
 def test_ssd_forward_matches_recurrence_two_term():

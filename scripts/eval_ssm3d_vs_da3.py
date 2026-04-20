@@ -63,12 +63,24 @@ from ssm3d.eval.visualize import (
     save_repr_metric_bars,
     write_summary_md,
 )
+from ssm3d.bridge import DimBridgeStack
 from ssm3d.model import SSM3DNet
 from ssm3d.weights import load_dinov2_backbone
 
 
-def _build_ssm3d(img_size: int, patch_size: int, depth: int) -> SSM3DNet:
-    net = SSM3DNet(size="small", img_size=img_size, patch_size=patch_size, depth=depth)
+_AMP_DTYPES = {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}
+
+
+def _build_ssm3d(
+    img_size: int,
+    patch_size: int,
+    depth: int,
+    chunk_size: int | None = None,
+) -> SSM3DNet:
+    net = SSM3DNet(
+        size="small", img_size=img_size, patch_size=patch_size,
+        depth=depth, chunk_size=chunk_size,
+    )
     load_dinov2_backbone(net.backbone.vit, ensure_dinov2_vits14())
     net.eval()
     return net
@@ -97,6 +109,14 @@ def main() -> None:
     ap.add_argument("--device", type=str, default="cpu")
     ap.add_argument("--skip-da3", action="store_true",
                     help="skip DA3 entirely (e.g., for plumbing smoke tests)")
+    ap.add_argument("--dtype", choices=list(_AMP_DTYPES.keys()), default="fp32",
+                    help="autocast dtype for SSM-3D forward (bf16/fp16 on CUDA)")
+    ap.add_argument("--chunk-size", type=int, default=None,
+                    help="chunked SSD query-axis chunk size (None = full T×T mask)")
+    ap.add_argument("--student-ckpt", type=Path, default=None,
+                    help="Phase-C checkpoint; loads student + bridge state")
+    ap.add_argument("--head", choices=["shared_dpt", "simple"], default="shared_dpt",
+                    help="shared_dpt = DA3 DualDPT via DimBridge; simple = SSM-3D SimpleDepthHead")
     args = ap.parse_args()
 
     torch.manual_seed(0)
@@ -116,7 +136,18 @@ def main() -> None:
     cams = load_eth3d_cams(scene_dir, image_size=args.img_size, image_names=image_names)
 
     print("[2/5] building SSM-3D (DINOv2 loaded, no warm-start) ...")
-    ssm = _build_ssm3d(args.img_size, args.patch_size, args.depth).to(args.device)
+    ssm = _build_ssm3d(
+        args.img_size, args.patch_size, args.depth, chunk_size=args.chunk_size,
+    ).to(args.device)
+    bridge: DimBridgeStack | None = None
+    if args.student_ckpt is not None:
+        print(f"  loading student ckpt from {args.student_ckpt}")
+        state = torch.load(args.student_ckpt, map_location="cpu", weights_only=False)
+        ssm.load_state_dict(state["student"])
+        if state.get("bridge") is not None:
+            bridge = DimBridgeStack(num_layers=len(SHARED_DPT_LAYERS), in_dim=384)
+            bridge.load_state_dict(state["bridge"])
+            bridge.to(args.device).eval()
     ssm_feats_all, ssm_grid = _ssm3d_features(ssm, sample.images.to(args.device))
 
     da3 = None
@@ -182,10 +213,19 @@ def main() -> None:
             da3_depth_preds.append(torch.full_like(gt, float("nan")))
             per_image_depth.append({})
 
-        if shared_dpt is not None:
+        if args.head == "simple":
+            try:
+                ssm_dep = ssm(rgb.unsqueeze(0).unsqueeze(0).to(args.device))["depth"][0, 0, 0]
+            except Exception:
+                print(f"  !! simple-head failed for image {i}:")
+                traceback.print_exc()
+                ssm_dep = None
+            ssm_depth_preds.append(ssm_dep)
+        elif shared_dpt is not None:
             try:
                 ssm_dep = shared_dpt_depth(
-                    ssm, shared_dpt, rgb.unsqueeze(0).to(args.device)
+                    ssm, shared_dpt, rgb.unsqueeze(0).to(args.device),
+                    bridge=bridge,
                 )[0]
             except Exception:
                 print(f"  !! shared-DPT failed for image {i}:")
