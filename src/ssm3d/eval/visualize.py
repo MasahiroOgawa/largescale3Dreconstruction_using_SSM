@@ -212,6 +212,12 @@ def save_depth_metric_bars(
     When `per_image_ssm` is provided, renders grouped DA3-vs-SSM-3D bars.
     """
     keys = ["abs_rel", "delta<1.25", "rmse", "log10"]
+    titles = {
+        "abs_rel": r"abs_rel = mean(|d̂−d|/d)   ↓ lower is better",
+        "delta<1.25": r"δ<1.25 = frac{max(d̂/d, d/d̂) < 1.25}   ↑ higher is better",
+        "rmse": r"rmse = √mean(d̂−d)²  [m]   ↓ lower is better",
+        "log10": r"log10 = mean|log₁₀d̂ − log₁₀d|   ↓ lower is better",
+    }
     n = len(per_image_da3)
     x = np.arange(n)
     fig, axes = plt.subplots(1, len(keys), figsize=(4 * len(keys), 3.5), sharex=True)
@@ -219,7 +225,7 @@ def save_depth_metric_bars(
         for ax, key in zip(axes, keys):
             vals = [m.get(key, float("nan")) for m in per_image_da3]
             ax.bar(x, vals, color="#4C72B0")
-            ax.set_title(key, fontsize=10)
+            ax.set_title(titles[key], fontsize=9)
             ax.set_xlabel("image idx")
         plt.suptitle("DA3 depth metrics per image (ETH3D terrains)", fontsize=11)
     else:
@@ -229,10 +235,10 @@ def save_depth_metric_bars(
             ssm_vals = [m.get(key, float("nan")) for m in per_image_ssm]
             ax.bar(x - width / 2, da3_vals, width, label="DA3", color="#4C72B0")
             ax.bar(x + width / 2, ssm_vals, width, label="SSM-3D", color="#DD8452")
-            ax.set_title(key, fontsize=10)
+            ax.set_title(titles[key], fontsize=9)
             ax.set_xlabel("image idx")
         axes[0].legend(loc="upper right", fontsize=9)
-        plt.suptitle("Depth metrics: DA3 vs SSM-3D (ETH3D terrains)", fontsize=11)
+        plt.suptitle("Depth metrics per image: DA3 vs SSM-3D (ETH3D terrains, median-aligned)", fontsize=11)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=120, bbox_inches="tight")
@@ -247,6 +253,11 @@ def save_repr_metric_bars(
 ) -> Path:
     """Grouped bar chart comparing DA3 vs SSM-3D representation metrics."""
     keys = ["feat_cos_mean", "effective_rank", "cross_view_nn_agreement"]
+    titles = {
+        "feat_cos_mean": "feat_cos_mean  (mean pairwise token cosine, ↓ = less collapse)",
+        "effective_rank": "effective_rank  (exp(entropy of SVD spectrum), ↑ richer)",
+        "cross_view_nn_agreement": "cross_view_nn_agreement  (GT-warped NN match frac, ↑)",
+    }
     n = len(per_image_da3)
     x = np.arange(n)
     width = 0.4
@@ -256,10 +267,10 @@ def save_repr_metric_bars(
         ssm_vals = [m.get(key, float("nan")) for m in per_image_ssm]
         ax.bar(x - width / 2, da3_vals, width, label="DA3", color="#4C72B0")
         ax.bar(x + width / 2, ssm_vals, width, label="SSM-3D", color="#DD8452")
-        ax.set_title(key, fontsize=10)
+        ax.set_title(titles[key], fontsize=9)
         ax.set_xlabel("image idx")
     axes[0].legend(loc="upper right", fontsize=9)
-    plt.suptitle("Representation metrics: DA3 vs SSM-3D (ETH3D terrains)", fontsize=11)
+    plt.suptitle("Representation metrics per image: DA3 vs SSM-3D (ETH3D terrains)", fontsize=11)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=120, bbox_inches="tight")
@@ -298,12 +309,12 @@ def save_memory_bars(
         for i, v in enumerate(vals):
             ax.text(i, v, f"{v:.1f}", ha="center", va="bottom", fontsize=9)
 
-    _bar(axes[0], params_m, "Parameters", "M params")
-    _bar(axes[1], rss_mb, "Peak RSS delta (inference)", "MB")
+    _bar(axes[0], params_m, "Parameters (backbone only)", "M params")
+    _bar(axes[1], rss_mb, "Peak host RSS delta (one fwd)", "MB")
     if use_cuda:
-        _bar(axes[2], cuda_mb, "Peak CUDA memory", "MB")
+        _bar(axes[2], cuda_mb, "Peak CUDA memory (one fwd)", "MB")
 
-    plt.suptitle("Memory usage: DA3 vs SSM-3D", fontsize=11)
+    plt.suptitle("Memory footprint: DA3 vs SSM-3D (backbone-only params; peak deltas per inference call)", fontsize=11)
     plt.tight_layout(rect=[0, 0, 1, 0.94])
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=120, bbox_inches="tight")
