@@ -1,14 +1,14 @@
 """One-command end-to-end demo.
 
-Produces four PNGs under `outputs/`:
+Produces four PNGs under `outputs/demo/`:
 
-  1. outputs/feature_pca_view{i}.png       - PCA of backbone features
-  2. outputs/depth_view{i}.png              - predicted depth map
-  3. outputs/cross_attention.png            - cross-view attention heatmap
-  4. outputs/seg_overlay_coco{i}.png        - instance-seg overlay on COCO-mini
+  1. outputs/demo/feature_pca_view{i}.png       - PCA of backbone features
+  2. outputs/demo/depth_view{i}.png              - predicted depth map
+  3. outputs/demo/cross_attention.png            - cross-view attention heatmap
+  4. outputs/demo/seg_overlay_coco{i}.png        - instance-seg overlay on COCO-mini
 
 Usage:
-    uv run python scripts/run_demo.py --data-root data --out-root outputs
+    uv run python scripts/run_demo.py --data-root data --out-root outputs/demo
 """
 
 from __future__ import annotations
@@ -175,7 +175,7 @@ def run_coco_seg_visual(
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-root", type=Path, default=Path("data"))
-    ap.add_argument("--out-root", type=Path, default=Path("outputs"))
+    ap.add_argument("--out-root", type=Path, default=Path("outputs/demo"))
     ap.add_argument("--img-size", type=int, default=224)
     ap.add_argument(
         "--patch-size",
