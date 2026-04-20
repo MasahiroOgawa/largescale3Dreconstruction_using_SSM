@@ -10,7 +10,7 @@ gradients flow through the swapped attention).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Iterable, Literal, Optional
 
 import torch
 from torch.optim import AdamW
@@ -68,6 +68,38 @@ def _no_gt_loss(
     return smoothness * smooth_w + anti_collapse_w * collapse_hinge + 0.1 * consistency
 
 
+def _select_trainable(
+    net: torch.nn.Module,
+    trainable: Literal["all", "head"] | Iterable[torch.nn.Parameter],
+) -> list[torch.nn.Parameter]:
+    """Return the parameters to optimise, and freeze everything else.
+
+    - "all": everything (current default behaviour).
+    - "head": only `net.depth_head` parameters; the backbone is frozen. This
+      matches PLAN §9a: the anti-collapse hinge destroys the backbone when
+      backprop reaches it, so the demo should only train the depth head.
+    - Iterable[Parameter]: the explicit set of trainables; everything else is frozen.
+    """
+    if trainable == "all":
+        for p in net.parameters():
+            p.requires_grad_(True)
+        return [p for p in net.parameters() if p.requires_grad]
+    if trainable == "head":
+        head = getattr(net, "depth_head", None)
+        if head is None:
+            raise AttributeError("net has no `depth_head` attribute for trainable='head'")
+        for p in net.parameters():
+            p.requires_grad_(False)
+        for p in head.parameters():
+            p.requires_grad_(True)
+        return [p for p in head.parameters() if p.requires_grad]
+    params = list(trainable)
+    ids = {id(p) for p in params}
+    for p in net.parameters():
+        p.requires_grad_(id(p) in ids)
+    return params
+
+
 def overfit_run(
     net: torch.nn.Module,
     images: torch.Tensor,  # (B, S, 3, H, W)
@@ -75,6 +107,7 @@ def overfit_run(
     iters: int = 50,
     lr: float = 1e-3,
     device: str = "cpu",
+    trainable: Literal["all", "head"] | Iterable[torch.nn.Parameter] = "all",
 ) -> OverfitResult:
     net.to(device)
     net.train()
@@ -82,7 +115,8 @@ def overfit_run(
     if gt_depth is not None:
         gt_depth = gt_depth.to(device)
 
-    opt = AdamW(net.parameters(), lr=lr)
+    params = _select_trainable(net, trainable)
+    opt = AdamW(params, lr=lr)
     losses: list[float] = []
     for it in range(iters):
         out = net(images)

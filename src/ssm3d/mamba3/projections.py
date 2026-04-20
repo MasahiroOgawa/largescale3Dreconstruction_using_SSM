@@ -80,6 +80,14 @@ class AttentionProjections(nn.Module):
         self.bc_norm_b = BCNorm(num_heads, state_dim)
         self.bc_norm_c = BCNorm(num_heads, state_dim)
 
+        # Per-head bias for Δ, A, λ (scalar-per-head streams). Defaults to zero
+        # so existing behaviour is unchanged. `warm_start_mamba3_from_qkv` sets
+        # these so that at day 0 the SSD mask is approximately uniform (softmax-
+        # like) instead of steeply decaying from random projection outputs.
+        self.delta_bias = nn.Parameter(torch.zeros(num_heads))
+        self.A_bias = nn.Parameter(torch.zeros(num_heads))
+        self.lam_bias = nn.Parameter(torch.zeros(num_heads))
+
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Args:
@@ -111,7 +119,7 @@ class AttentionProjections(nn.Module):
         B_t = self.bc_norm_b(B_raw)
         C_t = self.bc_norm_c(C_raw)
         V_t = F.silu(V_raw)
-        delta = F.softplus(delta_raw)
-        A_log = -F.softplus(A_raw)
-        lam = torch.sigmoid(lam_raw)
+        delta = F.softplus(delta_raw + self.delta_bias[None, :, None])
+        A_log = -F.softplus(A_raw + self.A_bias[None, :, None])
+        lam = torch.sigmoid(lam_raw + self.lam_bias[None, :, None])
         return B_t, C_t, V_t, delta, A_log, lam

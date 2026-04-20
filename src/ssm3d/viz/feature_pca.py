@@ -23,8 +23,9 @@ def feature_pca_image(
     Args:
         feat: (H, W, C) or (N, C) where N = H*W
         spatial_hw: (H, W) when feat is flat (N, C); ignored otherwise
-        upsample_to: optional (H_out, W_out) to resize to after PCA (nearest
-            neighbor). Useful to save a visible PNG from a tiny patch grid.
+        upsample_to: optional (H_out, W_out) to resize to after PCA (bilinear).
+            Useful to save a visible PNG from a tiny patch grid; PCA output is
+            continuous so bilinear avoids the block-quantization of nearest.
 
     Returns:
         (H', W', 3) uint8 array suitable for Image.fromarray.
@@ -48,7 +49,7 @@ def feature_pca_image(
 
     if upsample_to is not None:
         H_out, W_out = upsample_to
-        img = np.asarray(Image.fromarray(img).resize((W_out, H_out), Image.NEAREST))
+        img = np.asarray(Image.fromarray(img).resize((W_out, H_out), Image.BILINEAR))
     return img
 
 

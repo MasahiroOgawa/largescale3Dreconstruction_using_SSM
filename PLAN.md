@@ -314,3 +314,63 @@ is a one-line fix in `src/ssm3d/viz/feature_pca.py`.
   activation map.
 - `seg_overlay_coco*.png` with backbone frozen and 500+ iters head
   training shows heat concentrated on annotated instances.
+
+## 11. Post-§9 results — what actually worked
+
+Applying §9a–§9f produced usable outputs. The key surprise is that **§9d
+(QKV→BCV warm-start) makes things worse, not better**, and is now off by
+default.
+
+Measurements on the same ETH3D terrains image (depth=12, patch_size=14):
+
+| configuration                                                 | feat_cos_mean |
+|---------------------------------------------------------------|---------------|
+| random init everywhere                                        | 0.635         |
+| DINOv2 non-attention load + random Mamba-3 attention          | **0.139**     |
+| DINOv2 load + QKV→BCV warm-start (default decay init)         | 0.973         |
+| DINOv2 load + QKV→BCV warm-start (uniform-decay Δ bias ≈ 1/T) | 0.999         |
+
+Interpretation: SSD attention is not softmax attention. Copying
+DINOv2's Q/K/V projections into Mamba-3's C/B/V projections gets the
+*direction* of the projections right, but the SSD output formula
+`(L ⊙ CBᵀ) V` lacks softmax's row normalisation and instead scales by
+the mask's decay parameters. With default random Δ/A/λ the mask decays
+steeply (α ≈ 0.62), so attention becomes very local and over-smooths
+through 12 blocks. With a uniform Δ ≈ 1/T bias, the mask becomes
+approximately uniform, which is the classic over-smoothing regime that
+converges all tokens to their mean. Random-init Mamba attention wins in
+practice because its output is small-magnitude noise that the residual
+path ignores, so DINOv2's discriminative MLP structure propagates
+unharmed.
+
+Actions taken in code:
+
+- `scripts/run_demo.py` defaults to `load_dinov2_backbone` only. Added
+  a `--warm-start` flag that enables `warm_start_mamba3_from_qkv` for
+  when downstream attention training is wired up.
+- `AttentionProjections` gained per-head biases `delta_bias`, `A_bias`,
+  `lam_bias` (default zero — existing behaviour preserved). The
+  warm-start path sets `delta_bias = log(exp(1/T) − 1)` so *if* anyone
+  enables warm-start, the day-0 mask is uniform rather than steep; this
+  is still empirically worse than no warm-start, but it's the right
+  target for a pre-training init.
+- Depth-head output is saved as `depth_head_activation_view{i}.png` to
+  reflect that it is not metric depth (no GT, no trained decoder).
+- Cross-attention viz now uses direct backbone-feature cosine similarity
+  between view 0 and view 1, dropping the random-init Mamba-3 cross
+  module whose decay mask dominated the heat-map.
+- Feature-PCA upsamples bilinearly (§9f) — noticeably smoother at
+  224×224 than the previous nearest-neighbour path.
+
+Final acceptance (defaults): feat_cos_mean 0.139, depth_std 0.08,
+cross_attn_row_max 0.0083 — all three pass §10 targets, no warnings,
+seg-head loss 1.16 → 0.08.
+
+Open follow-ups (left for when training is added):
+
+- Re-evaluate warm-start after the first real training run: with gradient
+  signal the structurally-similar-to-DINOv2 init may converge faster
+  than random even though it starts worse.
+- Consider a scale match inside `warm_start_mamba3_from_qkv` so day-0
+  SSD output magnitudes approximate softmax's (unit-sum rows) — e.g.,
+  divide the copied Q/K rows by `sqrt(head_dim)` or rescale V.
