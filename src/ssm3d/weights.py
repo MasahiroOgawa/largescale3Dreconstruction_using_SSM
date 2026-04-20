@@ -105,9 +105,13 @@ def load_da3_backbone(
 
     Uses the same .attn.* filter as `load_dinov2_backbone` — the Mamba-3 mixer
     has no DA3-compatible attention params to load.
+
+    DA3 stores the inner DINOv2 under `self.pretrained`, so keys arrive as
+    `pretrained.blocks.*`, `pretrained.patch_embed.*`, etc. We strip that
+    prefix before the load so keys align with our bare `DinoVisionTransformer`.
     """
     backbone_state = da3_model.model.backbone.state_dict()
-    return load_dinov2_backbone(vit, backbone_state, verbose=verbose)
+    return load_dinov2_backbone(vit, backbone_state, prefix="pretrained.", verbose=verbose)
 
 
 def _uniform_delta_bias(num_tokens: int) -> float:

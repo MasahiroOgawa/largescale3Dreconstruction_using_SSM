@@ -9,6 +9,7 @@ uv.lock
 
 /data/
 /outputs/
+/logs/
 *.pt
 *.pth
 *.safetensors

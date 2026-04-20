@@ -84,8 +84,13 @@ def _split_param_groups(
 def _teacher_features(
     da3_model, images: Tensor, layers: Iterable[int]
 ) -> list[Tensor]:
-    """Run DA3 backbone, return aux features at `layers` as [B*S, T, C]."""
-    _, aux = da3_model.model.backbone.get_intermediate_layers(
+    """Run DA3 backbone, return aux features at `layers` as [B*S, T, C].
+
+    The DA3 wrapper `DinoV2` forwards to `self.pretrained.get_intermediate_layers`
+    with its baked-in `out_layers=[5,7,9,11]`; we need to call the inner DINOv2
+    directly to pass our own `export_feat_layers` list.
+    """
+    _, aux = da3_model.model.backbone.pretrained.get_intermediate_layers(
         images, n=1, export_feat_layers=list(layers), ref_view_strategy="first"
     )
     # aux is a list of tensors, each shape (B, S, T, C). Merge B*S axes.

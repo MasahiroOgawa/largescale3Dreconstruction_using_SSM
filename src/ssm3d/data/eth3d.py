@@ -63,17 +63,26 @@ def download_eth3d_terrains(
     Returns the extracted scene directory (containing the `images/` tree).
     """
     data_root = Path(data_root)
-    budget = (3 if download_depth else 2) * 2**30
-    require_free(data_root, budget)
-
-    archive_url = f"{BASE}/{scene}_dslr_undistorted.7z"
-    archive_path = data_root / "eth3d" / f"{scene}_dslr_undistorted.7z"
-    archive_path = download(archive_url, archive_path, min_bytes=10_000_000)
-
     extract_root = data_root / "eth3d" / scene
-    _extract_7z(archive_path, extract_root)
+    rgb_marker = extract_root / f".extracted_{scene}_dslr_undistorted"
+    depth_marker = extract_root / f".extracted_{scene}_dslr_depth"
 
-    if download_depth:
+    rgb_done = rgb_marker.exists()
+    depth_done = depth_marker.exists() if download_depth else True
+    if rgb_done and depth_done:
+        return extract_root
+
+    budget_gib = (2 if not rgb_done else 0) + (1 if download_depth and not depth_done else 0)
+    if budget_gib:
+        require_free(data_root, budget_gib * 2**30)
+
+    if not rgb_done:
+        archive_url = f"{BASE}/{scene}_dslr_undistorted.7z"
+        archive_path = data_root / "eth3d" / f"{scene}_dslr_undistorted.7z"
+        archive_path = download(archive_url, archive_path, min_bytes=10_000_000)
+        _extract_7z(archive_path, extract_root)
+
+    if download_depth and not depth_done:
         depth_url = f"{BASE}/{scene}_dslr_depth.7z"
         depth_archive = data_root / "eth3d" / f"{scene}_dslr_depth.7z"
         depth_archive = download(depth_url, depth_archive, min_bytes=100_000)

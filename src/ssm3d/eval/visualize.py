@@ -203,20 +203,36 @@ def save_feature_comparison(
 
 
 def save_depth_metric_bars(
-    per_image: list[dict[str, float]],
+    per_image_da3: list[dict[str, float]],
     path: Path,
+    per_image_ssm: list[dict[str, float]] | None = None,
 ) -> Path:
-    """Per-image bar chart of DA3 depth metrics (abs_rel, δ<1.25, rmse, log10)."""
+    """Per-image bar chart of depth metrics (abs_rel, δ<1.25, rmse, log10).
+
+    When `per_image_ssm` is provided, renders grouped DA3-vs-SSM-3D bars.
+    """
     keys = ["abs_rel", "delta<1.25", "rmse", "log10"]
-    n = len(per_image)
+    n = len(per_image_da3)
     x = np.arange(n)
     fig, axes = plt.subplots(1, len(keys), figsize=(4 * len(keys), 3.5), sharex=True)
-    for ax, key in zip(axes, keys):
-        vals = [m.get(key, float("nan")) for m in per_image]
-        ax.bar(x, vals, color="#4C72B0")
-        ax.set_title(key, fontsize=10)
-        ax.set_xlabel("image idx")
-    plt.suptitle("DA3 depth metrics per image (ETH3D terrains)", fontsize=11)
+    if per_image_ssm is None:
+        for ax, key in zip(axes, keys):
+            vals = [m.get(key, float("nan")) for m in per_image_da3]
+            ax.bar(x, vals, color="#4C72B0")
+            ax.set_title(key, fontsize=10)
+            ax.set_xlabel("image idx")
+        plt.suptitle("DA3 depth metrics per image (ETH3D terrains)", fontsize=11)
+    else:
+        width = 0.4
+        for ax, key in zip(axes, keys):
+            da3_vals = [m.get(key, float("nan")) for m in per_image_da3]
+            ssm_vals = [m.get(key, float("nan")) for m in per_image_ssm]
+            ax.bar(x - width / 2, da3_vals, width, label="DA3", color="#4C72B0")
+            ax.bar(x + width / 2, ssm_vals, width, label="SSM-3D", color="#DD8452")
+            ax.set_title(key, fontsize=10)
+            ax.set_xlabel("image idx")
+        axes[0].legend(loc="upper right", fontsize=9)
+        plt.suptitle("Depth metrics: DA3 vs SSM-3D (ETH3D terrains)", fontsize=11)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=120, bbox_inches="tight")
@@ -302,6 +318,25 @@ def _mean_std(values: Sequence[float]) -> tuple[float, float]:
     return float(arr.mean()), float(arr.std())
 
 
+_DEPTH_GATES: dict[str, tuple[str, float]] = {
+    "abs_rel": ("le", 0.073),
+    "delta<1.25": ("ge", 0.935),
+    "rmse": ("le", 0.29),
+    "log10": ("le", 0.031),
+}
+
+_REPR_GATES: dict[str, tuple[str, float]] = {
+    "cross_view_nn_agreement": ("ge", 0.55),
+    "effective_rank": ("ge", 150.0),
+}
+
+
+def _gate_ok(mean: float, direction: str, threshold: float) -> bool:
+    if not np.isfinite(mean):
+        return False
+    return mean <= threshold if direction == "le" else mean >= threshold
+
+
 def write_summary_md(
     path: Path,
     da3_depth: list[dict[str, float]],
@@ -310,20 +345,36 @@ def write_summary_md(
     note: str = "",
     memory_da3: dict[str, float] | None = None,
     memory_ssm: dict[str, float] | None = None,
+    ssm_depth: list[dict[str, float]] | None = None,
 ) -> Path:
     lines = [
         "# SSM-3D vs. Depth-Anything-3 on ETH3D `terrains`",
         "",
         "Per-image means ± std across the evaluated views.",
         "",
-        "## Depth (DA3 only — SSM-3D has no trained depth head)",
-        "",
-        "| Metric | Mean | Std |",
-        "|---|---|---|",
     ]
-    for key in ["abs_rel", "delta<1.25", "delta<1.25^2", "rmse", "log10"]:
-        m, s = _mean_std([d.get(key, float("nan")) for d in da3_depth])
-        lines.append(f"| {key} | {m:.4f} | {s:.4f} |")
+    depth_keys = ["abs_rel", "delta<1.25", "delta<1.25^2", "rmse", "log10"]
+    if ssm_depth is not None and any(len(m) > 0 for m in ssm_depth):
+        lines += [
+            "## Depth (median-aligned; head-to-head)",
+            "",
+            "| Metric | DA3 mean ± std | SSM-3D mean ± std |",
+            "|---|---|---|",
+        ]
+        for key in depth_keys:
+            d_m, d_s = _mean_std([d.get(key, float("nan")) for d in da3_depth])
+            s_m, s_s = _mean_std([d.get(key, float("nan")) for d in ssm_depth])
+            lines.append(f"| {key} | {d_m:.4f} ± {d_s:.4f} | {s_m:.4f} ± {s_s:.4f} |")
+    else:
+        lines += [
+            "## Depth (DA3 only)",
+            "",
+            "| Metric | Mean | Std |",
+            "|---|---|---|",
+        ]
+        for key in depth_keys:
+            m, s = _mean_std([d.get(key, float("nan")) for d in da3_depth])
+            lines.append(f"| {key} | {m:.4f} | {s:.4f} |")
 
     lines += [
         "",
@@ -336,6 +387,25 @@ def write_summary_md(
         d_m, d_s = _mean_std([d.get(key, float("nan")) for d in da3_repr])
         s_m, s_s = _mean_std([d.get(key, float("nan")) for d in ssm_repr])
         lines.append(f"| {key} | {d_m:.4f} ± {d_s:.4f} | {s_m:.4f} ± {s_s:.4f} |")
+
+    if ssm_depth is not None and any(len(m) > 0 for m in ssm_depth):
+        lines += [
+            "",
+            "## Acceptance gates (PLAN §9)",
+            "",
+            "| Gate | Target | SSM-3D mean | Pass |",
+            "|---|---|---|---|",
+        ]
+        for key, (direction, threshold) in _DEPTH_GATES.items():
+            mean_val = _mean_std([d.get(key, float("nan")) for d in ssm_depth])[0]
+            op = "≤" if direction == "le" else "≥"
+            ok = "✅" if _gate_ok(mean_val, direction, threshold) else "❌"
+            lines.append(f"| {key} | {op} {threshold:.4f} | {mean_val:.4f} | {ok} |")
+        for key, (direction, threshold) in _REPR_GATES.items():
+            mean_val = _mean_std([d.get(key, float("nan")) for d in ssm_repr])[0]
+            op = "≤" if direction == "le" else "≥"
+            ok = "✅" if _gate_ok(mean_val, direction, threshold) else "❌"
+            lines.append(f"| {key} | {op} {threshold:.4f} | {mean_val:.4f} | {ok} |")
 
     if memory_da3 is not None and memory_ssm is not None:
         lines += [

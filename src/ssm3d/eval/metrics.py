@@ -223,6 +223,16 @@ def cross_view_nn_agreement(
     img_h_b, img_w_b = image_hw_b
     img_h_a, img_w_a = depth_a.shape
 
+    # All inputs normalised to CPU so cam intrinsics from numpy don't collide
+    # with CUDA features — this metric is cheap and not in the hot path.
+    feats_a = feats_a.detach().cpu()
+    feats_b = feats_b.detach().cpu()
+    depth_a = depth_a.detach().cpu()
+    intrinsic_a = intrinsic_a.detach().cpu().float()
+    intrinsic_b = intrinsic_b.detach().cpu().float()
+    extrinsic_a_w2c = extrinsic_a_w2c.detach().cpu().float()
+    extrinsic_b_w2c = extrinsic_b_w2c.detach().cpu().float()
+
     # 1. Back-project A to cam-A
     # Downsample depth to grid resolution (use nearest to preserve validity)
     depth_grid = torch.nn.functional.interpolate(

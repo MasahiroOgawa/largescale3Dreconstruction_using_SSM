@@ -176,6 +176,7 @@ def main() -> None:
             traceback.print_exc()
 
     per_image_depth: list[dict[str, float]] = []
+    per_image_depth_ssm: list[dict[str, float]] = []
     per_image_repr_da3: list[dict[str, float]] = []
     per_image_repr_ssm: list[dict[str, float]] = []
 
@@ -234,6 +235,15 @@ def main() -> None:
             ssm_depth_preds.append(ssm_dep)
         else:
             ssm_depth_preds.append(None)
+
+        ssm_dep_for_metric = ssm_depth_preds[-1]
+        if ssm_dep_for_metric is not None and torch.isfinite(ssm_dep_for_metric).any():
+            dm_ssm = depth_metrics(
+                ssm_dep_for_metric.detach().cpu(), gt, valid, align=True
+            )
+            per_image_depth_ssm.append(dm_ssm.as_dict())
+        else:
+            per_image_depth_ssm.append({})
 
         # --- Representation metrics (per image; cross-view is added after loop) ---
         ssm_feats_i = ssm_feats_all[i]
@@ -336,7 +346,11 @@ def main() -> None:
             )
 
     if da3 is not None:
-        save_depth_metric_bars(per_image_depth, args.out_root / "metric_bars_depth.png")
+        save_depth_metric_bars(
+            per_image_depth,
+            args.out_root / "metric_bars_depth.png",
+            per_image_ssm=per_image_depth_ssm if any(m for m in per_image_depth_ssm) else None,
+        )
     save_repr_metric_bars(
         per_image_repr_da3, per_image_repr_ssm, args.out_root / "metric_bars_repr.png"
     )
@@ -358,24 +372,35 @@ def main() -> None:
         "(typically 224). Numbers are comparable as \"what the deployed "
         "inference path costs,\" not as an isolated activation-memory benchmark.\n\n"
     )
+    ssm_has_trained_depth = any(m for m in per_image_depth_ssm)
+    if ssm_has_trained_depth:
+        depth_note = (
+            "SSM-3D depth comes from the Phase-B-distilled backbone + Phase-C-"
+            "fine-tuned DimBridge feeding DA3's frozen DualDPT. Predictions are "
+            "scale-ambiguous, so both DA3 and SSM-3D are median-aligned to GT "
+            "before scoring — standard MiDaS/DA3 eval convention."
+        )
+    else:
+        depth_note = (
+            "Depth numbers in this table are DA3 vs GT. SSM-3D's depth panel in "
+            "`depth_grid_*.png` / `error_*.png` comes from a **shared-DPT smoke "
+            "test**: DA3's pretrained DualDPT is bolted onto SSM-3D's 4 "
+            "intermediate layers (384-dim features duplicated to 768-dim to match "
+            "DA3's cat_token format). The SSM-3D side of those figures is therefore "
+            "qualitative, not a trained depth head."
+        )
     note = (
         memory_note +
         "DA3-SMALL features are 768-dim (`cat_token=True`); SSM-3D features are "
-        "384-dim. Representation metrics are dim-invariant and compared as scores. "
-        "Depth numbers in this table are DA3 vs GT. SSM-3D's depth panel in "
-        "`depth_grid_*.png` / `error_*.png` comes from a **shared-DPT smoke test**: "
-        "DA3's pretrained DualDPT is bolted onto SSM-3D's 4 intermediate layers "
-        "(384-dim features duplicated to 768-dim to match DA3's cat_token format). "
-        "The SSM-3D side of those figures is therefore qualitative, not a trained "
-        "depth head.\n\n"
+        "384-dim. Representation metrics are dim-invariant and compared as scores.\n\n"
+        + depth_note + "\n\n"
         "Interpretation: **lower** `feat_cos_mean` is better (less token collapse); "
         "**higher** `effective_rank` and `cross_view_nn_agreement` are better. "
         "DA3's high `feat_cos_mean` is a known property of `cat_token=True`: each "
         "patch token is concatenated with a global pooled token, which pushes "
         "pairwise cosines up without hurting downstream depth accuracy. "
         "`cross_view_nn_agreement` (GT-warped across image i <-> (i+1) mod N) is "
-        "the cleanest head-to-head feature-quality signal here: the attention swap "
-        "in SSM-3D was never trained, so it loses DA3's 3D-consistent matching."
+        "the cleanest head-to-head feature-quality signal here."
     )
     if args.skip_da3:
         note = "Ran with --skip-da3: DA3 rows are empty. " + note
@@ -387,6 +412,7 @@ def main() -> None:
         note=note,
         memory_da3=mem_da3.as_dict() if da3 is not None else None,
         memory_ssm=mem_ssm.as_dict() if da3 is not None else None,
+        ssm_depth=per_image_depth_ssm if ssm_has_trained_depth else None,
     )
 
     print("\ndone. Outputs:")
