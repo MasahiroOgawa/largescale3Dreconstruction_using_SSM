@@ -25,6 +25,10 @@ dependencies = [
     "safetensors",
     "huggingface-hub",
     "imageio",
+    "plyfile>=1.1.3",
+    "moviepy>=2.2.1",
+    "evo>=1.36.3",
+    "pycolmap>=4.0.3",
 ]
 
 [project.optional-dependencies]

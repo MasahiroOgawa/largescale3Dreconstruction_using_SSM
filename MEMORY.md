@@ -1,3 +1,4 @@
 - [No pip](memory/feedback_no_pip.md) — all Python env/deps via uv; pip, pip install -e, uv pip install all off-limits
 - [DA3 submodule is read-only](memory/feedback_da3_readonly.md) — treat third_party/depth-anything-3 as upstream; adapt via patch/adapter in src/ssm3d
 - [Memory lives in repo](memory/feedback_memory_location.md) — never write to ~/.claude/; repo-local memory/ only
+- [Diagrams first for cross-file plans](memory/feedback_diagrams_first.md) — add ASCII flowcharts (baseline/modified/diff) to the plan before file lists

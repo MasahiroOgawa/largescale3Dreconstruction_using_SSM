@@ -7,8 +7,8 @@ uv.lock
 .pytest_cache/
 .mypy_cache/
 
-data/
-outputs/
+/data/
+/outputs/
 *.pt
 *.pth
 *.safetensors
