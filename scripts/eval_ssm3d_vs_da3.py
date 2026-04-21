@@ -71,6 +71,36 @@ from ssm3d.weights import load_dinov2_backbone
 _AMP_DTYPES = {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}
 
 
+def _maybe_resize_pos_embed(state: dict, model: torch.nn.Module) -> None:
+    """Bicubic-resize `backbone.vit.pos_embed` in `state` to match `model`.
+
+    Lets us evaluate a 224-trained checkpoint at img_size=504 (CM2). CLS token
+    passes through; patch tokens are resampled on the 2-D patch grid.
+    """
+    import math
+    key = "backbone.vit.pos_embed"
+    if key not in state:
+        return
+    src = state[key]
+    dst = model.state_dict().get(key)
+    if dst is None or src.shape == dst.shape:
+        return
+    cls_src, patch_src = src[:, :1], src[:, 1:]
+    n_src = patch_src.shape[1]
+    n_dst = dst.shape[1] - 1
+    g_src = int(math.sqrt(n_src))
+    g_dst = int(math.sqrt(n_dst))
+    assert g_src * g_src == n_src and g_dst * g_dst == n_dst, "non-square grid"
+    dim = patch_src.shape[-1]
+    grid = patch_src.reshape(1, g_src, g_src, dim).permute(0, 3, 1, 2)
+    grid = torch.nn.functional.interpolate(
+        grid.float(), size=(g_dst, g_dst), mode="bicubic", align_corners=False
+    ).to(patch_src.dtype)
+    patch_dst = grid.permute(0, 2, 3, 1).reshape(1, g_dst * g_dst, dim)
+    state[key] = torch.cat([cls_src, patch_dst], dim=1)
+    print(f"  pos_embed resized: {src.shape} → {state[key].shape}")
+
+
 def _build_ssm3d(
     img_size: int,
     patch_size: int,
@@ -143,6 +173,7 @@ def main() -> None:
     if args.student_ckpt is not None:
         print(f"  loading student ckpt from {args.student_ckpt}")
         state = torch.load(args.student_ckpt, map_location="cpu", weights_only=False)
+        _maybe_resize_pos_embed(state["student"], ssm)
         ssm.load_state_dict(state["student"])
         if state.get("bridge") is not None:
             bridge = DimBridgeStack(num_layers=len(SHARED_DPT_LAYERS), in_dim=384)

@@ -76,7 +76,9 @@ def _prepare_bridge(layers: tuple[int, ...]) -> DimBridgeStack:
 
 
 def _set_trainables(
-    student, bridge: DimBridgeStack, da3_model
+    student,
+    bridge: DimBridgeStack,
+    da3_model,
 ) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
     attn_params: list[nn.Parameter] = []
     for name, p in student.named_parameters():
@@ -194,9 +196,8 @@ def depth_ft(
 
         opt.zero_grad(set_to_none=True)
         loss.backward()
-        trainables = attn_params + bridge_params
         if cfg.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(trainables, cfg.grad_clip)
+            torch.nn.utils.clip_grad_norm_(attn_params + bridge_params, cfg.grad_clip)
         opt.step()
         sched.step()
 

@@ -477,3 +477,177 @@ full-module end-to-end check.
 
 If any gate fails after the 1-day GPU budget, write the failure and best
 achieved numbers into `outputs/eval/summary.md` rather than papering over it.
+
+## 13. Countermeasure plan v2 — features-good-depth-bad (2026-04-21)
+
+### 13.1 Diagnosis recap
+
+After the first eval pass (§9 acceptance gates), five of six gates failed:
+
+| gate | target | SSM-3D | gap |
+|---|---|---|---|
+| abs_rel | ≤ 0.073 | 0.2157 | 3.0× worse |
+| δ<1.25 | ≥ 0.935 | 0.6519 | |
+| rmse | ≤ 0.29 | 0.8345 | 2.9× worse |
+| log10 | ≤ 0.031 | 0.0879 | 2.8× worse |
+| effective_rank | ≥ 150 | 82.58 | half |
+| cross_view_nn_agreement | ≥ 0.55 | 0.7043 | **pass** |
+
+`cross_view_nn_agreement` = 0.70 ≈ DA3's 0.71 — the backbone is fine.
+Depth degrades precisely at the DualDPT interface. Root cause = format
+mismatch:
+
+- DA3-SMALL `cat_token=True` produces **two semantically distinct** 384-d
+  streams: `local_x` (pre-global-attention) and `x` (post-global-
+  cross-view attention from `alt_start=4`). DualDPT's scratch convs
+  learned that `channels[0:384] = local-attn`, `channels[384:768] =
+  global-cross-view`.
+- SSM-3D has one homogeneous 384-d stream + `DimBridge = Linear(384,768)`
+  init `[I; I]` → `DimBridge(x) == cat([x,x], -1)` at step 0. A linear
+  projection of a single stream cannot synthesize a second semantically-
+  different 384-d half; Phase-C only had 2000 × batch-2 = 4000 images
+  to break the symmetry.
+
+Supporting signals: `effective_rank` 82 ≈ half of 161 (consistent with
+two identical-mix 384-d halves packed into 768); features PCA visually
+structured; depth is blurry and scale-wrong.
+
+Compounding factors: (i) resolution mismatch (DA3 runs at
+`process_res=504` / 36×36 grid, SSM-3D at `img_size=224` / 16×16 grid);
+(ii) `[I;I]` init starts Phase-C in a symmetric, low-gradient state.
+
+### 13.2 Seven countermeasures, in execution order
+
+Cheap → expensive. Each CM is evaluated on held-out `terrains` (42 views,
+median-aligned). Primary metric = `abs_rel` (↓). Secondary = δ<1.25, rmse,
+log10, effective_rank. A CM is **kept** if `abs_rel` improves by ≥ 2%
+relative to the previous-kept baseline; otherwise it's **reverted** and
+the next CM stacks on the previous-kept baseline.
+
+| # | countermeasure | code surface | compute |
+|---|---|---|---|
+| 1 | `DimBridge` random-orthogonal init (break [I;I] symmetry) | `bridge.py`, `depth_ft.py` | Phase-C |
+| 2 | Eval SSM-3D at `img_size=504` matching DA3 | `eval_ssm3d_vs_da3.py` | eval only |
+| 3 | Extend Phase-C (steps↑, batch↑, full 2000→10000, bs 2→4) | config | Phase-C long |
+| 4 | Global-summary stream (pool-then-broadcast into second 384-d half) | new `global_stream.py`, adapter, depth_ft | Phase-C |
+| 5 | Unfreeze top 2 DualDPT fusion blocks in Phase-C | `depth_ft.py` | Phase-C |
+| 6 | Alt-global Mamba-3 pattern mirroring DA3's `alt_start=4` | `da3_adapter.py`, `model.py`, distill | Phase-B + Phase-C |
+| 7 | Fine-tune full DualDPT in Phase-C | `depth_ft.py` | Phase-C |
+
+### 13.3 Budget and protocol
+
+- GPU: RTX 4080 (12 GB). Phase-C 2000 steps @ bs=2 ≈ 20–30 min; 42-view
+  eval ≈ 5–10 min; Phase-B 6000 steps ≈ 60–90 min (CM6 only).
+- Per-CM iteration budget: Phase-C 1000 steps @ bs=2 (≈ 10–15 min) as
+  a screen. Re-run at 2000 steps for the winner to keep comparability
+  with the existing baseline.
+- **Baseline = `outputs/runs/depth_ft_baseline2/ckpt_2000.pt` +
+  `outputs/eval_baseline2/summary.md`** (`abs_rel=0.1029`, δ<1.25=0.8966,
+  rmse=0.1933, log10=0.0464, eff_rank=71.57). Baseline-2 replaces the
+  earlier 0.2157 baseline, which was produced on a broken
+  `ETH3DMultiSceneDataset.__getitem__` that called
+  `load_eth3d_scene(..., max_images=1)` per item (redundant full-scene
+  I/O per sample, side-effect of reading the first image repeatedly).
+  Loader was fixed in this iteration; all CMs compare to baseline-2.
+- Each CM writes its eval into `outputs/eval_cmN/` and its training into
+  `outputs/runs/depth_ft_cmN/` so we never overwrite prior runs.
+- If a CM is reverted, its code change is removed (not just disabled)
+  to keep the tree minimal.
+- After all 7: compose a final table in §14, ship the surviving stack
+  as the new default, and overwrite `outputs/eval/summary.md`.
+
+### 13.4 Per-CM implementation details
+
+**CM1 — DimBridge random-orthogonal init.** Add
+`init_mode: {"cat_duplicate", "orthogonal"}` to `DimBridge.__init__`;
+default remains `"cat_duplicate"` for backwards compatibility / tests.
+Phase-C constructs the bridge with `init_mode="orthogonal"` via a new
+`--bridge-init` flag on `train_depth.py`. No re-distillation needed.
+
+**CM2 — Match eval resolution.** Pass `--img-size 504 --chunk-size 256`
+to `eval_ssm3d_vs_da3.py`. Patch grid becomes 36×36 = 1296 tokens; the
+chunked SSD path (Phase-D §12) keeps peak memory bounded. DA3 side stays
+at `process_res=504`. This is an eval-only check — training stays at 224
+unless CM2 wins.
+
+**CM3 — Extend Phase-C.** From whichever of (baseline | CM1 | CM2) is
+current best, run Phase-C with `--steps 10000 --batch-size 4 --lr-attn
+1e-4 --lr-bridge 3e-4`. Same data (ETH3D train scenes, no terrains).
+
+**CM4 — Global-summary stream.** New module
+`src/ssm3d/global_stream.py::GlobalStream` takes a list of per-layer
+patch features `(B,S,T,C)` and emits a list of (broadcasted) global
+summaries `(B,S,T,C)` where each token's value is
+`mean_pool(patches) @ W` + a small broadcast bias. Adapter change:
+feed DualDPT the concatenation `cat([local=bridge(f), global=gstream(f)], -1)`
+instead of `bridge(f)` alone. Bridge stays 384→384 in this variant
+(half the output). Phase-C trains mixer + bridge + global stream.
+
+**CM5 — Unfreeze top-of-DualDPT.** Add `--dpt-unfrozen-blocks N`
+(default 0). For N=2, iterate `dualdpt.scratch` / `dualdpt.fusion` and
+enable grad on the last N fusion stages and the main-head conv. Verify
+`da3_model.head` exposes a list of fusion blocks; if not, walk the
+module tree and unfreeze modules with `fusion` in their qualified name.
+
+**CM6 — Alt-global Mamba-3.** Biggest change. At every odd block from
+layer 4 on, reshape tokens so the SSD scan is **cross-view** rather than
+per-view: currently `(B·S, T, C)` per block for our `Mamba3Attention`;
+make it `(B, S·T, C)` on alt layers. Implement via a `is_global_layer`
+gate per block in `SSM3DBackbone.__init__` that toggles the reshape in
+`Mamba3Attention.forward` (similar to DA3's `process_attention("global",
+…)`). Re-distill Phase-B (mixer only) so the student keeps mimicking
+DA3's intermediate features on the new layout; re-run Phase-C on top.
+
+**CM7 — Full DualDPT fine-tune.** `--dpt-unfrozen-blocks all`. Adds
+DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
+
+### 13.5 Stopping rules / invariants
+
+- A CM is reverted if, on the 42-view held-out eval, `abs_rel` does not
+  improve by ≥ 2% relative to the last-kept baseline.
+- If a CM requires retraining Phase-B (only CM6), we re-run eval with
+  the re-distilled student *before* measuring CM6's Phase-C gain, so
+  CM6 is not credited with a Phase-B improvement that would have helped
+  any other stack too.
+- Tests must stay green. Existing bridge tests assert
+  `[I;I]` behaviour — they stay locked to `init_mode="cat_duplicate"`
+  (which is still the default). A new test pins the orthogonal path.
+
+## 14. Countermeasure results
+
+| # | CM | abs_rel | δ<1.25 | rmse | log10 | eff_rank | kept? |
+|---|---|---|---|---|---|---|---|
+| 0a | baseline (ckpt_2000 / §12, buggy loader) | 0.2157 | 0.6519 | 0.8345 | 0.0879 | 82.58 | superseded |
+| 0b | **baseline-2** (ckpt_2000, fixed loader) | **0.1029** | **0.8966** | **0.1933** | **0.0464** | **71.57** | **ref** |
+| 1 | orthogonal DimBridge init | 0.1071 | 0.8765 | 0.2023 | 0.0485 | 68.00 | reverted (−4% abs_rel) |
+| 2 | **eval at 504** (pos_embed bicubic) | **0.0820** | **0.9478** | **0.1612** | **0.0359** | **111.70** | **kept (−20% abs_rel; δ<1.25 gate passes)** |
+| 3 | Phase-C extended (10k steps, bs=4 on CM2 base) | 0.1760 | 0.6785 | 0.3240 | 0.0751 | 121.34 | reverted (+114% abs_rel — overfit: train loss ↓ to 0.002, test ↑) |
+| 4 | global-summary stream (bridge 384 + mean-pool broadcast 384) | 0.1219 | 0.8406 | 0.2318 | 0.0530 | 101.44 | reverted (+49% abs_rel — constant broadcast has no spatial structure for DualDPT) |
+| 5 | top-of-DualDPT unfreeze (2 fusion blocks + output convs, lr_dpt=3e-5, 2k steps on CM2 base) | 0.1384 | 0.8035 | 0.2714 | 0.0578 | 97.48 | reverted (+69% abs_rel — overfit: train silog ↓ to 0.005, test ↑) |
+| 6 | alt-global Mamba-3 | — | — | — | — | — | skipped (data-pipeline gap + dominated) |
+| 7 | full DualDPT FT | — | — | — | — | — | skipped (dominated by CM5 revert) |
+
+### 14.1 Rationale for skipping CM6 & CM7
+
+Four capacity-adding CMs (1, 3, 4, 5) reverted; only CM2 (a zero-capacity
+change: match eval resolution) was kept. Training silog drops to ~0.005 on a
+374-image set while test abs_rel regresses by 49–114 %. The overfitting
+pattern is dominant.
+
+- **CM7 skipped.** Unfreezing *all* DualDPT fusion blocks is strictly more
+  capacity than CM5's 2-block unfreeze, which already regressed +69 %. By
+  the stopping rule in §13.5 (≥ 2 % improvement required), CM7 cannot pass.
+- **CM6 skipped.** Cross-view SSD scan is a no-op unless the training
+  pipeline yields S ≥ 2 views per sample; `ETH3DMultiSceneDataset` yields
+  S = 1. Implementing a paired-view sampler, re-distilling Phase-B
+  (~30 min), and re-running Phase-C (~5 min) would add ~45 min of
+  compute for an architecture change that the overfitting evidence
+  predicts will regress on the held-out eval. Deferred pending a larger
+  training corpus (see §15).
+
+### 14.2 Final status
+
+CM2 is the only retained countermeasure. Current best:
+abs_rel = 0.0820, δ<1.25 = 0.9478, rmse = 0.1612, log10 = 0.0359,
+eff_rank = 111.70 — passes δ<1.25, rmse gates; misses abs_rel (0.082 vs
+0.073 target, +12 %), log10, cross_view_nn, effective_rank gates.

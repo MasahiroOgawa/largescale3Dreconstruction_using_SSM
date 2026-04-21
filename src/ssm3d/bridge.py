@@ -21,8 +21,9 @@ from torch import Tensor, nn
 class DimBridge(nn.Module):
     """Learnable linear map from `in_dim` to `out_dim = 2 * in_dim`.
 
-    At init the weight equals `stack([I, I])` so `DimBridge(x) == cat([x, x], -1)`,
-    matching the legacy cat-duplicate adapter. Bias is zero.
+    Initialised so that weight = stack([I, I]) and bias = 0, i.e.
+    `DimBridge(x) == cat([x, x], -1)` at step 0 — matches the Phase-A smoke
+    test and is the starting point the DualDPT was trained against.
     """
 
     def __init__(self, in_dim: int = 384, out_dim: int | None = None) -> None:

@@ -25,6 +25,19 @@ from .eth3d import (
     load_eth3d_scene,
 )
 
+
+def _find_depth_root(scene_dir: Path) -> Path | None:
+    """Probe the two ETH3D layouts for `ground_truth_depth/dslr_images`.
+
+    Returns `None` if the scene lacks extracted GT depth. Cached per scene at
+    `__init__` so `__getitem__` skips redundant stat() calls.
+    """
+    candidates = [
+        scene_dir / "ground_truth_depth" / "dslr_images",
+        scene_dir / scene_dir.name / "ground_truth_depth" / "dslr_images",
+    ]
+    return next((c for c in candidates if c.exists()), None)
+
 HELD_OUT = "terrains"
 
 TRAIN_SCENES: tuple[str, ...] = (
@@ -70,6 +83,7 @@ class _SceneIndex:
     name: str
     scene_dir: Path
     image_paths: list[Path]
+    depth_root: Path | None = None  # cached at __init__; None if scene has no GT depth
 
 
 class ETH3DMultiSceneDataset(Dataset):
@@ -93,12 +107,15 @@ class ETH3DMultiSceneDataset(Dataset):
         scenes: Iterable[str] = TRAIN_SCENES,
         image_size: int = 224,
         load_gt_depth: bool = False,
+        cache_in_memory: bool = True,
     ) -> None:
         scene_list = list(scenes)
         _assert_no_heldout(scene_list)
         self.data_root = Path(data_root)
         self.image_size = image_size
         self.load_gt_depth = load_gt_depth
+        self.cache_in_memory = cache_in_memory
+        self._cache: dict[int, dict] = {}
         self.scenes: list[_SceneIndex] = []
         for s in scene_list:
             scene_dir = self.data_root / "eth3d" / s
@@ -111,7 +128,8 @@ class ETH3DMultiSceneDataset(Dataset):
             paths = sorted(img_root.rglob("*.JPG"))
             if not paths:
                 continue
-            self.scenes.append(_SceneIndex(s, scene_dir, paths))
+            depth_root = _find_depth_root(scene_dir) if load_gt_depth else None
+            self.scenes.append(_SceneIndex(s, scene_dir, paths, depth_root))
         if not self.scenes:
             raise RuntimeError(
                 f"No ETH3D scenes found under {self.data_root / 'eth3d'}. "
@@ -125,26 +143,17 @@ class ETH3DMultiSceneDataset(Dataset):
         return len(self.flat)
 
     def __getitem__(self, idx: int) -> dict:
+        if self.cache_in_memory and idx in self._cache:
+            return self._cache[idx]
         si, path = self.flat[idx]
-        # Reuse load_eth3d_scene with a one-image slice — preserves the same
-        # center-crop + resize pipeline used at eval time.
-        sample = load_eth3d_scene(
-            si.scene_dir,
-            max_images=1,
-            image_size=self.image_size,
-            load_gt_depth=self.load_gt_depth,
-        )
-        # load_eth3d_scene uses sorted(rglob) — to pick a specific image we
-        # rerun with a stricter slice rather than paging. For training
-        # randomness, the caller shuffles indices; the inner loader's "first
-        # max_images=1" is stable across calls, so we remap by binding the
-        # full list and reading exactly the intended path.
         from PIL import Image
         import numpy as np
-        from .eth3d import _center_crop_resize
+        from .eth3d import _center_crop_resize, _infer_depth_shape
 
-        arr = np.asarray(Image.open(path).convert("RGB"))
-        rgb_resized, _ = _center_crop_resize(arr, self.image_size)
+        with Image.open(path) as img:
+            orig_w, orig_h = img.size
+            rgb_arr = np.asarray(img.convert("RGB"))
+        rgb_resized, _ = _center_crop_resize(rgb_arr, self.image_size)
         tensor = torch.from_numpy(rgb_resized.astype("float32") / 255.0).permute(2, 0, 1)
 
         out = {
@@ -152,37 +161,25 @@ class ETH3DMultiSceneDataset(Dataset):
             "scene": si.name,
             "path": str(path),
         }
-        if self.load_gt_depth and sample.gt_depth is not None:
-            # We loaded only one image from the scene above; pick the depth
-            # for this specific path if it matches. If the scene dir has depth,
-            # look it up directly for reliability:
-            from .eth3d import _infer_depth_shape
-            depth_root_candidates = [
-                si.scene_dir / "ground_truth_depth" / "dslr_images",
-                si.scene_dir / si.scene_dir.name / "ground_truth_depth" / "dslr_images",
-            ]
-            depth_root = next((c for c in depth_root_candidates if c.exists()), None)
-            if depth_root is not None:
-                gt_path = depth_root / path.name
-                if gt_path.exists():
-                    import numpy as np
-                    orig = Image.open(path)
-                    orig_w, orig_h = orig.size
-                    orig.close()
-                    raw = np.fromfile(gt_path, dtype=np.float32)
-                    shape = _infer_depth_shape(raw.size, (orig_h, orig_w))
-                    if shape is not None:
-                        depth_full = raw.reshape(*shape)
-                        depth_full = np.where(
-                            np.isfinite(depth_full), depth_full, 0.0
-                        ).astype("float32")
-                        depth_resized, _ = _center_crop_resize(
-                            depth_full, self.image_size
-                        )
-                        depth_resized = np.ascontiguousarray(depth_resized)
-                        valid = (np.isfinite(depth_resized) & (depth_resized > 0))
-                        out["gt_depth"] = torch.from_numpy(depth_resized).unsqueeze(0)
-                        out["valid_mask"] = torch.from_numpy(valid).unsqueeze(0)
+        if self.load_gt_depth and si.depth_root is not None:
+            gt_path = si.depth_root / path.name
+            if gt_path.exists():
+                raw = np.fromfile(gt_path, dtype=np.float32)
+                shape = _infer_depth_shape(raw.size, (orig_h, orig_w))
+                if shape is not None:
+                    depth_full = raw.reshape(*shape)
+                    depth_full = np.where(
+                        np.isfinite(depth_full), depth_full, 0.0
+                    ).astype("float32")
+                    depth_resized, _ = _center_crop_resize(
+                        depth_full, self.image_size
+                    )
+                    depth_resized = np.ascontiguousarray(depth_resized)
+                    valid = (np.isfinite(depth_resized) & (depth_resized > 0))
+                    out["gt_depth"] = torch.from_numpy(depth_resized.copy()).unsqueeze(0)
+                    out["valid_mask"] = torch.from_numpy(valid).unsqueeze(0)
+        if self.cache_in_memory:
+            self._cache[idx] = out
         return out
 
 
