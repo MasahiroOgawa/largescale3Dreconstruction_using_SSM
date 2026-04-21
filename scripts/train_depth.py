@@ -67,6 +67,18 @@ def main() -> None:
         "--no-bridge", action="store_true",
         help="CM18: drop the learnable DimBridge; fall back to static cat([f, f]).",
     )
+    ap.add_argument(
+        "--drop-path", type=float, default=0.0,
+        help="CM13: stochastic-depth rate for SSM-3D backbone blocks.",
+    )
+    ap.add_argument(
+        "--bridge-dropout", type=float, default=0.0,
+        help="CM13: dropout probability applied to DimBridge inputs.",
+    )
+    ap.add_argument(
+        "--weight-decay", type=float, default=0.05,
+        help="CM13: AdamW weight decay (default 0.05; CM13 recipe uses 0.15).",
+    )
     ap.add_argument("--amp-dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=0)
@@ -97,13 +109,18 @@ def main() -> None:
         img_size=args.img_size,
         patch_size=args.patch_size,
         depth=12,
+        drop_path_rate=args.drop_path,
     )
     teacher = load_da3(device=args.device)
     load_da3_backbone(student.backbone.vit, teacher, verbose=True)
     bridge = (
         None
         if args.no_bridge
-        else DimBridgeStack(num_layers=len(SHARED_DPT_LAYERS), in_dim=384)
+        else DimBridgeStack(
+            num_layers=len(SHARED_DPT_LAYERS),
+            in_dim=384,
+            dropout=args.bridge_dropout,
+        )
     )
 
     if args.init is not None:
@@ -126,6 +143,7 @@ def main() -> None:
         freeze_mixer=args.freeze_mixer,
         lambda_kd=args.lambda_kd,
         no_bridge=args.no_bridge,
+        weight_decay=args.weight_decay,
     )
     data_iter = _build_iter(dataset, seed=args.seed)
     depth_ft(student, teacher, data_iter, cfg, args.out, bridge=bridge)

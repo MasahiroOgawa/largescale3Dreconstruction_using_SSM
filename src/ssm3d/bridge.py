@@ -26,7 +26,9 @@ class DimBridge(nn.Module):
     test and is the starting point the DualDPT was trained against.
     """
 
-    def __init__(self, in_dim: int = 384, out_dim: int | None = None) -> None:
+    def __init__(
+        self, in_dim: int = 384, out_dim: int | None = None, dropout: float = 0.0
+    ) -> None:
         super().__init__()
         out_dim = out_dim if out_dim is not None else 2 * in_dim
         if out_dim != 2 * in_dim:
@@ -35,6 +37,7 @@ class DimBridge(nn.Module):
             )
         self.in_dim = in_dim
         self.out_dim = out_dim
+        self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
         self.linear = nn.Linear(in_dim, out_dim, bias=True)
         with torch.no_grad():
             eye = torch.eye(in_dim)
@@ -42,7 +45,7 @@ class DimBridge(nn.Module):
             self.linear.bias.zero_()
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.linear(x)
+        return self.linear(self.dropout(x))
 
 
 class DimBridgeStack(nn.Module):
@@ -53,10 +56,12 @@ class DimBridgeStack(nn.Module):
     the bridge params ride along with the trained mixer.
     """
 
-    def __init__(self, num_layers: int, in_dim: int = 384) -> None:
+    def __init__(
+        self, num_layers: int, in_dim: int = 384, dropout: float = 0.0
+    ) -> None:
         super().__init__()
         self.bridges = nn.ModuleList(
-            [DimBridge(in_dim=in_dim) for _ in range(num_layers)]
+            [DimBridge(in_dim=in_dim, dropout=dropout) for _ in range(num_layers)]
         )
 
     def forward(self, feats: list[Tensor]) -> list[Tensor]:

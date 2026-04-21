@@ -630,6 +630,7 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 17 | KD regulariser during Phase-C (λ_kd = 0.5, 2k steps on CM2 base) | 0.0994 | 0.9212 | 0.1898 | 0.0431 | 73.06 | reverted (+21 % abs_rel — KD dominates loss, eff_rank 112→73: student overfits to train-set slice of teacher features) |
 | 9 | **ETH3D augmentation** (random crop 0.6–1.0, hflip p=0.5, color jitter ±0.4/0.1, 2k steps on CM2 base) | **0.0715** | **0.9664** | **0.1387** | **0.0319** | **65.33** | **kept (−12.8 % abs_rel; first run to cross the §9 abs_rel ≤ 0.073 gate)** |
 | 18 | drop DimBridge (static `cat([f, f])`, 2k steps on CM9 base: init+aug) | 0.0880 | 0.9213 | 0.1692 | 0.0398 | 76.55 | reverted (+23 % abs_rel vs CM9 — duplicate is rank-bound; feat_cos_mean 0.985 confirms token collapse. Validates PLAN §9 R5 / §15.1 R3: DimBridge earns its ~5 MB.) |
+| 13 | stronger reg stacked on CM9 (drop_path 0.1, bridge_dropout 0.1, wd 0.15, 2k steps) | 0.0799 | 0.9482 | 0.1565 | 0.0357 | 63.91 | reverted (+11.7 % abs_rel vs CM9 — CM9 aug already supplies enough regularisation; adding more removes capacity without adding information) |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -797,4 +798,23 @@ diagnostic runs.
 
 Outstanding from §15.2: CM8 (corpus, disk-blocked), CM10
 (re-budget Phase-B / Phase-C), CM11 (smaller Mamba-3 state_dim;
-requires Phase-B re-distill), CM13 (stronger regularisation).
+requires Phase-B re-distill).
+
+### 15.6 CM13 result (negative) — classical regularisation on top of CM9
+
+Run on 2026-04-21 from CM9 recipe plus `--drop-path 0.1
+--bridge-dropout 0.1 --weight-decay 0.15` (wd × 3 vs default 0.05).
+
+- abs_rel 0.0799 (**+11.7 % vs CM9 0.0715**) — reverted by §13.5.
+- log10 0.0357 (+12 %), rmse 0.1565 (+13 %).
+- effective_rank 63.9 ≈ CM9 65.3, cross_view_nn 0.6024 ≈ CM9 0.5911.
+- feat_cos_mean 0.968 (CM9 0.941) — marginal collapse from dropout.
+
+CM9 aug already supplies strong implicit regularisation; stacking
+classical regs removes capacity without adding information. This
+closes the entire "attack overfit surface" tier (§15.2 Tier 2):
+CM13, CM14, CM17 all regressed vs CM9, confirming the binding
+constraint is data volume, not regularisation strength.
+
+The `--drop-path`, `--bridge-dropout`, and `--weight-decay` flags are
+retained as opt-in knobs for future runs with a larger corpus.

@@ -50,6 +50,7 @@ class SSM3DBackbone(nn.Module):
         mamba_bidirectional: bool = True,
         mamba_three_term: bool = True,
         chunk_size: Optional[int] = None,
+        drop_path_rate: float = 0.0,
     ) -> None:
         super().__init__()
         self.img_size = img_size
@@ -71,6 +72,7 @@ class SSM3DBackbone(nn.Module):
             patch_size=patch_size,
             block_fn=block_fn,
             cat_token=False,  # don't concatenate local+global (alt_start is off)
+            drop_path_rate=drop_path_rate,
         )
         if depth is not None:
             kwargs["depth"] = depth
@@ -140,11 +142,13 @@ class SSM3DNet(nn.Module):
         depth: Optional[int] = None,
         head_hidden: int = 64,
         chunk_size: Optional[int] = None,
+        drop_path_rate: float = 0.0,
     ) -> None:
         super().__init__()
         self.backbone = SSM3DBackbone(
             size=size, img_size=img_size, patch_size=patch_size,
             depth=depth, chunk_size=chunk_size,
+            drop_path_rate=drop_path_rate,
         )
         self.depth_head = SimpleDepthHead(
             in_channels=self.backbone.embed_dim, hidden=head_hidden, image_size=img_size
