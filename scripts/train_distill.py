@@ -44,6 +44,7 @@ def main() -> None:
     ap.add_argument("--img-size", type=int, default=224)
     ap.add_argument("--patch-size", type=int, default=14)
     ap.add_argument("--steps", type=int, default=6000)
+    ap.add_argument("--ckpt-every", type=int, default=1000)
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr-attn", type=float, default=3e-4)
     ap.add_argument("--weight-decay", type=float, default=0.05)
@@ -88,6 +89,7 @@ def main() -> None:
     print("[4/4] starting distillation ...")
     cfg = DistillConfig(
         steps=args.steps,
+        ckpt_every=args.ckpt_every,
         batch_size=args.batch_size,
         lr_attn=args.lr_attn,
         weight_decay=args.weight_decay,

@@ -631,6 +631,7 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 9 | **ETH3D augmentation** (random crop 0.6–1.0, hflip p=0.5, color jitter ±0.4/0.1, 2k steps on CM2 base) | **0.0715** | **0.9664** | **0.1387** | **0.0319** | **65.33** | **kept (−12.8 % abs_rel; first run to cross the §9 abs_rel ≤ 0.073 gate)** |
 | 18 | drop DimBridge (static `cat([f, f])`, 2k steps on CM9 base: init+aug) | 0.0880 | 0.9213 | 0.1692 | 0.0398 | 76.55 | reverted (+23 % abs_rel vs CM9 — duplicate is rank-bound; feat_cos_mean 0.985 confirms token collapse. Validates PLAN §9 R5 / §15.1 R3: DimBridge earns its ~5 MB.) |
 | 13 | stronger reg stacked on CM9 (drop_path 0.1, bridge_dropout 0.1, wd 0.15, 2k steps) | 0.0799 | 0.9482 | 0.1565 | 0.0357 | 63.91 | reverted (+11.7 % abs_rel vs CM9 — CM9 aug already supplies enough regularisation; adding more removes capacity without adding information) |
+| 10 | **Phase-B 6k→20k / Phase-C 2k→500 on CM9 aug base** | **0.0660** | **0.9722** | **0.1283** | **0.0295** | **83.13** | **kept (−7.7 % abs_rel vs CM9; 5/6 gates pass — log10 gate now clears for the first time; eff_rank +27 %)** |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -652,14 +653,16 @@ pattern is dominant.
 
 ### 14.2 Final status
 
-Retained countermeasures: **CM2 + CM9**. Current best (CM9 checkpoint
-`depth_ft_cm9/ckpt_2000.pt`, eval at 504):
-abs_rel = **0.0715**, δ<1.25 = **0.9664**, rmse = **0.1387**,
-log10 = 0.0319, cross_view_nn = 0.5911, eff_rank = 65.33.
+Retained countermeasures: **CM2 + CM9 + CM10**. Current best
+(CM10 checkpoint `depth_ft_cm10/ckpt_500.pt` from Phase-B
+`distill_cm10/ckpt_20000.pt`, eval at 504):
+abs_rel = **0.0660**, δ<1.25 = **0.9722**, rmse = **0.1283**,
+log10 = **0.0295**, cross_view_nn = **0.6094**, eff_rank = 83.13.
 
-Passes abs_rel, δ<1.25, rmse, cross_view_nn gates; narrowly misses
-log10 (0.0319 vs 0.0310, +3 %); still misses effective_rank (65 vs
-150). CM9 is the first run to cross the abs_rel ≤ 0.073 gate.
+Passes abs_rel, δ<1.25, rmse, log10, and cross_view_nn gates — **5/6
+gates green**, with only effective_rank still missing (83 vs 150, +27 %
+vs CM9 but structurally bounded by Mamba-3 `state_dim = 64`). CM10 is
+the first run to simultaneously clear log10 and abs_rel.
 
 ## 15. Why SSM-3D still trails DA3, and next-round countermeasures
 
@@ -818,3 +821,37 @@ constraint is data volume, not regularisation strength.
 
 The `--drop-path`, `--bridge-dropout`, and `--weight-decay` flags are
 retained as opt-in knobs for future runs with a larger corpus.
+
+### 15.7 CM10 result (positive) — re-budget Phase-B ↑ / Phase-C ↓
+
+Run on 2026-04-22 on the CM9 aug recipe. Phase-B 6 k → **20 k** steps
+(into `outputs/runs/distill_cm10/`), Phase-C 2 k → **500** steps.
+Rationale (§15.2 Tier 3): feature matching (Phase-B) is a
+non-overfitting loss against DA3's stable teacher targets, so more
+Phase-B should sharpen the student representation; SILog (Phase-C) is
+the overfitting loss on a 374-image set, so fewer steps should
+reduce train-set memorisation.
+
+- abs_rel 0.0660 (**−7.7 % vs CM9 0.0715**) — kept by §13.5.
+- log10 **0.0295** — clears the 0.031 gate for the first time.
+- effective_rank 83.1 (vs CM9 65.3) — **+27 %**, the largest gain so
+  far, suggesting Phase-B was under-trained at 6 k.
+- cross_view_nn 0.6094 (vs CM9 0.5911).
+- feat_cos_mean 0.958 (vs CM9 0.941) — a mild uptick, consistent with
+  longer Phase-B concentrating features toward teacher geometry.
+
+5/6 §9 gates now pass. Only `effective_rank ≥ 150` remains unmet
+(83 vs 150); this is the Mamba-3 state-dim bottleneck and is
+structural — see CM11 in §15.2.
+
+Wall time: Phase-B 20 k ≈ 37 min; Phase-C 500 ≈ 5 min; eval ≈ 4 min.
+Together CM10 is *faster* than CM9's 6 k + 2 k recipe because the
+Phase-B chunked-SSD forward is cheaper per sample than the Phase-C
+DPT forward. Refutes the assumption that "more Phase-B" is a cost
+trade.
+
+Retained: CM2 + CM9 + CM10 as the joint baseline.
+
+Outstanding from §15.2: CM8 (new-data corpus; disk-blocked at 4.7 GB
+free on `/`), CM11 (smaller Mamba-3 state_dim; needs Phase-B
+re-distill — cheap now that 20 k takes 37 min).
