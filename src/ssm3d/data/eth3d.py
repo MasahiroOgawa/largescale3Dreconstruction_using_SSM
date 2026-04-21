@@ -109,16 +109,35 @@ def _center_crop_resize(arr: np.ndarray, image_size: int) -> tuple[np.ndarray, t
     s = min(h, w)
     left, top = (w - s) // 2, (h - s) // 2
     right, bottom = left + s, top + s
+    return _crop_resize_box(arr, (left, top, right, bottom), image_size)
+
+
+def _crop_resize_box(
+    arr: np.ndarray, box: tuple[int, int, int, int], image_size: int
+) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    """Crop with the given (l, t, r, b) box and resize to (image_size, image_size)."""
+    left, top, right, bottom = box
     cropped = arr[top:bottom, left:right]
     if cropped.ndim == 3:
         im = Image.fromarray(cropped)
         im = im.resize((image_size, image_size), Image.BILINEAR)
-        return np.asarray(im), (left, top, right, bottom)
-    else:
-        # nearest for depth (preserves invalid 0/inf markers)
-        im = Image.fromarray(cropped, mode="F")
-        im = im.resize((image_size, image_size), Image.NEAREST)
-        return np.asarray(im, dtype=np.float32), (left, top, right, bottom)
+        return np.asarray(im), box
+    im = Image.fromarray(cropped, mode="F")
+    im = im.resize((image_size, image_size), Image.NEAREST)
+    return np.asarray(im, dtype=np.float32), box
+
+
+def _random_square_crop_box(
+    h: int, w: int, rng: "random.Random", scale_range: tuple[float, float] = (0.7, 1.0)
+) -> tuple[int, int, int, int]:
+    """Sample a random square window. Size = scale * min(h, w); scale ∈ range."""
+    s_max = min(h, w)
+    scale = rng.uniform(*scale_range)
+    s = max(32, int(round(s_max * scale)))
+    s = min(s, s_max)
+    left = rng.randint(0, w - s)
+    top = rng.randint(0, h - s)
+    return left, top, left + s, top + s
 
 
 def _infer_depth_shape(n_floats: int, jpg_hw: tuple[int, int]) -> Optional[tuple[int, int]]:

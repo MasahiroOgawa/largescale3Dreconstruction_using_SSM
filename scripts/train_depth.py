@@ -59,6 +59,10 @@ def main() -> None:
         help="CM17: weight on per-layer L2+cos KD loss against DA3 teacher features "
              "(0 = off, default). Requires mixer trainable to be effective.",
     )
+    ap.add_argument(
+        "--augment", action="store_true",
+        help="CM9: enable random crop + hflip + color jitter on ETH3D (Phase-C only).",
+    )
     ap.add_argument("--amp-dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=0)
@@ -78,6 +82,8 @@ def main() -> None:
         scenes=args.scenes,
         image_size=args.img_size,
         load_gt_depth=True,
+        augment=args.augment,
+        augment_seed=args.seed,
     )
     print(f"  -> {len(dataset)} images across {len(dataset.scenes)} scenes")
 

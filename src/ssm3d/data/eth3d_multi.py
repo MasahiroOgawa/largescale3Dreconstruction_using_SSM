@@ -20,7 +20,11 @@ from torch.utils.data import Dataset
 
 from .eth3d import (
     DEFAULT_SCENE,
+    _center_crop_resize,
+    _crop_resize_box,
     _find_images_root,
+    _infer_depth_shape,
+    _random_square_crop_box,
     download_eth3d_terrains,
     load_eth3d_scene,
 )
@@ -108,13 +112,18 @@ class ETH3DMultiSceneDataset(Dataset):
         image_size: int = 224,
         load_gt_depth: bool = False,
         cache_in_memory: bool = True,
+        augment: bool = False,
+        augment_seed: int = 0,
     ) -> None:
         scene_list = list(scenes)
         _assert_no_heldout(scene_list)
         self.data_root = Path(data_root)
         self.image_size = image_size
         self.load_gt_depth = load_gt_depth
-        self.cache_in_memory = cache_in_memory
+        self.augment = augment
+        self._aug_rng = random.Random(augment_seed) if augment else None
+        # When augmenting, caching the first sample would freeze the RNG draw.
+        self.cache_in_memory = cache_in_memory and not augment
         self._cache: dict[int, dict] = {}
         self.scenes: list[_SceneIndex] = []
         for s in scene_list:
@@ -148,13 +157,18 @@ class ETH3DMultiSceneDataset(Dataset):
         si, path = self.flat[idx]
         from PIL import Image
         import numpy as np
-        from .eth3d import _center_crop_resize, _infer_depth_shape
 
         with Image.open(path) as img:
             orig_w, orig_h = img.size
             rgb_arr = np.asarray(img.convert("RGB"))
-        rgb_resized, _ = _center_crop_resize(rgb_arr, self.image_size)
+
+        aug = self._sample_aug(orig_h, orig_w) if self.augment else None
+        rgb_resized = self._crop_and_resize_rgb(rgb_arr, aug)
         tensor = torch.from_numpy(rgb_resized.astype("float32") / 255.0).permute(2, 0, 1)
+        if aug is not None:
+            if aug["flip"]:
+                tensor = torch.flip(tensor, dims=[-1])
+            tensor = _apply_color_jitter(tensor, aug["color"])
 
         out = {
             "images": tensor.unsqueeze(0),  # (1, 3, H, W) → S=1 view
@@ -171,16 +185,80 @@ class ETH3DMultiSceneDataset(Dataset):
                     depth_full = np.where(
                         np.isfinite(depth_full), depth_full, 0.0
                     ).astype("float32")
-                    depth_resized, _ = _center_crop_resize(
-                        depth_full, self.image_size
+                    depth_resized = self._crop_and_resize_depth(
+                        depth_full, aug, (orig_h, orig_w)
                     )
                     depth_resized = np.ascontiguousarray(depth_resized)
-                    valid = (np.isfinite(depth_resized) & (depth_resized > 0))
-                    out["gt_depth"] = torch.from_numpy(depth_resized.copy()).unsqueeze(0)
-                    out["valid_mask"] = torch.from_numpy(valid).unsqueeze(0)
+                    depth_t = torch.from_numpy(depth_resized.copy()).unsqueeze(0)
+                    if aug is not None and aug["flip"]:
+                        depth_t = torch.flip(depth_t, dims=[-1])
+                    valid_t = (torch.isfinite(depth_t) & (depth_t > 0))
+                    out["gt_depth"] = depth_t
+                    out["valid_mask"] = valid_t
         if self.cache_in_memory:
             self._cache[idx] = out
         return out
+
+    def _sample_aug(self, rgb_h: int, rgb_w: int) -> dict:
+        rng = self._aug_rng
+        assert rng is not None
+        box = _random_square_crop_box(rgb_h, rgb_w, rng, scale_range=(0.6, 1.0))
+        return {
+            "box_rgb": box,
+            "flip": rng.random() < 0.5,
+            "color": {
+                "brightness": rng.uniform(0.6, 1.4),
+                "contrast": rng.uniform(0.6, 1.4),
+                "saturation": rng.uniform(0.6, 1.4),
+                "hue": rng.uniform(-0.1, 0.1),
+            },
+        }
+
+    def _crop_and_resize_rgb(
+        self, rgb_arr: "np.ndarray", aug: dict | None
+    ) -> "np.ndarray":
+        if aug is None:
+            out, _ = _center_crop_resize(rgb_arr, self.image_size)
+            return out
+        out, _ = _crop_resize_box(rgb_arr, aug["box_rgb"], self.image_size)
+        return out
+
+    def _crop_and_resize_depth(
+        self,
+        depth_full: "np.ndarray",
+        aug: dict | None,
+        rgb_hw: tuple[int, int],
+    ) -> "np.ndarray":
+        if aug is None:
+            out, _ = _center_crop_resize(depth_full, self.image_size)
+            return out
+        dh, dw = depth_full.shape[:2]
+        rh, rw = rgb_hw
+        l, t, r, b = aug["box_rgb"]
+        sx, sy = dw / rw, dh / rh
+        box_d = (
+            int(round(l * sx)),
+            int(round(t * sy)),
+            int(round(r * sx)),
+            int(round(b * sy)),
+        )
+        out, _ = _crop_resize_box(depth_full, box_d, self.image_size)
+        return out
+
+
+def _apply_color_jitter(img: torch.Tensor, factors: dict) -> torch.Tensor:
+    """Brightness / contrast / saturation / hue jitter on a (3, H, W) tensor in [0, 1]."""
+    from torchvision.transforms.functional import (
+        adjust_brightness,
+        adjust_contrast,
+        adjust_hue,
+        adjust_saturation,
+    )
+    img = adjust_brightness(img, factors["brightness"])
+    img = adjust_contrast(img, factors["contrast"])
+    img = adjust_saturation(img, factors["saturation"])
+    img = adjust_hue(img, factors["hue"])
+    return img.clamp(0.0, 1.0)
 
 
 def infinite_sampler(dataset: Dataset, seed: int = 0) -> Iterable[int]:

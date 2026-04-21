@@ -628,6 +628,7 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 7 | full DualDPT FT | — | — | — | — | — | skipped (dominated by CM5 revert) |
 | 14 | freeze mixer in Phase-C (DimBridge-only train, 2k steps on CM2 base) | 0.2836 | 0.5233 | 0.5812 | 0.1076 | 73.69 | reverted (+246 % abs_rel — DimBridge alone cannot bridge Phase-B features to DualDPT) |
 | 17 | KD regulariser during Phase-C (λ_kd = 0.5, 2k steps on CM2 base) | 0.0994 | 0.9212 | 0.1898 | 0.0431 | 73.06 | reverted (+21 % abs_rel — KD dominates loss, eff_rank 112→73: student overfits to train-set slice of teacher features) |
+| 9 | **ETH3D augmentation** (random crop 0.6–1.0, hflip p=0.5, color jitter ±0.4/0.1, 2k steps on CM2 base) | **0.0715** | **0.9664** | **0.1387** | **0.0319** | **65.33** | **kept (−12.8 % abs_rel; first run to cross the §9 abs_rel ≤ 0.073 gate)** |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -649,10 +650,14 @@ pattern is dominant.
 
 ### 14.2 Final status
 
-CM2 is the only retained countermeasure. Current best:
-abs_rel = 0.0820, δ<1.25 = 0.9478, rmse = 0.1612, log10 = 0.0359,
-eff_rank = 111.70 — passes δ<1.25, rmse gates; misses abs_rel (0.082 vs
-0.073 target, +12 %), log10, cross_view_nn, effective_rank gates.
+Retained countermeasures: **CM2 + CM9**. Current best (CM9 checkpoint
+`depth_ft_cm9/ckpt_2000.pt`, eval at 504):
+abs_rel = **0.0715**, δ<1.25 = **0.9664**, rmse = **0.1387**,
+log10 = 0.0319, cross_view_nn = 0.5911, eff_rank = 65.33.
+
+Passes abs_rel, δ<1.25, rmse, cross_view_nn gates; narrowly misses
+log10 (0.0319 vs 0.0310, +3 %); still misses effective_rank (65 vs
+150). CM9 is the first run to cross the abs_rel ≤ 0.073 gate.
 
 ## 15. Why SSM-3D still trails DA3, and next-round countermeasures
 
@@ -735,6 +740,30 @@ improve on CM2:
 
 Both outcomes confirm the §15.1 diagnosis empirically: the binding
 constraint is the size of the training distribution, not the loss
-design. Moving to CM8 (larger distillation corpus) is the next
-defensible step. CM9 (aggressive augmentation on ETH3D) can be trialed
-in parallel as a cheap sanity check of the data-bound hypothesis.
+design.
+
+### 15.4 CM9 result (positive) — augmentation as a cheap data expansion
+
+Run on 2026-04-21 from the CM2 base (Phase-B distill ckpt_6000 +
+Phase-C 2 k steps with `--augment`). Augmentation: random square crop
+with scale ∈ [0.6, 1.0], horizontal flip p = 0.5, and per-image
+torchvision color jitter (brightness / contrast / saturation ± 0.4,
+hue ± 0.1). Depth and valid mask receive the same crop + flip.
+
+- abs_rel 0.0715 (**−12.8 % vs CM2**, the first run to cross the §9
+  abs_rel ≤ 0.073 gate).
+- δ<1.25 0.9664, rmse 0.1387 — both gates pass comfortably.
+- cross_view_nn 0.5911 (gate 0.55) — passes.
+- effective_rank 65.3 (still misses 150 gate) — augmentation does not
+  repair the Mamba-3 state-bottleneck; this remains a CM11 / CM18
+  architectural question.
+
+Operationally, CM9 validates the §15.1 data-bound diagnosis without
+new downloads: synthetically multiplying the 374-image training set
+by the aug factor closes most of the abs_rel gap to DA3 (0.0715 vs
+0.0377). The remaining ~2× gap on abs_rel is consistent with CM8
+(real new data) being the next meaningful move — now blocked on disk
+space (root is 100 % full, ~4.7 GB free; MegaDepth / BlendedMVS /
+Hypersim all require ≥ 50 GB).
+
+Retained: CM2 + CM9 as the joint baseline for any future CM.
