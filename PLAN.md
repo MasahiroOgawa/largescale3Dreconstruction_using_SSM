@@ -626,6 +626,8 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 5 | top-of-DualDPT unfreeze (2 fusion blocks + output convs, lr_dpt=3e-5, 2k steps on CM2 base) | 0.1384 | 0.8035 | 0.2714 | 0.0578 | 97.48 | reverted (+69% abs_rel — overfit: train silog ↓ to 0.005, test ↑) |
 | 6 | alt-global Mamba-3 | — | — | — | — | — | skipped (data-pipeline gap + dominated) |
 | 7 | full DualDPT FT | — | — | — | — | — | skipped (dominated by CM5 revert) |
+| 14 | freeze mixer in Phase-C (DimBridge-only train, 2k steps on CM2 base) | 0.2836 | 0.5233 | 0.5812 | 0.1076 | 73.69 | reverted (+246 % abs_rel — DimBridge alone cannot bridge Phase-B features to DualDPT) |
+| 17 | KD regulariser during Phase-C (λ_kd = 0.5, 2k steps on CM2 base) | 0.0994 | 0.9212 | 0.1898 | 0.0431 | 73.06 | reverted (+21 % abs_rel — KD dominates loss, eff_rank 112→73: student overfits to train-set slice of teacher features) |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -714,9 +716,25 @@ and point at what to try next.
   output 768-d features matching DA3. Removes the dim-adapter entirely
   but requires backbone re-init and Phase-B re-distill.
 
-### 15.3 Recommended next experiment
+### 15.3 Recommended next experiment → results (negative)
 
-Bundle **CM14 + CM17** — no new data, ~2–3 h to run end-to-end, and it
-tests the overfit diagnosis directly without touching the data pipeline.
-If abs_rel drops below 0.073 the study is done; if it does not, the
-ceiling is data-bound and CM8 becomes the unavoidable next step.
+Bundled **CM14 + CM17** run end-to-end on 2026-04-21. Both failed to
+improve on CM2:
+
+- **CM14** (freeze mixer, train only DimBridge): abs_rel 0.2836
+  (+246 %). Demonstrates that Phase-B distilled features at layers
+  {5, 7, 9, 11} are *not* a drop-in fit for DA3's DualDPT — the mixer
+  needs to remain trainable to shape features for the frozen head.
+  DimBridge (a per-layer 384 → 768 linear) is a geometric adapter, not
+  a feature generator.
+- **CM17** (unfrozen mixer + KD λ = 0.5): abs_rel 0.0994 (+21 %).
+  KD dominated the total loss (KD ≈ 0.04 vs silog ≈ 0.005) yet
+  effective_rank *fell* 112 → 73 — student collapsed to the
+  train-set projection of teacher features instead of inheriting
+  their diversity.
+
+Both outcomes confirm the §15.1 diagnosis empirically: the binding
+constraint is the size of the training distribution, not the loss
+design. Moving to CM8 (larger distillation corpus) is the next
+defensible step. CM9 (aggressive augmentation on ETH3D) can be trialed
+in parallel as a cheap sanity check of the data-bound hypothesis.

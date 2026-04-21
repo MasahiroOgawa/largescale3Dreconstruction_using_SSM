@@ -24,7 +24,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from ssm3d.bridge import DimBridgeStack
 from ssm3d.eval.dpt_adapter import SHARED_DPT_LAYERS, get_dualdpt
-from ssm3d.train.distill import _amp_dtype
+from ssm3d.train.distill import _amp_dtype, _teacher_features
 from ssm3d.train.overfit import _edge_aware_smoothness
 
 
@@ -43,6 +43,13 @@ class DepthFTConfig:
     ckpt_every: int = 500
     device: str = "cuda"
     silog_lambda: float = 0.85  # variance-term weight in SILog (Eigen 2014)
+    # CM14: freeze the Mamba-3 mixer so only DimBridge trains in Phase-C.
+    # Directly counters the CM3/CM5 overfit pattern (capacity vs 374 images).
+    freeze_mixer: bool = False
+    # CM17: add Phase-B feature-KD as a regulariser during Phase-C.
+    # lambda_kd > 0 requires mixer trainable (KD gradient flows into attn params).
+    lambda_kd: float = 0.0
+    kd_patch_start_idx: int = 1  # drop cls token before KD (DINOv2 convention)
 
 
 @dataclass
@@ -51,6 +58,7 @@ class DepthFTLog:
     loss: list[float] = field(default_factory=list)
     loss_silog: list[float] = field(default_factory=list)
     loss_edge: list[float] = field(default_factory=list)
+    loss_kd: list[float] = field(default_factory=list)
 
 
 def silog_loss(
@@ -79,10 +87,11 @@ def _set_trainables(
     student,
     bridge: DimBridgeStack,
     da3_model,
+    freeze_mixer: bool = False,
 ) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
     attn_params: list[nn.Parameter] = []
     for name, p in student.named_parameters():
-        if ".attn." in name:
+        if ".attn." in name and not freeze_mixer:
             p.requires_grad_(True)
             attn_params.append(p)
         else:
@@ -95,13 +104,36 @@ def _set_trainables(
     return attn_params, bridge_params
 
 
+def _kd_loss(
+    student_feats: list[Tensor],
+    teacher_feats: list[Tensor],
+    patch_start_idx: int = 1,
+) -> Tensor:
+    """Per-layer L2 + (1 − cos) on patch tokens, averaged across layers.
+
+    Mirrors `distill._per_layer_loss` with λ_l2 = λ_cos = 1. Teacher is
+    detached (no grad flows into DA3).
+    """
+    total = student_feats[0].new_zeros(())
+    for f_s, f_t in zip(student_feats, teacher_feats):
+        s = f_s[:, patch_start_idx:].float()
+        t = f_t[:, patch_start_idx:].float().detach()
+        C = s.shape[-1]
+        l2 = (s - t).pow(2).mean() / max(C, 1)
+        s_n = F.normalize(s, dim=-1)
+        t_n = F.normalize(t, dim=-1)
+        cos_loss = 1.0 - (s_n * t_n).sum(dim=-1).mean()
+        total = total + l2 + cos_loss
+    return total / max(len(student_feats), 1)
+
+
 def _run_dpt(
     student,
     bridge: DimBridgeStack,
     dualdpt: nn.Module,
     images: Tensor,
     layers: tuple[int, ...],
-) -> Tensor:
+) -> tuple[Tensor, list[Tensor]]:
     """Student backbone → DimBridge (trainable) → frozen DualDPT → depth.
 
     Args:
@@ -109,6 +141,8 @@ def _run_dpt(
 
     Returns:
         depth: (B, S, 1, H, W) predicted by DualDPT's main head.
+        aux_features: raw student features at `layers`, same shape as the
+            backbone produced — kept for CM17 KD loss without a second forward.
     """
     out = student.backbone(images, export_feat_layers=list(layers))
     bridged = bridge(out.aux_features)  # list of (B, S, T, 768)
@@ -128,7 +162,7 @@ def _run_dpt(
             mode="bilinear",
             align_corners=False,
         ).reshape(B, S, 1, H, W)
-    return depth.clamp_min(1e-4)
+    return depth.clamp_min(1e-4), out.aux_features
 
 
 def depth_ft(
@@ -149,14 +183,26 @@ def depth_ft(
     dualdpt = get_dualdpt(da3_model).to(device)
     dualdpt.eval()
 
-    attn_params, bridge_params = _set_trainables(student, bridge, da3_model)
-    opt = AdamW(
-        [
-            {"params": attn_params, "lr": cfg.lr_attn, "weight_decay": cfg.weight_decay},
-            {"params": bridge_params, "lr": cfg.lr_bridge, "weight_decay": cfg.weight_decay},
-        ]
+    attn_params, bridge_params = _set_trainables(
+        student, bridge, da3_model, freeze_mixer=cfg.freeze_mixer
     )
-    sched = CosineAnnealingLR(opt, T_max=cfg.steps, eta_min=cfg.lr_attn * 0.1)
+    if cfg.freeze_mixer and cfg.lambda_kd > 0:
+        print(
+            "[depth_ft] warn: lambda_kd>0 with freeze_mixer=True — KD gradient "
+            "has no trainable path into the backbone; set freeze_mixer=False "
+            "for CM17 to be active."
+        )
+    param_groups: list[dict] = []
+    if attn_params:
+        param_groups.append(
+            {"params": attn_params, "lr": cfg.lr_attn, "weight_decay": cfg.weight_decay}
+        )
+    param_groups.append(
+        {"params": bridge_params, "lr": cfg.lr_bridge, "weight_decay": cfg.weight_decay}
+    )
+    opt = AdamW(param_groups)
+    lr_ref = cfg.lr_attn if attn_params else cfg.lr_bridge
+    sched = CosineAnnealingLR(opt, T_max=cfg.steps, eta_min=lr_ref * 0.1)
     use_amp = device.type == "cuda" and cfg.amp_dtype != "fp32"
     amp_dtype = _amp_dtype(cfg.amp_dtype)
 
@@ -177,10 +223,15 @@ def depth_ft(
         gt = torch.stack(batch_depth, dim=0).to(device).unsqueeze(2)  # (B, 1, 1, H, W)
         valid = torch.stack(batch_valid, dim=0).to(device).unsqueeze(2)
 
+        teacher_feats: list[Tensor] | None = None
+        if cfg.lambda_kd > 0:
+            with torch.no_grad():
+                teacher_feats = _teacher_features(da3_model, images, cfg.layers)
+
         with torch.autocast(
             device_type=device.type, dtype=amp_dtype, enabled=use_amp
         ):
-            pred = _run_dpt(student, bridge, dualdpt, images, cfg.layers)
+            pred, student_aux = _run_dpt(student, bridge, dualdpt, images, cfg.layers)
             pred_f = pred.float()
             gt_f = gt.float()
             l_silog = silog_loss(
@@ -192,7 +243,15 @@ def depth_ft(
                 pred_f.reshape(B, 1, pred_f.shape[-2], pred_f.shape[-1]),
                 images.float().reshape(B, 3, images.shape[-2], images.shape[-1]),
             )
-            loss = l_silog + cfg.lambda_edge * l_edge
+            l_kd = pred_f.new_zeros(())
+            if teacher_feats is not None:
+                student_flat = [
+                    a.reshape(-1, a.shape[-2], a.shape[-1]) for a in student_aux
+                ]
+                l_kd = _kd_loss(
+                    student_flat, teacher_feats, patch_start_idx=cfg.kd_patch_start_idx
+                )
+            loss = l_silog + cfg.lambda_edge * l_edge + cfg.lambda_kd * l_kd
 
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -206,10 +265,11 @@ def depth_ft(
             log.loss.append(float(loss.item()))
             log.loss_silog.append(float(l_silog.item()))
             log.loss_edge.append(float(l_edge.item()))
+            log.loss_kd.append(float(l_kd.item()))
             print(
                 f"[depth_ft] step {step:5d}/{cfg.steps}  "
                 f"loss={loss.item():.4f}  silog={l_silog.item():.4f}  "
-                f"edge={l_edge.item():.4f}  "
+                f"edge={l_edge.item():.4f}  kd={l_kd.item():.4f}  "
                 f"lr={opt.param_groups[0]['lr']:.2e}"
             )
 
