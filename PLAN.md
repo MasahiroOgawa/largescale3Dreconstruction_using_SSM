@@ -629,6 +629,7 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 14 | freeze mixer in Phase-C (DimBridge-only train, 2k steps on CM2 base) | 0.2836 | 0.5233 | 0.5812 | 0.1076 | 73.69 | reverted (+246 % abs_rel — DimBridge alone cannot bridge Phase-B features to DualDPT) |
 | 17 | KD regulariser during Phase-C (λ_kd = 0.5, 2k steps on CM2 base) | 0.0994 | 0.9212 | 0.1898 | 0.0431 | 73.06 | reverted (+21 % abs_rel — KD dominates loss, eff_rank 112→73: student overfits to train-set slice of teacher features) |
 | 9 | **ETH3D augmentation** (random crop 0.6–1.0, hflip p=0.5, color jitter ±0.4/0.1, 2k steps on CM2 base) | **0.0715** | **0.9664** | **0.1387** | **0.0319** | **65.33** | **kept (−12.8 % abs_rel; first run to cross the §9 abs_rel ≤ 0.073 gate)** |
+| 18 | drop DimBridge (static `cat([f, f])`, 2k steps on CM9 base: init+aug) | 0.0880 | 0.9213 | 0.1692 | 0.0398 | 76.55 | reverted (+23 % abs_rel vs CM9 — duplicate is rank-bound; feat_cos_mean 0.985 confirms token collapse. Validates PLAN §9 R5 / §15.1 R3: DimBridge earns its ~5 MB.) |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -767,3 +768,33 @@ space (root is 100 % full, ~4.7 GB free; MegaDepth / BlendedMVS /
 Hypersim all require ≥ 50 GB).
 
 Retained: CM2 + CM9 as the joint baseline for any future CM.
+
+### 15.5 CM18 result (negative) — confirms DimBridge is load-bearing
+
+Run on 2026-04-21 from the CM9 recipe (Phase-B ckpt_6000 + Phase-C
+2 k steps with `--augment --no-bridge`). "No bridge" falls back to
+the static `cat([f, f], -1)` duplicate at each of the 4 exported
+layers — mathematically identical to freezing DimBridge at its
+`weight = [I; I]` init. No Phase-B re-distill was needed since
+Phase-B has never used the bridge.
+
+- abs_rel 0.0880 (**+23.1 % vs CM9**, far past the §13.5 ≥ 2 %
+  reject gate).
+- feat_cos_mean 0.9854 (vs CM9 0.9414, DA3 0.9134) — the duplicated
+  768-d output is rank-bound at 384 across its two halves, which
+  collapses token similarity. DualDPT expects two complementary
+  streams (`cat_token=True` in DA3 with `alt_start=4` produces
+  genuinely different local vs global features); the duplicate gives
+  it one stream twice.
+- effective_rank 76.5 (marginally above CM9's 65.3 but still misses
+  the 150 gate; the gain is not worth −23 % abs_rel).
+
+Empirically confirms §9 R5 and §15.1 R3: the learned 384 → 768
+linear routes complementary information into DualDPT's two halves,
+which duplication cannot. The `--no-bridge` flag is retained as an
+opt-in toggle alongside `--freeze-mixer` / `--lambda-kd` for future
+diagnostic runs.
+
+Outstanding from §15.2: CM8 (corpus, disk-blocked), CM10
+(re-budget Phase-B / Phase-C), CM11 (smaller Mamba-3 state_dim;
+requires Phase-B re-distill), CM13 (stronger regularisation).

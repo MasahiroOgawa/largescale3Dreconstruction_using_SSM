@@ -63,6 +63,10 @@ def main() -> None:
         "--augment", action="store_true",
         help="CM9: enable random crop + hflip + color jitter on ETH3D (Phase-C only).",
     )
+    ap.add_argument(
+        "--no-bridge", action="store_true",
+        help="CM18: drop the learnable DimBridge; fall back to static cat([f, f]).",
+    )
     ap.add_argument("--amp-dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=0)
@@ -96,13 +100,17 @@ def main() -> None:
     )
     teacher = load_da3(device=args.device)
     load_da3_backbone(student.backbone.vit, teacher, verbose=True)
-    bridge = DimBridgeStack(num_layers=len(SHARED_DPT_LAYERS), in_dim=384)
+    bridge = (
+        None
+        if args.no_bridge
+        else DimBridgeStack(num_layers=len(SHARED_DPT_LAYERS), in_dim=384)
+    )
 
     if args.init is not None:
         print(f"  loading Phase-B state from {args.init}")
         state = torch.load(args.init, map_location="cpu", weights_only=False)
         student.load_state_dict(state["student"])
-        if state.get("bridge") is not None:
+        if bridge is not None and state.get("bridge") is not None:
             bridge.load_state_dict(state["bridge"])
 
     print("[4/4] starting depth fine-tune ...")
@@ -117,6 +125,7 @@ def main() -> None:
         layers=SHARED_DPT_LAYERS,
         freeze_mixer=args.freeze_mixer,
         lambda_kd=args.lambda_kd,
+        no_bridge=args.no_bridge,
     )
     data_iter = _build_iter(dataset, seed=args.seed)
     depth_ft(student, teacher, data_iter, cfg, args.out, bridge=bridge)

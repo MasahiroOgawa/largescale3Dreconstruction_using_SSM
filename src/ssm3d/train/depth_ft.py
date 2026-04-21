@@ -50,6 +50,9 @@ class DepthFTConfig:
     # lambda_kd > 0 requires mixer trainable (KD gradient flows into attn params).
     lambda_kd: float = 0.0
     kd_patch_start_idx: int = 1  # drop cls token before KD (DINOv2 convention)
+    # CM18: drop the learnable DimBridge; fall back to the static cat([f, f])
+    # duplicate that DimBridge was initialised to mimic.
+    no_bridge: bool = False
 
 
 @dataclass
@@ -85,7 +88,7 @@ def _prepare_bridge(layers: tuple[int, ...]) -> DimBridgeStack:
 
 def _set_trainables(
     student,
-    bridge: DimBridgeStack,
+    bridge: DimBridgeStack | None,
     da3_model,
     freeze_mixer: bool = False,
 ) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
@@ -96,9 +99,11 @@ def _set_trainables(
             attn_params.append(p)
         else:
             p.requires_grad_(False)
-    bridge_params = list(bridge.parameters())
-    for p in bridge_params:
-        p.requires_grad_(True)
+    bridge_params: list[nn.Parameter] = []
+    if bridge is not None:
+        bridge_params = list(bridge.parameters())
+        for p in bridge_params:
+            p.requires_grad_(True)
     for p in da3_model.parameters():
         p.requires_grad_(False)
     return attn_params, bridge_params
@@ -129,12 +134,12 @@ def _kd_loss(
 
 def _run_dpt(
     student,
-    bridge: DimBridgeStack,
+    bridge: DimBridgeStack | None,
     dualdpt: nn.Module,
     images: Tensor,
     layers: tuple[int, ...],
 ) -> tuple[Tensor, list[Tensor]]:
-    """Student backbone → DimBridge (trainable) → frozen DualDPT → depth.
+    """Student backbone → (DimBridge or cat-duplicate) → frozen DualDPT → depth.
 
     Args:
         images: (B, S, 3, H, W).
@@ -145,7 +150,10 @@ def _run_dpt(
             backbone produced — kept for CM17 KD loss without a second forward.
     """
     out = student.backbone(images, export_feat_layers=list(layers))
-    bridged = bridge(out.aux_features)  # list of (B, S, T, 768)
+    if bridge is None:
+        bridged = [torch.cat([f, f], dim=-1) for f in out.aux_features]
+    else:
+        bridged = bridge(out.aux_features)  # list of (B, S, T, 768)
     feats_for_dpt = [(f,) for f in bridged]
     H, W = images.shape[-2], images.shape[-1]
     result = dualdpt(feats_for_dpt, H, W, patch_start_idx=0)
@@ -172,13 +180,16 @@ def depth_ft(
     cfg: DepthFTConfig,
     out_dir: Path,
     bridge: DimBridgeStack | None = None,
-) -> tuple[DepthFTLog, DimBridgeStack]:
+) -> tuple[DepthFTLog, DimBridgeStack | None]:
     out_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device(cfg.device)
 
-    if bridge is None:
+    if cfg.no_bridge:
+        bridge = None
+    elif bridge is None:
         bridge = _prepare_bridge(cfg.layers)
-    bridge.to(device).train()
+    if bridge is not None:
+        bridge.to(device).train()
     student.to(device).train()
     dualdpt = get_dualdpt(da3_model).to(device)
     dualdpt.eval()
@@ -197,9 +208,14 @@ def depth_ft(
         param_groups.append(
             {"params": attn_params, "lr": cfg.lr_attn, "weight_decay": cfg.weight_decay}
         )
-    param_groups.append(
-        {"params": bridge_params, "lr": cfg.lr_bridge, "weight_decay": cfg.weight_decay}
-    )
+    if bridge_params:
+        param_groups.append(
+            {"params": bridge_params, "lr": cfg.lr_bridge, "weight_decay": cfg.weight_decay}
+        )
+    if not param_groups:
+        raise RuntimeError(
+            "depth_ft: no trainable parameters (freeze_mixer + no_bridge leaves nothing)."
+        )
     opt = AdamW(param_groups)
     lr_ref = cfg.lr_attn if attn_params else cfg.lr_bridge
     sched = CosineAnnealingLR(opt, T_max=cfg.steps, eta_min=lr_ref * 0.1)
@@ -279,7 +295,7 @@ def depth_ft(
                 {
                     "step": step,
                     "student": student.state_dict(),
-                    "bridge": bridge.state_dict(),
+                    "bridge": bridge.state_dict() if bridge is not None else None,
                     "cfg": cfg.__dict__,
                     "log": log.__dict__,
                 },
