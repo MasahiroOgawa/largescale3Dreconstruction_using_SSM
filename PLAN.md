@@ -651,3 +651,72 @@ CM2 is the only retained countermeasure. Current best:
 abs_rel = 0.0820, δ<1.25 = 0.9478, rmse = 0.1612, log10 = 0.0359,
 eff_rank = 111.70 — passes δ<1.25, rmse gates; misses abs_rel (0.082 vs
 0.073 target, +12 %), log10, cross_view_nn, effective_rank gates.
+
+## 15. Why SSM-3D still trails DA3, and next-round countermeasures
+
+On `terrains` (504 eval): DA3 abs_rel = 0.0396, SSM-3D (CM2) = 0.0820 —
+roughly 2× worse. Three findings from CM1–7 evidence explain the gap
+and point at what to try next.
+
+### 15.1 Diagnosis
+
+1. **Train-set starvation, not architecture.** Every capacity-adding CM
+   (1, 3, 4, 5) overfit with the same signature: train silog → ~0.005,
+   held-out abs_rel regresses by 49–114 %. 374 ETH3D images is far too
+   few for fine-tuning a 22 M-param backbone; DA3 was pretrained on
+   orders-of-magnitude more data before we ever touched it.
+2. **Representation-diversity gap.** DA3 `effective_rank` = 161 vs
+   SSM-3D 112 on the same eval. Interestingly `cross_view_nn_agreement`
+   is *higher* for SSM-3D (0.40 vs 0.16) — the geometry is captured,
+   the feature diversity isn't. Consistent with Mamba-3's fixed-size
+   recurrent state (`state_dim = 64`) being an information bottleneck
+   relative to full softmax attention.
+3. **DimBridge is a shape adapter, not a source of new information.**
+   A 384 → 768 linear cannot increase expressiveness; it only re-labels
+   channels so DualDPT will accept them. Gains from CM1 (orthogonal
+   init) were ≤ 0 because the *shape* wasn't the problem.
+
+### 15.2 Proposed CM8 – CM18
+
+**Tier 1 — attack the data bottleneck (most likely to move abs_rel):**
+
+- **CM8 — Larger distillation corpus.** Add MegaDepth, BlendedMVS, or
+  Hypersim multi-view data to Phase-B. Target 5k–50k images (≥ 15× the
+  current set). The actual fix; addresses the root cause directly.
+- **CM9 — Aggressive augmentation on ETH3D.** Strong color jitter,
+  random crops, horizontal flips, light geometric distortions.
+  Synthetically expand 374 → ~10k training views without new data.
+  Cheap; cannot hurt if the invariances hold for the eval domain.
+
+**Tier 2 — attack the overfit surface directly (run without new data):**
+
+- **CM14 — Freeze mixer in Phase-C.** Currently the Mamba-3 mixer
+  (~5 M params) is trainable during depth FT; only DimBridge
+  (~0.6 M params) is small enough to fit 374 images without memorising.
+  Freeze everything except DimBridge; expect a lower train-loss floor
+  but a higher test ceiling. Directly attacks the CM3/CM5 failure mode.
+- **CM17 — Keep distill loss ON during Phase-C.** Add the Phase-B
+  feature-KD term to the Phase-C objective (multi-task:
+  `SILog + λ_edge · edge + λ_kd · KD`). Acts as a regulariser that
+  pulls the student toward DA3's feature geometry exactly when
+  Phase-C's SILog loss would pull it toward ETH3D-specific depth.
+- **CM13 — Stronger regularisation.** Weight decay ×3, stochastic
+  depth 0.1, dropout 0.1 in DimBridge. Standard small-data recipe.
+
+**Tier 3 — speculative (architecture-level):**
+
+- **CM10 — Extend Phase-B, shrink Phase-C.** Currently 6 k / 2 k. Try
+  20 k / 500. Rationale: feature matching is the less overfitty loss.
+- **CM11 — Smaller Mamba-3 state dim.** `state_dim` 64 → 32. Counter-
+  intuitive but matches evidence that we are overparameterised for
+  374 images. Needs Phase-B re-distill.
+- **CM18 — Drop DimBridge; use `cat_token=True`.** Make SSM-3D natively
+  output 768-d features matching DA3. Removes the dim-adapter entirely
+  but requires backbone re-init and Phase-B re-distill.
+
+### 15.3 Recommended next experiment
+
+Bundle **CM14 + CM17** — no new data, ~2–3 h to run end-to-end, and it
+tests the overfit diagnosis directly without touching the data pipeline.
+If abs_rel drops below 0.073 the study is done; if it does not, the
+ceiling is data-bound and CM8 becomes the unavoidable next step.
