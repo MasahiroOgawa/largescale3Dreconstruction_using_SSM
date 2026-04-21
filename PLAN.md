@@ -632,6 +632,7 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 18 | drop DimBridge (static `cat([f, f])`, 2k steps on CM9 base: init+aug) | 0.0880 | 0.9213 | 0.1692 | 0.0398 | 76.55 | reverted (+23 % abs_rel vs CM9 — duplicate is rank-bound; feat_cos_mean 0.985 confirms token collapse. Validates PLAN §9 R5 / §15.1 R3: DimBridge earns its ~5 MB.) |
 | 13 | stronger reg stacked on CM9 (drop_path 0.1, bridge_dropout 0.1, wd 0.15, 2k steps) | 0.0799 | 0.9482 | 0.1565 | 0.0357 | 63.91 | reverted (+11.7 % abs_rel vs CM9 — CM9 aug already supplies enough regularisation; adding more removes capacity without adding information) |
 | 10 | **Phase-B 6k→20k / Phase-C 2k→500 on CM9 aug base** | **0.0660** | **0.9722** | **0.1283** | **0.0295** | **83.13** | **kept (−7.7 % abs_rel vs CM9; 5/6 gates pass — log10 gate now clears for the first time; eff_rank +27 %)** |
+| 11 | Mamba-3 state_dim 64→32 (CM10 recipe, Phase-B re-distilled) | 0.0711 | 0.9647 | 0.1354 | 0.0319 | 71.80 | reverted (+7.7 % abs_rel vs CM10; effective_rank actually *fell* 83→72, log10 regresses back to gate-fail. Halving state_dim removes representational capacity without curing the rank bottleneck) |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -855,3 +856,39 @@ Retained: CM2 + CM9 + CM10 as the joint baseline.
 Outstanding from §15.2: CM8 (new-data corpus; disk-blocked at 4.7 GB
 free on `/`), CM11 (smaller Mamba-3 state_dim; needs Phase-B
 re-distill — cheap now that 20 k takes 37 min).
+
+### 15.8 CM11 result (negative) — state_dim 64→32 hurts, doesn't help
+
+Run on 2026-04-22 on the CM10 recipe: Phase-B 20 k + Phase-C 500 with
+Mamba-3 `state_dim=32` (vs default 64). Phase-B was re-distilled from
+scratch into `distill_cm11/ckpt_20000.pt` because state dim is an
+architectural parameter.
+
+- abs_rel 0.0711 (**+7.7 % vs CM10 0.0660**) — reverted by §13.5.
+- log10 0.0319 — regresses back above the 0.031 gate (CM10 cleared it).
+- effective_rank **71.80** (vs CM10 83.13) — **the gate CM11 was
+  designed to improve went the wrong way by 14 %**. 4/6 gates now
+  pass (was 5/6).
+- cross_view_nn 0.5556 (vs CM10 0.6094).
+
+Phase-B distill loss settled at ~0.0132 at step 20 k (vs CM10's
+~0.0125) — small but real reduction in teacher-matching capacity.
+The reduced state dim carries forward as lower feature quality in
+Phase-C.
+
+Interpretation: §15.2 Tier 3 rationale ("overparameterised for 374
+images") does *not* hold for the state-dim axis. The binding
+constraint on `effective_rank` is Mamba-3's recurrent-state
+bottleneck relative to full softmax attention — *less* state
+makes this worse, not better. Consistent with §15.1 R2:
+representation diversity is capacity-limited, not data-limited.
+This closes the §15.2 Tier 3 state_dim lever.
+
+Retained: CM2 + CM9 + CM10 (no change). `--state-dim` flag kept on
+`train_distill.py`, `train_depth.py`, `eval_ssm3d_vs_da3.py` as an
+opt-in diagnostic for future architecture sweeps.
+
+Outstanding from §15.2: **CM8 only** (larger distillation corpus;
+disk-blocked). All Tier-1 non-data, Tier-2, and Tier-3 levers have
+been exhausted — the remaining abs_rel gap to DA3 (0.0660 vs 0.0377,
+~1.75 ×) now has a single remaining lever: real additional data.

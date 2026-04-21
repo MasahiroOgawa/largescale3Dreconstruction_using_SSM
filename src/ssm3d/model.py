@@ -143,12 +143,14 @@ class SSM3DNet(nn.Module):
         head_hidden: int = 64,
         chunk_size: Optional[int] = None,
         drop_path_rate: float = 0.0,
+        mamba_state_dim: int = 64,
     ) -> None:
         super().__init__()
         self.backbone = SSM3DBackbone(
             size=size, img_size=img_size, patch_size=patch_size,
             depth=depth, chunk_size=chunk_size,
             drop_path_rate=drop_path_rate,
+            mamba_state_dim=mamba_state_dim,
         )
         self.depth_head = SimpleDepthHead(
             in_channels=self.backbone.embed_dim, hidden=head_hidden, image_size=img_size

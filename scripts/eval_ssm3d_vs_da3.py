@@ -106,10 +106,12 @@ def _build_ssm3d(
     patch_size: int,
     depth: int,
     chunk_size: int | None = None,
+    state_dim: int = 64,
 ) -> SSM3DNet:
     net = SSM3DNet(
         size="small", img_size=img_size, patch_size=patch_size,
         depth=depth, chunk_size=chunk_size,
+        mamba_state_dim=state_dim,
     )
     load_dinov2_backbone(net.backbone.vit, ensure_dinov2_vits14())
     net.eval()
@@ -143,6 +145,9 @@ def main() -> None:
                     help="autocast dtype for SSM-3D forward (bf16/fp16 on CUDA)")
     ap.add_argument("--chunk-size", type=int, default=None,
                     help="chunked SSD query-axis chunk size (None = full T×T mask)")
+    ap.add_argument("--state-dim", type=int, default=64,
+                    help="CM11: Mamba-3 SSD recurrent state dim (default 64; "
+                         "CM11 uses 32). Must match the ckpt being loaded.")
     ap.add_argument("--student-ckpt", type=Path, default=None,
                     help="Phase-C checkpoint; loads student + bridge state")
     ap.add_argument("--head", choices=["shared_dpt", "simple"], default="shared_dpt",
@@ -167,7 +172,8 @@ def main() -> None:
 
     print("[2/5] building SSM-3D (DINOv2 loaded, no warm-start) ...")
     ssm = _build_ssm3d(
-        args.img_size, args.patch_size, args.depth, chunk_size=args.chunk_size,
+        args.img_size, args.patch_size, args.depth,
+        chunk_size=args.chunk_size, state_dim=args.state_dim,
     ).to(args.device)
     bridge: DimBridgeStack | None = None
     if args.student_ckpt is not None:

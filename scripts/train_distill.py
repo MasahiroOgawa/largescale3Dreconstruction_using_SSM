@@ -45,6 +45,10 @@ def main() -> None:
     ap.add_argument("--patch-size", type=int, default=14)
     ap.add_argument("--steps", type=int, default=6000)
     ap.add_argument("--ckpt-every", type=int, default=1000)
+    ap.add_argument(
+        "--state-dim", type=int, default=64,
+        help="CM11: Mamba-3 SSD recurrent state dim (default 64; CM11 uses 32).",
+    )
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr-attn", type=float, default=3e-4)
     ap.add_argument("--weight-decay", type=float, default=0.05)
@@ -82,6 +86,7 @@ def main() -> None:
         img_size=args.img_size,
         patch_size=args.patch_size,
         depth=12,
+        mamba_state_dim=args.state_dim,
     )
     teacher = load_da3(device=args.device)
     load_da3_backbone(student.backbone.vit, teacher, verbose=True)

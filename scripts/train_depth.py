@@ -79,6 +79,11 @@ def main() -> None:
         "--weight-decay", type=float, default=0.05,
         help="CM13: AdamW weight decay (default 0.05; CM13 recipe uses 0.15).",
     )
+    ap.add_argument(
+        "--state-dim", type=int, default=64,
+        help="CM11: Mamba-3 SSD recurrent state dim (default 64; CM11 uses 32). "
+             "Must match the Phase-B ckpt used for --init.",
+    )
     ap.add_argument("--amp-dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=0)
@@ -110,6 +115,7 @@ def main() -> None:
         patch_size=args.patch_size,
         depth=12,
         drop_path_rate=args.drop_path,
+        mamba_state_dim=args.state_dim,
     )
     teacher = load_da3(device=args.device)
     load_da3_backbone(student.backbone.vit, teacher, verbose=True)
