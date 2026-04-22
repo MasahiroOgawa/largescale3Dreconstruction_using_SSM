@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
 import torch
@@ -29,6 +30,33 @@ from ssm3d.eval.dpt_adapter import SHARED_DPT_LAYERS
 from ssm3d.model import SSM3DNet
 from ssm3d.train.depth_ft import DepthFTConfig, depth_ft
 from ssm3d.weights import load_da3_backbone
+
+
+def _maybe_resize_pos_embed(state: dict, model: torch.nn.Module) -> None:
+    """Bicubic-resize `backbone.vit.pos_embed` in `state` to match `model` (CM12).
+
+    Lets Phase-C fine-tune at img_size=504 starting from a 224-trained Phase-B
+    ckpt. Same helper as in scripts/eval_ssm3d_vs_da3.py.
+    """
+    key = "backbone.vit.pos_embed"
+    if key not in state:
+        return
+    src = state[key]
+    dst = model.state_dict().get(key)
+    if dst is None or src.shape == dst.shape:
+        return
+    cls_src, patch_src = src[:, :1], src[:, 1:]
+    n_src, n_dst = patch_src.shape[1], dst.shape[1] - 1
+    g_src, g_dst = int(math.sqrt(n_src)), int(math.sqrt(n_dst))
+    assert g_src * g_src == n_src and g_dst * g_dst == n_dst, "non-square grid"
+    dim = patch_src.shape[-1]
+    grid = patch_src.reshape(1, g_src, g_src, dim).permute(0, 3, 1, 2)
+    grid = torch.nn.functional.interpolate(
+        grid.float(), size=(g_dst, g_dst), mode="bicubic", align_corners=False
+    ).to(patch_src.dtype)
+    patch_dst = grid.permute(0, 2, 3, 1).reshape(1, g_dst * g_dst, dim)
+    state[key] = torch.cat([cls_src, patch_dst], dim=1)
+    print(f"  pos_embed resized: {src.shape} -> {state[key].shape}")
 
 
 def _build_iter(dataset: ETH3DMultiSceneDataset, seed: int):
@@ -84,6 +112,11 @@ def main() -> None:
         help="CM11: Mamba-3 SSD recurrent state dim (default 64; CM11 uses 32). "
              "Must match the Phase-B ckpt used for --init.",
     )
+    ap.add_argument(
+        "--chunk-size", type=int, default=None,
+        help="CM12: chunked SSD query-axis chunk size (None = full T x T mask). "
+             "Needed when training at img_size>=504 to fit in 12 GB VRAM.",
+    )
     ap.add_argument("--amp-dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=0)
@@ -116,6 +149,7 @@ def main() -> None:
         depth=12,
         drop_path_rate=args.drop_path,
         mamba_state_dim=args.state_dim,
+        chunk_size=args.chunk_size,
     )
     teacher = load_da3(device=args.device)
     load_da3_backbone(student.backbone.vit, teacher, verbose=True)
@@ -132,6 +166,7 @@ def main() -> None:
     if args.init is not None:
         print(f"  loading Phase-B state from {args.init}")
         state = torch.load(args.init, map_location="cpu", weights_only=False)
+        _maybe_resize_pos_embed(state["student"], student)
         student.load_state_dict(state["student"])
         if bridge is not None and state.get("bridge") is not None:
             bridge.load_state_dict(state["bridge"])

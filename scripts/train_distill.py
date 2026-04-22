@@ -49,6 +49,11 @@ def main() -> None:
         "--state-dim", type=int, default=64,
         help="CM11: Mamba-3 SSD recurrent state dim (default 64; CM11 uses 32).",
     )
+    ap.add_argument(
+        "--chunk-size", type=int, default=None,
+        help="CM12: chunked SSD query-axis chunk size (None = full T x T mask). "
+             "Needed when distilling at img_size>=504 to fit in 12 GB VRAM.",
+    )
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr-attn", type=float, default=3e-4)
     ap.add_argument("--weight-decay", type=float, default=0.05)
@@ -87,6 +92,7 @@ def main() -> None:
         patch_size=args.patch_size,
         depth=12,
         mamba_state_dim=args.state_dim,
+        chunk_size=args.chunk_size,
     )
     teacher = load_da3(device=args.device)
     load_da3_backbone(student.backbone.vit, teacher, verbose=True)
