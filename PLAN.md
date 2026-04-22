@@ -892,3 +892,48 @@ Outstanding from §15.2: **CM8 only** (larger distillation corpus;
 disk-blocked). All Tier-1 non-data, Tier-2, and Tier-3 levers have
 been exhausted — the remaining abs_rel gap to DA3 (0.0660 vs 0.0377,
 ~1.75 ×) now has a single remaining lever: real additional data.
+
+### 15.9 Per-image investigation — SSM "wins" on images 10, 11 are a resolution artifact
+
+In the CM10 eval (SSM-3D at `img_size=224`, DA3 at `process_res=504`)
+SSM-3D beats DA3 on exactly 2 of 12 terrains images: indices 10 and
+11 (`DSC_0625`, `DSC_0626`), which are close-up shots of a corrugated
+/ louvered shutter — a geometrically near-planar surface (depth clip
+~18 cm) with strong periodic horizontal texture. DA3's per-image
+abs_rel spikes to 0.081 / 0.121 on those two (~5× its own mean across
+images 0–9); SSM-3D stays at 0.056 / 0.077.
+
+Reran CM10 eval with both models at 504 (`--img-size 504
+--da3-process-res 504`, SSM's pos_embed bicubic-resized via the CM2
+path). Results (`outputs/eval_cm10_504/`):
+
+- SSM-3D abs_rel mean = **0.2037** (vs CM10@224 = 0.0660). All 6 §9
+  gates fail. The 504-resize destroys the 224-trained geometry.
+- DA3 keeps its per-image pattern: abs_rel 0.126 / 0.110 on images
+  10 / 11 — stripe-as-depth failure mode is resolution-invariant.
+- **The SSM-win on 10 / 11 does not persist at matched resolution.**
+  DA3 beats SSM on all 12 images at 504.
+- SSM-3D `effective_rank` at 504 rose 83 → 109 (more tokens → more
+  rank), which rules out "lower expressivity helps on planar
+  texture" as the mechanism.
+
+**Root cause of the apparent SSM wins at 224:** the corrugated-shutter
+louvre frequency (~30 cycles across the 504-native image) is
+**under-sampled** by the 16 × 16 patch grid at `img_size=224` — each
+14-pixel patch integrates over a full louvre cycle, low-pass-filtering
+the stripe pattern before it reaches the DPT. At 504 the 36 × 36 grid
+resolves individual louvres and both models decode them as depth
+variation.
+
+Implication: CM10's advantage on images 10 / 11 is **not an
+architectural win** — it's a side-effect of evaluating at lower
+resolution than DA3's native inference pipeline. The published CM10
+abs_rel (0.0660) remains valid as a benchmark number (eval protocol
+matches §9 gates, which are defined at the deployed inference paths
+— DA3 at 504, SSM at 224), but should not be interpreted as
+"SSM-3D is more robust to high-frequency planar texture."
+
+DA3's stripe-over-interpretation on 10 / 11 is a genuine DA3
+failure mode (preserved at 504), but SSM-3D's current architecture
+does not fix it — it only avoids it when the input resolution happens
+to be too coarse to resolve the offending texture.
