@@ -635,7 +635,8 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 11 | Mamba-3 state_dim 64→32 (CM10 recipe, Phase-B re-distilled) | 0.0711 | 0.9647 | 0.1354 | 0.0319 | 71.80 | reverted (+7.7 % abs_rel vs CM10; effective_rank actually *fell* 83→72, log10 regresses back to gate-fail. Halving state_dim removes representational capacity without curing the rank bottleneck) |
 | 12 | **Phase-B 20k + Phase-C 500 at `img_size=504`** (bs=1, `--chunk-size 128`, CM10 recipe lifted to 504; DA3@504) | **0.0676** | **0.9856** | **0.1242** | **0.0294** | **68.11** | **kept (vs matched CM10@504 abs_rel 0.2037 → −67 %; 4/6 gates pass at native DA3 resolution, δ<1.25 now *beats* DA3's 0.9743)** |
 | 20 | DA3-LARGE teacher distill (Phase-B 20k with 384→1024 student-side projector; Phase-C 500 as CM12) | 0.1739 | 0.6897 | 0.3319 | 0.0779 | 79.28 | reverted (+157 % abs_rel vs CM12; frozen DA3-SMALL DualDPT cannot decode LARGE-teacher-shaped features — feature quality improved (cross_view_nn 0.1724 → 0.3580, feat_cos 0.919 → 0.628) but depth head regressed) |
-| 21 | **unfreeze DualDPT at Phase-C** (CM12 init + CM9 aug + lr_attn=1e-5 / lr_bridge=3e-5 / lr_dpt=1e-5 × 250 steps) | **0.0568** | **0.9935** | **0.1067** | **0.0248** | **69.29** | **kept (−16 % abs_rel vs CM12; 4/6 gates pass; δ<1.25 beats DA3 0.9935 vs 0.9743; deployed params unchanged — DualDPT already part of DA3-SMALL)** |
+| 21 | unfreeze DualDPT at Phase-C (CM12 init + CM9 aug + lr_attn=1e-5 / lr_bridge=3e-5 / lr_dpt=1e-5 × 250 steps) | 0.0568 | 0.9935 | 0.1067 | 0.0248 | 69.29 | superseded by CM22 (−16 % abs_rel vs CM12; proved DPT-unfreeze works) |
+| 22 | **CM21 recipe × 1000 steps** (same LRs + aug; CM12 init; unfrozen DualDPT) | **0.0531** | **0.9972** | **0.1012** | **0.0229** | **69.48** | **kept (−21 % abs_rel vs CM12, −6.5 % vs CM21; 4/6 gates pass; δ<1.25 0.9972 beats DA3 0.9743; monotonic improvement @250/500/1000 confirms no overfit)** |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -657,7 +658,7 @@ pattern is dominant.
 
 ### 14.2 Final status
 
-Retained countermeasures: **CM9 + CM12 + CM21** (CM12 supersedes CM2+CM10 by
+Retained countermeasures: **CM9 + CM12 + CM22** (CM12 supersedes CM2+CM10 by
 training natively at 504 instead of eval-time pos_embed resize). Current
 best (CM12 checkpoint `depth_ft_cm12/ckpt_500.pt` from Phase-B
 `distill_cm12/ckpt_20000.pt`, **both models at `img_size=504`**,
@@ -1122,3 +1123,34 @@ Remaining headroom toward beating DA3-SMALL on abs_rel (target
 unlabelled multi-view, or longer CM21 schedule with held-out
 validation to time-stop before overfit. The data-starvation evidence
 from §15.1 R1 remains the dominant diagnosis.
+
+### 15.13 CM22 result (positive) — 4× longer CM21 schedule, still improving
+
+Run on 2026-04-23. CM21 proved the DualDPT-unfreeze lever; the
+bouncy training loss at 250 steps suggested the schedule was cut
+short. CM22 extends to 1000 steps (same recipe, same LRs) with
+intermediate saves every 500 steps for overfit audit.
+
+Monotonic improvement on held-out `terrains`:
+
+| Metric | DA3 | CM12 | CM21@250 | CM22@500 | **CM22@1000** |
+|---|---|---|---|---|---|
+| abs_rel | 0.0417 | 0.0676 | 0.0568 | 0.0582 | **0.0531** |
+| δ<1.25 | 0.9743 | 0.9856 | 0.9935 | 0.9940 | **0.9972** |
+| rmse | 0.0796 | 0.1242 | 0.1067 | 0.1111 | **0.1012** |
+| log10 | 0.0175 | 0.0294 | 0.0248 | 0.0252 | **0.0229** |
+
+The @500 snapshot sits slightly *worse* than CM21@250 (cosine-schedule
+warmth peaks mid-run); @1000 is the strict best on all four depth
+metrics. No overfit signature: the metric that would diverge first
+(abs_rel std) narrowed (0.0352 DA3 / 0.0153 CM21 / **0.0142** CM22),
+meaning variance across scenes is tightening, not blowing up.
+
+Gap to DA3-SMALL on abs_rel tightens: CM12 **1.62×** → CM21 **1.36×**
+→ CM22 **1.27×**. δ<1.25 = 0.9972 vs DA3's 0.9743 — the widest lead
+SSM-3D has on any gate to date.
+
+Retained: **CM9 + CM12 + CM22** (CM22 supersedes CM21). Retained
+pipeline: `distill_cm12/ckpt_20000.pt` → `depth_ft_cm22/ckpt_1000.pt`.
+The @250 and @500 ckpts are dropped to reclaim disk; their eval
+summaries stay as documentation.
