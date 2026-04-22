@@ -96,6 +96,16 @@ def main() -> None:
         help="CM18: drop the learnable DimBridge; fall back to static cat([f, f]).",
     )
     ap.add_argument(
+        "--unfreeze-dpt", action="store_true",
+        help="CM21: unfreeze DA3 DualDPT during Phase-C and train it at --lr-dpt. "
+             "Deployed params unchanged (DualDPT is already part of DA3-SMALL).",
+    )
+    ap.add_argument(
+        "--lr-dpt", type=float, default=1e-5,
+        help="CM21: LR for DualDPT when --unfreeze-dpt is set (default 1e-5; "
+             "CM5's 3e-5 overfit on 374 images).",
+    )
+    ap.add_argument(
         "--drop-path", type=float, default=0.0,
         help="CM13: stochastic-depth rate for SSM-3D backbone blocks.",
     )
@@ -185,6 +195,8 @@ def main() -> None:
         lambda_kd=args.lambda_kd,
         no_bridge=args.no_bridge,
         weight_decay=args.weight_decay,
+        unfreeze_dpt=args.unfreeze_dpt,
+        lr_dpt=args.lr_dpt,
     )
     data_iter = _build_iter(dataset, seed=args.seed)
     depth_ft(student, teacher, data_iter, cfg, args.out, bridge=bridge)

@@ -635,6 +635,7 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 11 | Mamba-3 state_dim 64→32 (CM10 recipe, Phase-B re-distilled) | 0.0711 | 0.9647 | 0.1354 | 0.0319 | 71.80 | reverted (+7.7 % abs_rel vs CM10; effective_rank actually *fell* 83→72, log10 regresses back to gate-fail. Halving state_dim removes representational capacity without curing the rank bottleneck) |
 | 12 | **Phase-B 20k + Phase-C 500 at `img_size=504`** (bs=1, `--chunk-size 128`, CM10 recipe lifted to 504; DA3@504) | **0.0676** | **0.9856** | **0.1242** | **0.0294** | **68.11** | **kept (vs matched CM10@504 abs_rel 0.2037 → −67 %; 4/6 gates pass at native DA3 resolution, δ<1.25 now *beats* DA3's 0.9743)** |
 | 20 | DA3-LARGE teacher distill (Phase-B 20k with 384→1024 student-side projector; Phase-C 500 as CM12) | 0.1739 | 0.6897 | 0.3319 | 0.0779 | 79.28 | reverted (+157 % abs_rel vs CM12; frozen DA3-SMALL DualDPT cannot decode LARGE-teacher-shaped features — feature quality improved (cross_view_nn 0.1724 → 0.3580, feat_cos 0.919 → 0.628) but depth head regressed) |
+| 21 | **unfreeze DualDPT at Phase-C** (CM12 init + CM9 aug + lr_attn=1e-5 / lr_bridge=3e-5 / lr_dpt=1e-5 × 250 steps) | **0.0568** | **0.9935** | **0.1067** | **0.0248** | **69.29** | **kept (−16 % abs_rel vs CM12; 4/6 gates pass; δ<1.25 beats DA3 0.9935 vs 0.9743; deployed params unchanged — DualDPT already part of DA3-SMALL)** |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -656,7 +657,7 @@ pattern is dominant.
 
 ### 14.2 Final status
 
-Retained countermeasures: **CM9 + CM12** (CM12 supersedes CM2+CM10 by
+Retained countermeasures: **CM9 + CM12 + CM21** (CM12 supersedes CM2+CM10 by
 training natively at 504 instead of eval-time pos_embed resize). Current
 best (CM12 checkpoint `depth_ft_cm12/ckpt_500.pt` from Phase-B
 `distill_cm12/ckpt_20000.pt`, **both models at `img_size=504`**,
@@ -1062,3 +1063,62 @@ CM12 remains the retained best at matched 504. CM20 artifacts
 (`distill_cm20/ckpt_20000.pt`, `depth_ft_cm20/ckpt_500.pt`) are
 removed to reclaim ~180 MB; only `outputs/eval_cm20/summary.md`
 is kept as documentation.
+
+### 15.12 CM21 result (positive) — unfreeze DualDPT, keep deployed size
+
+Run on 2026-04-23. Directly targets the §15.11 diagnosis: the frozen
+DualDPT head is the bottleneck. Since DualDPT already ships as part of
+DA3-SMALL, tuning its weights does **not** change the deployed
+parameter count.
+
+Recipe: init from CM12 `depth_ft_cm12/ckpt_500.pt` (Phase-B distilled
++ Phase-C fine-tuned baseline at 504). Unfreeze DualDPT (3.87 M params)
+and train it at `lr_dpt=1e-5` (CM5's 3e-5 overfit; a 3× lower LR avoids
+the same trap). Lower the mixer and bridge LRs to `1e-5` / `3e-5`
+respectively — the CM12 init is already well-tuned, so we only want
+light adjustments. Add CM9 augmentation (random crop 0.6–1.0, hflip
+p=0.5, color jitter ±0.4/0.1). Short 250-step schedule to stay below
+CM5's overfit threshold. `img_size=504, patch_size=14, bs=1, chunk=128`
+matching CM12.
+
+Results at matched 504 (`outputs/eval_cm21/`):
+
+| Metric | DA3@504 | CM12 | **CM21** | vs CM12 |
+|---|---|---|---|---|
+| abs_rel | 0.0417 | 0.0676 | **0.0568** | **−16 %** ✅ |
+| δ<1.25 | 0.9743 | 0.9856 | **0.9935** ✅ (beats DA3) | +0.8 % |
+| rmse | 0.0796 | 0.1242 | **0.1067** | **−14 %** ✅ |
+| log10 | 0.0175 | 0.0294 | **0.0248** | **−16 %** ✅ |
+| cross_view_nn | 0.1601 | 0.1724 | 0.1696 | −1.6 % |
+| effective_rank | 161.3 | 68.11 | 69.29 | +1.7 % |
+
+All four depth metrics improved by 14–16 %. δ<1.25 = **0.9935** widens
+the lead over DA3's 0.9743. The abs_rel gap to DA3 closes from CM12's
+**1.62×** to **1.36×** — still not beating DA3-SMALL outright, but
+materially closer and well above the §13.5 gate-improvement threshold
+(`abs_rel_cm21 = 0.0568 ≤ 0.0662` required for keep). Representation
+metrics are unchanged, as expected — only the depth head was tuned.
+
+Deployed configuration (after CM21):
+
+| Component | Params | Source |
+|---|---|---|
+| SSM-3D backbone | 22.06 M | Phase-A DA3-SMALL init + Phase-B-distilled mixer |
+| DimBridge (4 × 384→768) | 1.2 M | Phase-C fine-tuned |
+| DualDPT (depth head) | 3.87 M | Phase-C fine-tuned (CM21) |
+| **Total** | **27.13 M** | matches DA3-SMALL's 26–28 M size class |
+
+Deployed parameter budget is unchanged from CM12: DualDPT was already
+counted under DA3-SMALL, so the only CM21 delta is *which* DualDPT
+weights ship (ours, not the public DA3-SMALL weights).
+
+Retained: **CM9 + CM12 + CM21**. The retained pipeline is now:
+`distill_cm12/ckpt_20000.pt` (Phase-B) → `depth_ft_cm21/ckpt_250.pt`
+(Phase-C with unfrozen DPT). Current best: abs_rel **0.0568**,
+δ<1.25 **0.9935**, rmse **0.1067**, log10 **0.0248**.
+
+Remaining headroom toward beating DA3-SMALL on abs_rel (target
+< 0.0417): further data (CM8, disk-blocked), self-training on
+unlabelled multi-view, or longer CM21 schedule with held-out
+validation to time-stop before overfit. The data-starvation evidence
+from §15.1 R1 remains the dominant diagnosis.

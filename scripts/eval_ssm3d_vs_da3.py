@@ -176,6 +176,7 @@ def main() -> None:
         chunk_size=args.chunk_size, state_dim=args.state_dim,
     ).to(args.device)
     bridge: DimBridgeStack | None = None
+    tuned_dpt_state: dict | None = None
     if args.student_ckpt is not None:
         print(f"  loading student ckpt from {args.student_ckpt}")
         state = torch.load(args.student_ckpt, map_location="cpu", weights_only=False)
@@ -185,6 +186,7 @@ def main() -> None:
             bridge = DimBridgeStack(num_layers=len(SHARED_DPT_LAYERS), in_dim=384)
             bridge.load_state_dict(state["bridge"])
             bridge.to(args.device).eval()
+        tuned_dpt_state = state.get("dualdpt")
     ssm_feats_all, ssm_grid = _ssm3d_features(ssm, sample.images.to(args.device))
 
     da3 = None
@@ -206,8 +208,16 @@ def main() -> None:
     if da3 is not None:
         try:
             shared_dpt = get_dualdpt(da3)
-            print(f"  shared-DPT: using DA3's DualDPT on SSM-3D layers {SHARED_DPT_LAYERS} "
-                  "(384→768 via channel duplication; smoke test)")
+            if tuned_dpt_state is not None:
+                import copy
+                shared_dpt = copy.deepcopy(shared_dpt)
+                shared_dpt.load_state_dict(tuned_dpt_state)
+                shared_dpt.to(args.device).eval()
+                print(f"  shared-DPT: loaded CM21-tuned DualDPT from ckpt "
+                      f"(DA3 baseline still uses its original DualDPT)")
+            else:
+                print(f"  shared-DPT: using DA3's DualDPT on SSM-3D layers {SHARED_DPT_LAYERS} "
+                      "(384→768 via channel duplication; smoke test)")
         except Exception:
             print("  !! could not bind shared DualDPT:")
             traceback.print_exc()

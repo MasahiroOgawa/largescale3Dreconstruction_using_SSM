@@ -53,6 +53,11 @@ class DepthFTConfig:
     # CM18: drop the learnable DimBridge; fall back to the static cat([f, f])
     # duplicate that DimBridge was initialised to mimic.
     no_bridge: bool = False
+    # CM21: unfreeze DA3's DualDPT and train it at its own (low) LR. Targets
+    # the CM20 diagnosis that the frozen head is the bottleneck. Deployed
+    # param count is unchanged — DualDPT already ships with DA3.
+    unfreeze_dpt: bool = False
+    lr_dpt: float = 1e-5
 
 
 @dataclass
@@ -90,8 +95,10 @@ def _set_trainables(
     student,
     bridge: DimBridgeStack | None,
     da3_model,
+    dualdpt: nn.Module,
     freeze_mixer: bool = False,
-) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
+    unfreeze_dpt: bool = False,
+) -> tuple[list[nn.Parameter], list[nn.Parameter], list[nn.Parameter]]:
     attn_params: list[nn.Parameter] = []
     for name, p in student.named_parameters():
         if ".attn." in name and not freeze_mixer:
@@ -106,7 +113,13 @@ def _set_trainables(
             p.requires_grad_(True)
     for p in da3_model.parameters():
         p.requires_grad_(False)
-    return attn_params, bridge_params
+    dpt_params: list[nn.Parameter] = []
+    if unfreeze_dpt:
+        dpt_params = list(dualdpt.parameters())
+        for p in dpt_params:
+            p.requires_grad_(True)
+        dualdpt.train()
+    return attn_params, bridge_params, dpt_params
 
 
 def _kd_loss(
@@ -194,8 +207,9 @@ def depth_ft(
     dualdpt = get_dualdpt(da3_model).to(device)
     dualdpt.eval()
 
-    attn_params, bridge_params = _set_trainables(
-        student, bridge, da3_model, freeze_mixer=cfg.freeze_mixer
+    attn_params, bridge_params, dpt_params = _set_trainables(
+        student, bridge, da3_model, dualdpt,
+        freeze_mixer=cfg.freeze_mixer, unfreeze_dpt=cfg.unfreeze_dpt,
     )
     if cfg.freeze_mixer and cfg.lambda_kd > 0:
         print(
@@ -211,6 +225,14 @@ def depth_ft(
     if bridge_params:
         param_groups.append(
             {"params": bridge_params, "lr": cfg.lr_bridge, "weight_decay": cfg.weight_decay}
+        )
+    if dpt_params:
+        param_groups.append(
+            {"params": dpt_params, "lr": cfg.lr_dpt, "weight_decay": cfg.weight_decay}
+        )
+        print(
+            f"[depth_ft] CM21 DualDPT unfrozen: {sum(p.numel() for p in dpt_params)/1e6:.2f} M params "
+            f"at lr={cfg.lr_dpt:.1e}"
         )
     if not param_groups:
         raise RuntimeError(
@@ -272,7 +294,9 @@ def depth_ft(
         opt.zero_grad(set_to_none=True)
         loss.backward()
         if cfg.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(attn_params + bridge_params, cfg.grad_clip)
+            torch.nn.utils.clip_grad_norm_(
+                attn_params + bridge_params + dpt_params, cfg.grad_clip
+            )
         opt.step()
         sched.step()
 
@@ -296,6 +320,9 @@ def depth_ft(
                     "step": step,
                     "student": student.state_dict(),
                     "bridge": bridge.state_dict() if bridge is not None else None,
+                    "dualdpt": (
+                        dualdpt.state_dict() if cfg.unfreeze_dpt else None
+                    ),
                     "cfg": cfg.__dict__,
                     "log": log.__dict__,
                 },
