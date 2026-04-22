@@ -23,7 +23,12 @@ from ssm3d.data.eth3d_multi import (
 )
 from ssm3d.eval.da3_reference import load_da3
 from ssm3d.model import SSM3DNet
-from ssm3d.train.distill import DistillConfig, DISTILL_LAYERS, distill
+from ssm3d.train.distill import (
+    DISTILL_LAYERS,
+    DISTILL_LAYERS_LARGE,
+    DistillConfig,
+    distill,
+)
 from ssm3d.weights import load_da3_backbone
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -61,6 +66,18 @@ def main() -> None:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument(
+        "--teacher", type=str, default="depth-anything/DA3-SMALL",
+        help="CM20: HF model ID for Phase-B teacher. Use "
+             "'depth-anything/DA3-LARGE-1.1' to distill from the ViT-L teacher "
+             "(triggers the student-side projector; CC BY-NC license).",
+    )
+    ap.add_argument(
+        "--teacher-layers", type=int, nargs="+", default=None,
+        help="CM20: layer indices to distill from the teacher. Defaults to "
+             "(5,7,9,11) for 12-block teachers and (11,15,19,23) for 24-block "
+             "teachers.",
+    )
+    ap.add_argument(
         "--scenes",
         nargs="+",
         default=list(TRAIN_SCENES),
@@ -94,8 +111,29 @@ def main() -> None:
         mamba_state_dim=args.state_dim,
         chunk_size=args.chunk_size,
     )
-    teacher = load_da3(device=args.device)
-    load_da3_backbone(student.backbone.vit, teacher, verbose=True)
+    teacher = load_da3(hf_model=args.teacher, device=args.device)
+    teacher_blocks = len(teacher.model.backbone.pretrained.blocks)
+    teacher_dim = teacher.model.backbone.pretrained.embed_dim
+    if args.teacher_layers is not None:
+        layers = tuple(args.teacher_layers)
+    elif teacher_blocks >= 24:
+        layers = DISTILL_LAYERS_LARGE
+    else:
+        layers = DISTILL_LAYERS
+    print(
+        f"  teacher={args.teacher}  blocks={teacher_blocks}  "
+        f"embed_dim={teacher_dim}  layers={layers}"
+    )
+    # CM20: student stays ViT-S-shaped. When the distill teacher is a bigger
+    # model, still init non-attn params from DA3-SMALL so the Phase-A transfer
+    # (patch_embed / MLPs / norms) benefit is preserved.
+    if teacher_dim == student.backbone.vit.embed_dim:
+        load_da3_backbone(student.backbone.vit, teacher, verbose=True)
+    else:
+        print("  loading DA3-SMALL for student init (shape-compatible) ...")
+        small = load_da3(hf_model="depth-anything/DA3-SMALL", device=args.device)
+        load_da3_backbone(student.backbone.vit, small, verbose=True)
+        del small
 
     print("[4/4] starting distillation ...")
     cfg = DistillConfig(
@@ -106,7 +144,7 @@ def main() -> None:
         weight_decay=args.weight_decay,
         amp_dtype=args.amp_dtype,
         device=args.device,
-        layers=DISTILL_LAYERS,
+        layers=layers,
     )
     data_iter = _build_iter(dataset, seed=args.seed)
     distill(student, teacher, data_iter, cfg, args.out, bridge=None)

@@ -634,6 +634,7 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 10 | **Phase-B 6k→20k / Phase-C 2k→500 on CM9 aug base** | **0.0660** | **0.9722** | **0.1283** | **0.0295** | **83.13** | **kept (−7.7 % abs_rel vs CM9; 5/6 gates pass — log10 gate now clears for the first time; eff_rank +27 %)** |
 | 11 | Mamba-3 state_dim 64→32 (CM10 recipe, Phase-B re-distilled) | 0.0711 | 0.9647 | 0.1354 | 0.0319 | 71.80 | reverted (+7.7 % abs_rel vs CM10; effective_rank actually *fell* 83→72, log10 regresses back to gate-fail. Halving state_dim removes representational capacity without curing the rank bottleneck) |
 | 12 | **Phase-B 20k + Phase-C 500 at `img_size=504`** (bs=1, `--chunk-size 128`, CM10 recipe lifted to 504; DA3@504) | **0.0676** | **0.9856** | **0.1242** | **0.0294** | **68.11** | **kept (vs matched CM10@504 abs_rel 0.2037 → −67 %; 4/6 gates pass at native DA3 resolution, δ<1.25 now *beats* DA3's 0.9743)** |
+| 20 | DA3-LARGE teacher distill (Phase-B 20k with 384→1024 student-side projector; Phase-C 500 as CM12) | 0.1739 | 0.6897 | 0.3319 | 0.0779 | 79.28 | reverted (+157 % abs_rel vs CM12; frozen DA3-SMALL DualDPT cannot decode LARGE-teacher-shaped features — feature quality improved (cross_view_nn 0.1724 → 0.3580, feat_cos 0.919 → 0.628) but depth head regressed) |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -1005,3 +1006,59 @@ kept as a code path for backwards compat.
 
 Outstanding from §15.2: CM8 only (larger distillation corpus;
 disk-blocked).
+
+### 15.11 CM20 result (negative) — DA3-LARGE teacher cannot help a frozen DA3-SMALL DualDPT
+
+Run on 2026-04-22. Motivated by the exhaustion of in-family levers at
+matched 504: a distillation student cannot exceed its teacher on
+feature quality, and CM12 distilled from DA3-SMALL — the model we are
+trying to beat. CM20 swaps the Phase-B teacher to **DA3-LARGE-1.1**
+(ViT-L, 24 blocks, 1024-dim) while keeping the deployed student
+identical (22.06 M backbone + 1.2 M DimBridge). The dim mismatch is
+bridged by a **student-side `DistillProjector`** (per-layer
+`Linear(384→1024)`, ~1.6 M params) that lives *only* during Phase-B —
+`scripts/train_depth.py` reads `state["student"]` and `state["bridge"]`
+and ignores `state["projector"]`, so deployed params are unchanged.
+Student non-attn weights still init from DA3-SMALL. Phase-B layer
+indices auto-lift to `(11, 15, 19, 23)` for the 24-block teacher
+(`DISTILL_LAYERS_LARGE`).
+
+Recipe: identical to CM12 except teacher. Phase-B 20k steps, Phase-C
+500 steps, both at `img_size=504, patch_size=14, bs=1, chunk_size=128`.
+
+Results at matched 504 (`outputs/eval_cm20/`):
+
+| Metric | DA3@504 | SSM-3D CM12 | SSM-3D CM20 | CM20 vs CM12 |
+|---|---|---|---|---|
+| abs_rel | 0.0417 | 0.0676 | **0.1739** | **+157 %** ❌ |
+| δ<1.25 | 0.9743 | 0.9856 | 0.6897 | −30 % ❌ |
+| rmse | 0.0796 | 0.1242 | 0.3319 | +167 % ❌ |
+| log10 | 0.0175 | 0.0294 | 0.0779 | +165 % ❌ |
+| feat_cos_mean | 0.9262 | 0.9191 | **0.6279** | **−32 %** ✅ (less collapse) |
+| cross_view_nn | 0.1601 | 0.1724 | **0.3580** | **+108 %** ✅ |
+| effective_rank | 161.3 | 68.11 | **79.28** | +16 % ✅ |
+
+**Every representation metric improved; every depth metric collapsed.**
+The Phase-B loss settled to 0.010 (vs CM12's 0.026) — the student is
+matching the LARGE teacher's *feature space* better than it matched
+SMALL. But the downstream frozen **DualDPT head was trained alongside
+DA3-SMALL's feature distribution**, and it cannot decode features that
+now live in DA3-LARGE-land. DimBridge (two 384→768 Linear + 500 Phase-C
+steps) does not have enough capacity to span that domain gap.
+
+Reverted per §13.5 — `abs_rel_cm20` (0.1739) is not ≤ CM12's 0.0676.
+Takeaway: **feature-ceiling lift requires joint head adaptation.** The
+deployed pipeline's weakest link is the frozen DualDPT, not the student
+backbone — distilling from a stronger teacher without unfreezing (or
+retraining from scratch) the depth head just makes the two ends
+incompatible. Future work toward beating DA3-SMALL must either
+(i) jointly retrain DualDPT from scratch on top of the LARGE-distilled
+features (parameter budget issue — DA3's DualDPT is ~12 M), or
+(ii) stay in-family with DA3-SMALL teacher and find a non-feature
+lever (larger training corpus, self-training on unlabelled multi-view,
+head-level regularisation).
+
+CM12 remains the retained best at matched 504. CM20 artifacts
+(`distill_cm20/ckpt_20000.pt`, `depth_ft_cm20/ckpt_500.pt`) are
+removed to reclaim ~180 MB; only `outputs/eval_cm20/summary.md`
+is kept as documentation.

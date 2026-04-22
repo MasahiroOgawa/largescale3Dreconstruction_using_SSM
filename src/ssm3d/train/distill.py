@@ -26,6 +26,20 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 DISTILL_LAYERS: tuple[int, ...] = (5, 7, 9, 11)
+DISTILL_LAYERS_LARGE: tuple[int, ...] = (11, 15, 19, 23)
+
+
+class DistillProjector(nn.Module):
+    """CM20: per-layer Linear 384 -> teacher_dim. Phase-B only; discarded at Phase-C."""
+
+    def __init__(self, num_layers: int, student_dim: int = 384, teacher_dim: int = 1024):
+        super().__init__()
+        self.projs = nn.ModuleList(
+            [nn.Linear(student_dim, teacher_dim) for _ in range(num_layers)]
+        )
+
+    def forward(self, layer_idx: int, f_s: Tensor) -> Tensor:
+        return self.projs[layer_idx](f_s)
 
 
 @dataclass
@@ -105,10 +119,23 @@ def _student_features(
 
 
 def _per_layer_loss(
-    f_s: Tensor, f_t: Tensor, patch_start_idx: int, cfg: DistillConfig
+    f_s: Tensor,
+    f_t: Tensor,
+    patch_start_idx: int,
+    cfg: DistillConfig,
+    projector: DistillProjector | None = None,
+    layer_idx: int = 0,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """L2 + (1 − cos) on patch tokens only (drop cls+register)."""
-    s = f_s[:, patch_start_idx:].float()
+    """L2 + (1 − cos) on patch tokens only (drop cls+register).
+
+    CM20: when ``projector`` is supplied, project student features to the
+    teacher's embed dim before computing the match (enables DA3-LARGE teacher
+    with a 384-dim student).
+    """
+    s = f_s[:, patch_start_idx:]
+    if projector is not None:
+        s = projector(layer_idx, s)
+    s = s.float()
     t = f_t[:, patch_start_idx:].float().detach()
     C = s.shape[-1]
     l2 = (s - t).pow(2).mean() / max(C, 1)
@@ -141,7 +168,30 @@ def distill(
     if bridge is not None:
         bridge.to(device).train()
 
-    opt = AdamW(_split_param_groups(student, bridge, cfg))
+    student_dim = int(student.backbone.vit.embed_dim)
+    teacher_dim = int(da3_model.model.backbone.pretrained.embed_dim)
+    projector: DistillProjector | None = None
+    if teacher_dim != student_dim:
+        projector = DistillProjector(
+            num_layers=len(cfg.layers),
+            student_dim=student_dim,
+            teacher_dim=teacher_dim,
+        ).to(device).train()
+        print(
+            f"[distill] CM20 projector enabled: {student_dim} -> {teacher_dim} "
+            f"over {len(cfg.layers)} layers"
+        )
+
+    param_groups = _split_param_groups(student, bridge, cfg)
+    if projector is not None:
+        param_groups.append(
+            {
+                "params": list(projector.parameters()),
+                "lr": cfg.lr_attn,
+                "weight_decay": cfg.weight_decay,
+            }
+        )
+    opt = AdamW(param_groups)
     sched = CosineAnnealingLR(opt, T_max=cfg.steps, eta_min=cfg.lr_attn * 0.1)
     use_amp = device.type == "cuda" and cfg.amp_dtype != "fp32"
     amp_dtype = _amp_dtype(cfg.amp_dtype)
@@ -165,8 +215,11 @@ def distill(
             loss = torch.zeros((), device=device)
             loss_l2 = torch.zeros((), device=device)
             loss_cos = torch.zeros((), device=device)
-            for f_s, f_t in zip(student_feats, teacher_feats):
-                lk, l2k, cosk = _per_layer_loss(f_s, f_t, patch_start_idx, cfg)
+            for li, (f_s, f_t) in enumerate(zip(student_feats, teacher_feats)):
+                lk, l2k, cosk = _per_layer_loss(
+                    f_s, f_t, patch_start_idx, cfg,
+                    projector=projector, layer_idx=li,
+                )
                 loss = loss + lk
                 loss_l2 = loss_l2 + l2k
                 loss_cos = loss_cos + cosk
@@ -200,6 +253,9 @@ def distill(
                 "step": step,
                 "student": student.state_dict(),
                 "bridge": bridge.state_dict() if bridge is not None else None,
+                "projector": (
+                    projector.state_dict() if projector is not None else None
+                ),
                 "cfg": cfg.__dict__,
                 "log": log.__dict__,
             }
