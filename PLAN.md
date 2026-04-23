@@ -637,6 +637,7 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 20 | DA3-LARGE teacher distill (Phase-B 20k with 384→1024 student-side projector; Phase-C 500 as CM12) | 0.1739 | 0.6897 | 0.3319 | 0.0779 | 79.28 | reverted (+157 % abs_rel vs CM12; frozen DA3-SMALL DualDPT cannot decode LARGE-teacher-shaped features — feature quality improved (cross_view_nn 0.1724 → 0.3580, feat_cos 0.919 → 0.628) but depth head regressed) |
 | 21 | unfreeze DualDPT at Phase-C (CM12 init + CM9 aug + lr_attn=1e-5 / lr_bridge=3e-5 / lr_dpt=1e-5 × 250 steps) | 0.0568 | 0.9935 | 0.1067 | 0.0248 | 69.29 | superseded by CM22 (−16 % abs_rel vs CM12; proved DPT-unfreeze works) |
 | 22 | **CM21 recipe × 1000 steps** (same LRs + aug; CM12 init; unfrozen DualDPT) | **0.0531** | **0.9972** | **0.1012** | **0.0229** | **69.48** | **kept (−21 % abs_rel vs CM12, −6.5 % vs CM21; 4/6 gates pass; δ<1.25 0.9972 beats DA3 0.9743; monotonic improvement @250/500/1000 confirms no overfit)** |
+| 23 | CM22 recipe × 8000 steps (ckpt every 1000; overfit-probe) | 0.0642 | 0.9935 | 0.1195 | 0.0276 | — | reverted (best @1000 = 0.0642 > CM22@1000 0.0531; 8 k cosine leaves LR too warm at step 1000, then monotonic regression 1000→4000 and noisy recovery prove overfit boundary. CM22's short schedule finishing near-zero LR is the correct operating point.) |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -1154,3 +1155,44 @@ Retained: **CM9 + CM12 + CM22** (CM22 supersedes CM21). Retained
 pipeline: `distill_cm12/ckpt_20000.pt` → `depth_ft_cm22/ckpt_1000.pt`.
 The @250 and @500 ckpts are dropped to reclaim disk; their eval
 summaries stay as documentation.
+
+### 15.14 CM23 result (reverted) — overfit-probe with 8 k schedule
+
+Run on 2026-04-23. CM22's training loss at step 1000 was still
+bouncy and held-out metrics had not obviously plateaued, so the
+question was: does the schedule want to run longer, or has CM22
+already hit the best operating point? CM23 answers this by
+retraining from CM12 init with the same recipe and LRs but
+`--steps 8000 --ckpt-every 1000`, then sweeping all 8 ckpts on
+`terrains`.
+
+| step | abs_rel | δ<1.25 | rmse | log10 |
+|---|---|---|---|---|
+| 1000 | **0.0642** | 0.9935 | 0.1195 | 0.0276 |
+| 2000 | 0.0669 | 0.9929 | 0.1225 | 0.0289 |
+| 3000 | 0.0702 | 0.9913 | 0.1274 | 0.0304 |
+| 4000 | 0.0854 | 0.9790 | 0.1548 | 0.0367 |
+| 5000 | 0.0697 | 0.9967 | 0.1263 | 0.0300 |
+| 6000 | 0.0694 | 0.9931 | 0.1255 | 0.0300 |
+| 7000 | 0.0703 | 0.9924 | 0.1270 | 0.0303 |
+| 8000 | 0.0678 | 0.9956 | 0.1222 | 0.0293 |
+
+Overfit proven: monotonic regression 1000→4000 (abs_rel 0.0642 →
+0.0854, +33 %), spike at 4k (train loss also spikes ~0.15 in the
+log), then noisy recovery that never returns to the @1000 peak.
+
+But the @1000 result itself (0.0642) is **worse than CM22@1000
+(0.0531)** even though both evaluate the same step. The
+difference: CM22 used `--steps 1000`, so its cosine schedule
+terminates at step 1000 with LR≈0. CM23 uses `--steps 8000`, so
+its cosine is still at ~6 % of peak LR at step 1000 — the weights
+are mid-schedule, not converged. The terminal-LR-near-zero
+property of a matched-length schedule turns out to matter more
+than total gradient budget.
+
+Verdict: CM22's 1000-step schedule is the correct operating
+point. Longer schedules with the same recipe cannot beat it.
+Reverted per §13.5 (gate-improvement rule: 0.0642 > CM22's
+0.0531; fails the ≥ 2 % improvement threshold by a wide margin).
+All CM23 ckpts removed; `sweep.log` and `train.log` kept as
+evidence.

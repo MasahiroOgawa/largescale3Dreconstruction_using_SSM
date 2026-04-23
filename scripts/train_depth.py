@@ -74,6 +74,7 @@ def main() -> None:
     ap.add_argument("--img-size", type=int, default=224)
     ap.add_argument("--patch-size", type=int, default=14)
     ap.add_argument("--steps", type=int, default=2000)
+    ap.add_argument("--ckpt-every", type=int, default=500)
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--lr-attn", type=float, default=1e-4)
     ap.add_argument("--lr-bridge", type=float, default=3e-4)
@@ -184,6 +185,7 @@ def main() -> None:
     print("[4/4] starting depth fine-tune ...")
     cfg = DepthFTConfig(
         steps=args.steps,
+        ckpt_every=args.ckpt_every,
         batch_size=args.batch_size,
         lr_attn=args.lr_attn,
         lr_bridge=args.lr_bridge,
