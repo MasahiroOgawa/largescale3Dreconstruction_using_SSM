@@ -403,7 +403,7 @@ changes landed in commits following the first eval (2026-04-20).
 - **R7** Full T×T decay mask materialised in fp32 blocks the hoped-for
   memory win at higher resolutions (e.g. img_size=504, T ≈ 1301).
 - **R8** Per-image median-alignment hides bad depth-variance behaviour.
-  A constant depth with the right median scores okay on abs_rel.
+  A constant depth with the right median scores okay on |relative_depth_error|.
 
 ### Phase A — architectural fixes (no training)
 
@@ -468,7 +468,7 @@ full-module end-to-end check.
 
 | Gate                                                 | Threshold  |
 |------------------------------------------------------|------------|
-| `abs_rel` (DA3 SSM student depth vs GT, median-aligned) | ≤ 0.073 |
+| `\|relative_depth_error\|` (DA3 SSM student depth vs GT, median-aligned) | ≤ 0.073 |
 | `δ<1.25`                                             | ≥ 0.935    |
 | `rmse` (raw, not median-aligned)                     | ≤ 0.29     |
 | `cross_view_nn_agreement`                            | ≥ 0.55     |
@@ -486,7 +486,7 @@ After the first eval pass (§9 acceptance gates), five of six gates failed:
 
 | gate | target | SSM-3D | gap |
 |---|---|---|---|
-| abs_rel | ≤ 0.073 | 0.2157 | 3.0× worse |
+| \|relative_depth_error\| | ≤ 0.073 | 0.2157 | 3.0× worse |
 | δ<1.25 | ≥ 0.935 | 0.6519 | |
 | rmse | ≤ 0.29 | 0.8345 | 2.9× worse |
 | log10 | ≤ 0.031 | 0.0879 | 2.8× worse |
@@ -519,8 +519,8 @@ Compounding factors: (i) resolution mismatch (DA3 runs at
 ### 13.2 Seven countermeasures, in execution order
 
 Cheap → expensive. Each CM is evaluated on held-out `terrains` (42 views,
-median-aligned). Primary metric = `abs_rel` (↓). Secondary = δ<1.25, rmse,
-log10, effective_rank. A CM is **kept** if `abs_rel` improves by ≥ 2%
+median-aligned). Primary metric = `|relative_depth_error|` (↓). Secondary = δ<1.25, rmse,
+log10, effective_rank. A CM is **kept** if `|relative_depth_error|` improves by ≥ 2%
 relative to the previous-kept baseline; otherwise it's **reverted** and
 the next CM stacks on the previous-kept baseline.
 
@@ -542,7 +542,7 @@ the next CM stacks on the previous-kept baseline.
   a screen. Re-run at 2000 steps for the winner to keep comparability
   with the existing baseline.
 - **Baseline = `outputs/runs/depth_ft_baseline2/ckpt_2000.pt` +
-  `outputs/eval_baseline2/summary.md`** (`abs_rel=0.1029`, δ<1.25=0.8966,
+  `outputs/eval_baseline2/summary.md`** (`|relative_depth_error|=0.1029`, δ<1.25=0.8966,
   rmse=0.1933, log10=0.0464, eff_rank=71.57). Baseline-2 replaces the
   earlier 0.2157 baseline, which was produced on a broken
   `ETH3DMultiSceneDataset.__getitem__` that called
@@ -603,7 +603,7 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 
 ### 13.5 Stopping rules / invariants
 
-- A CM is reverted if, on the 42-view held-out eval, `abs_rel` does not
+- A CM is reverted if, on the 42-view held-out eval, `|relative_depth_error|` does not
   improve by ≥ 2% relative to the last-kept baseline.
 - If a CM requires retraining Phase-B (only CM6), we re-run eval with
   the re-distilled student *before* measuring CM6's Phase-C gain, so
@@ -615,35 +615,35 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 
 ## 14. Countermeasure results
 
-| # | CM | abs_rel | δ<1.25 | rmse | log10 | eff_rank | kept? |
+| # | CM | \|relative_depth_error\| | δ<1.25 | rmse | log10 | eff_rank | kept? |
 |---|---|---|---|---|---|---|---|
 | 0a | baseline (ckpt_2000 / §12, buggy loader) | 0.2157 | 0.6519 | 0.8345 | 0.0879 | 82.58 | superseded |
 | 0b | **baseline-2** (ckpt_2000, fixed loader) | **0.1029** | **0.8966** | **0.1933** | **0.0464** | **71.57** | **ref** |
-| 1 | orthogonal DimBridge init | 0.1071 | 0.8765 | 0.2023 | 0.0485 | 68.00 | reverted (−4% abs_rel) |
-| 2 | **eval at 504** (pos_embed bicubic) | **0.0820** | **0.9478** | **0.1612** | **0.0359** | **111.70** | **kept (−20% abs_rel; δ<1.25 gate passes)** |
-| 3 | Phase-C extended (10k steps, bs=4 on CM2 base) | 0.1760 | 0.6785 | 0.3240 | 0.0751 | 121.34 | reverted (+114% abs_rel — overfit: train loss ↓ to 0.002, test ↑) |
-| 4 | global-summary stream (bridge 384 + mean-pool broadcast 384) | 0.1219 | 0.8406 | 0.2318 | 0.0530 | 101.44 | reverted (+49% abs_rel — constant broadcast has no spatial structure for DualDPT) |
-| 5 | top-of-DualDPT unfreeze (2 fusion blocks + output convs, lr_dpt=3e-5, 2k steps on CM2 base) | 0.1384 | 0.8035 | 0.2714 | 0.0578 | 97.48 | reverted (+69% abs_rel — overfit: train silog ↓ to 0.005, test ↑) |
+| 1 | orthogonal DimBridge init | 0.1071 | 0.8765 | 0.2023 | 0.0485 | 68.00 | reverted (−4% \|relative_depth_error\|) |
+| 2 | **eval at 504** (pos_embed bicubic) | **0.0820** | **0.9478** | **0.1612** | **0.0359** | **111.70** | **kept (−20% \|relative_depth_error\|; δ<1.25 gate passes)** |
+| 3 | Phase-C extended (10k steps, bs=4 on CM2 base) | 0.1760 | 0.6785 | 0.3240 | 0.0751 | 121.34 | reverted (+114% \|relative_depth_error\| — overfit: train loss ↓ to 0.002, test ↑) |
+| 4 | global-summary stream (bridge 384 + mean-pool broadcast 384) | 0.1219 | 0.8406 | 0.2318 | 0.0530 | 101.44 | reverted (+49% \|relative_depth_error\| — constant broadcast has no spatial structure for DualDPT) |
+| 5 | top-of-DualDPT unfreeze (2 fusion blocks + output convs, lr_dpt=3e-5, 2k steps on CM2 base) | 0.1384 | 0.8035 | 0.2714 | 0.0578 | 97.48 | reverted (+69% \|relative_depth_error\| — overfit: train silog ↓ to 0.005, test ↑) |
 | 6 | alt-global Mamba-3 | — | — | — | — | — | skipped (data-pipeline gap + dominated) |
 | 7 | full DualDPT FT | — | — | — | — | — | skipped (dominated by CM5 revert) |
-| 14 | freeze mixer in Phase-C (DimBridge-only train, 2k steps on CM2 base) | 0.2836 | 0.5233 | 0.5812 | 0.1076 | 73.69 | reverted (+246 % abs_rel — DimBridge alone cannot bridge Phase-B features to DualDPT) |
-| 17 | KD regulariser during Phase-C (λ_kd = 0.5, 2k steps on CM2 base) | 0.0994 | 0.9212 | 0.1898 | 0.0431 | 73.06 | reverted (+21 % abs_rel — KD dominates loss, eff_rank 112→73: student overfits to train-set slice of teacher features) |
-| 9 | **ETH3D augmentation** (random crop 0.6–1.0, hflip p=0.5, color jitter ±0.4/0.1, 2k steps on CM2 base) | **0.0715** | **0.9664** | **0.1387** | **0.0319** | **65.33** | **kept (−12.8 % abs_rel; first run to cross the §9 abs_rel ≤ 0.073 gate)** |
-| 18 | drop DimBridge (static `cat([f, f])`, 2k steps on CM9 base: init+aug) | 0.0880 | 0.9213 | 0.1692 | 0.0398 | 76.55 | reverted (+23 % abs_rel vs CM9 — duplicate is rank-bound; feat_cos_mean 0.985 confirms token collapse. Validates PLAN §9 R5 / §15.1 R3: DimBridge earns its ~5 MB.) |
-| 13 | stronger reg stacked on CM9 (drop_path 0.1, bridge_dropout 0.1, wd 0.15, 2k steps) | 0.0799 | 0.9482 | 0.1565 | 0.0357 | 63.91 | reverted (+11.7 % abs_rel vs CM9 — CM9 aug already supplies enough regularisation; adding more removes capacity without adding information) |
-| 10 | **Phase-B 6k→20k / Phase-C 2k→500 on CM9 aug base** | **0.0660** | **0.9722** | **0.1283** | **0.0295** | **83.13** | **kept (−7.7 % abs_rel vs CM9; 5/6 gates pass — log10 gate now clears for the first time; eff_rank +27 %)** |
-| 11 | Mamba-3 state_dim 64→32 (CM10 recipe, Phase-B re-distilled) | 0.0711 | 0.9647 | 0.1354 | 0.0319 | 71.80 | reverted (+7.7 % abs_rel vs CM10; effective_rank actually *fell* 83→72, log10 regresses back to gate-fail. Halving state_dim removes representational capacity without curing the rank bottleneck) |
-| 12 | **Phase-B 20k + Phase-C 500 at `img_size=504`** (bs=1, `--chunk-size 128`, CM10 recipe lifted to 504; DA3@504) | **0.0676** | **0.9856** | **0.1242** | **0.0294** | **68.11** | **kept (vs matched CM10@504 abs_rel 0.2037 → −67 %; 4/6 gates pass at native DA3 resolution, δ<1.25 now *beats* DA3's 0.9743)** |
-| 20 | DA3-LARGE teacher distill (Phase-B 20k with 384→1024 student-side projector; Phase-C 500 as CM12) | 0.1739 | 0.6897 | 0.3319 | 0.0779 | 79.28 | reverted (+157 % abs_rel vs CM12; frozen DA3-SMALL DualDPT cannot decode LARGE-teacher-shaped features — feature quality improved (cross_view_nn 0.1724 → 0.3580, feat_cos 0.919 → 0.628) but depth head regressed) |
-| 21 | unfreeze DualDPT at Phase-C (CM12 init + CM9 aug + lr_attn=1e-5 / lr_bridge=3e-5 / lr_dpt=1e-5 × 250 steps) | 0.0568 | 0.9935 | 0.1067 | 0.0248 | 69.29 | superseded by CM22 (−16 % abs_rel vs CM12; proved DPT-unfreeze works) |
-| 22 | **CM21 recipe × 1000 steps** (same LRs + aug; CM12 init; unfrozen DualDPT) | **0.0531** | **0.9972** | **0.1012** | **0.0229** | **69.48** | **kept (−21 % abs_rel vs CM12, −6.5 % vs CM21; 4/6 gates pass; δ<1.25 0.9972 beats DA3 0.9743; monotonic improvement @250/500/1000 confirms no overfit)** |
+| 14 | freeze mixer in Phase-C (DimBridge-only train, 2k steps on CM2 base) | 0.2836 | 0.5233 | 0.5812 | 0.1076 | 73.69 | reverted (+246 % \|relative_depth_error\| — DimBridge alone cannot bridge Phase-B features to DualDPT) |
+| 17 | KD regulariser during Phase-C (λ_kd = 0.5, 2k steps on CM2 base) | 0.0994 | 0.9212 | 0.1898 | 0.0431 | 73.06 | reverted (+21 % \|relative_depth_error\| — KD dominates loss, eff_rank 112→73: student overfits to train-set slice of teacher features) |
+| 9 | **ETH3D augmentation** (random crop 0.6–1.0, hflip p=0.5, color jitter ±0.4/0.1, 2k steps on CM2 base) | **0.0715** | **0.9664** | **0.1387** | **0.0319** | **65.33** | **kept (−12.8 % \|relative_depth_error\|; first run to cross the §9 \|relative_depth_error\| ≤ 0.073 gate)** |
+| 18 | drop DimBridge (static `cat([f, f])`, 2k steps on CM9 base: init+aug) | 0.0880 | 0.9213 | 0.1692 | 0.0398 | 76.55 | reverted (+23 % \|relative_depth_error\| vs CM9 — duplicate is rank-bound; feat_cos_mean 0.985 confirms token collapse. Validates PLAN §9 R5 / §15.1 R3: DimBridge earns its ~5 MB.) |
+| 13 | stronger reg stacked on CM9 (drop_path 0.1, bridge_dropout 0.1, wd 0.15, 2k steps) | 0.0799 | 0.9482 | 0.1565 | 0.0357 | 63.91 | reverted (+11.7 % \|relative_depth_error\| vs CM9 — CM9 aug already supplies enough regularisation; adding more removes capacity without adding information) |
+| 10 | **Phase-B 6k→20k / Phase-C 2k→500 on CM9 aug base** | **0.0660** | **0.9722** | **0.1283** | **0.0295** | **83.13** | **kept (−7.7 % \|relative_depth_error\| vs CM9; 5/6 gates pass — log10 gate now clears for the first time; eff_rank +27 %)** |
+| 11 | Mamba-3 state_dim 64→32 (CM10 recipe, Phase-B re-distilled) | 0.0711 | 0.9647 | 0.1354 | 0.0319 | 71.80 | reverted (+7.7 % \|relative_depth_error\| vs CM10; effective_rank actually *fell* 83→72, log10 regresses back to gate-fail. Halving state_dim removes representational capacity without curing the rank bottleneck) |
+| 12 | **Phase-B 20k + Phase-C 500 at `img_size=504`** (bs=1, `--chunk-size 128`, CM10 recipe lifted to 504; DA3@504) | **0.0676** | **0.9856** | **0.1242** | **0.0294** | **68.11** | **kept (vs matched CM10@504 \|relative_depth_error\| 0.2037 → −67 %; 4/6 gates pass at native DA3 resolution, δ<1.25 now *beats* DA3's 0.9743)** |
+| 20 | DA3-LARGE teacher distill (Phase-B 20k with 384→1024 student-side projector; Phase-C 500 as CM12) | 0.1739 | 0.6897 | 0.3319 | 0.0779 | 79.28 | reverted (+157 % \|relative_depth_error\| vs CM12; frozen DA3-SMALL DualDPT cannot decode LARGE-teacher-shaped features — feature quality improved (cross_view_nn 0.1724 → 0.3580, feat_cos 0.919 → 0.628) but depth head regressed) |
+| 21 | unfreeze DualDPT at Phase-C (CM12 init + CM9 aug + lr_attn=1e-5 / lr_bridge=3e-5 / lr_dpt=1e-5 × 250 steps) | 0.0568 | 0.9935 | 0.1067 | 0.0248 | 69.29 | superseded by CM22 (−16 % \|relative_depth_error\| vs CM12; proved DPT-unfreeze works) |
+| 22 | **CM21 recipe × 1000 steps** (same LRs + aug; CM12 init; unfrozen DualDPT) | **0.0531** | **0.9972** | **0.1012** | **0.0229** | **69.48** | **kept (−21 % \|relative_depth_error\| vs CM12, −6.5 % vs CM21; 4/6 gates pass; δ<1.25 0.9972 beats DA3 0.9743; monotonic improvement @250/500/1000 confirms no overfit)** |
 | 23 | CM22 recipe × 8000 steps (ckpt every 1000; overfit-probe) | 0.0642 | 0.9935 | 0.1195 | 0.0276 | — | reverted (best @1000 = 0.0642 > CM22@1000 0.0531; 8 k cosine leaves LR too warm at step 1000, then monotonic regression 1000→4000 and noisy recovery prove overfit boundary. CM22's short schedule finishing near-zero LR is the correct operating point.) |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
 Four capacity-adding CMs (1, 3, 4, 5) reverted; only CM2 (a zero-capacity
 change: match eval resolution) was kept. Training silog drops to ~0.005 on a
-374-image set while test abs_rel regresses by 49–114 %. The overfitting
+374-image set while test |relative_depth_error| regresses by 49–114 %. The overfitting
 pattern is dominant.
 
 - **CM7 skipped.** Unfreezing *all* DualDPT fusion blocks is strictly more
@@ -664,10 +664,10 @@ training natively at 504 instead of eval-time pos_embed resize). Current
 best (CM12 checkpoint `depth_ft_cm12/ckpt_500.pt` from Phase-B
 `distill_cm12/ckpt_20000.pt`, **both models at `img_size=504`**,
 apples-to-apples with DA3's native inference resolution):
-abs_rel = **0.0676**, δ<1.25 = **0.9856**, rmse = **0.1242**,
+|relative_depth_error| = **0.0676**, δ<1.25 = **0.9856**, rmse = **0.1242**,
 log10 = **0.0294**, cross_view_nn = 0.1724, eff_rank = 68.11.
 
-Passes abs_rel, δ<1.25, rmse, log10 gates — **4/6 gates green** at
+Passes |relative_depth_error|, δ<1.25, rmse, log10 gates — **4/6 gates green** at
 native resolution. δ<1.25 (0.9856) **beats DA3's 0.9743** — the first
 metric on which SSM-3D surpasses DA3. Representation gates
 (cross_view_nn, effective_rank) remain open: cross_view_nn drops for
@@ -675,14 +675,14 @@ metric on which SSM-3D surpasses DA3. Representation gates
 is resolution-sensitive at high res; effective_rank is structurally
 bounded by Mamba-3 `state_dim = 64`.
 
-CM10 (abs_rel 0.0660 at 224) is retained only as a historical
+CM10 (|relative_depth_error| 0.0660 at 224) is retained only as a historical
 reference; its 5/6-gate result was measured at `img_size=224` while
 DA3 ran at 504, so the gap shown against DA3 was inflated by a
 resolution artifact (§15.9). CM12 reports at matched 504.
 
 ## 15. Why SSM-3D still trails DA3, and next-round countermeasures
 
-On `terrains` (504 eval): DA3 abs_rel = 0.0396, SSM-3D (CM2) = 0.0820 —
+On `terrains` (504 eval): DA3 |relative_depth_error| = 0.0396, SSM-3D (CM2) = 0.0820 —
 roughly 2× worse. Three findings from CM1–7 evidence explain the gap
 and point at what to try next.
 
@@ -690,7 +690,7 @@ and point at what to try next.
 
 1. **Train-set starvation, not architecture.** Every capacity-adding CM
    (1, 3, 4, 5) overfit with the same signature: train silog → ~0.005,
-   held-out abs_rel regresses by 49–114 %. 374 ETH3D images is far too
+   held-out |relative_depth_error| regresses by 49–114 %. 374 ETH3D images is far too
    few for fine-tuning a 22 M-param backbone; DA3 was pretrained on
    orders-of-magnitude more data before we ever touched it.
 2. **Representation-diversity gap.** DA3 `effective_rank` = 161 vs
@@ -706,7 +706,7 @@ and point at what to try next.
 
 ### 15.2 Proposed CM8 – CM18
 
-**Tier 1 — attack the data bottleneck (most likely to move abs_rel):**
+**Tier 1 — attack the data bottleneck (most likely to move |relative_depth_error|):**
 
 - **CM8 — Larger distillation corpus.** Add MegaDepth, BlendedMVS, or
   Hypersim multi-view data to Phase-B. Target 5k–50k images (≥ 15× the
@@ -747,13 +747,13 @@ and point at what to try next.
 Bundled **CM14 + CM17** run end-to-end on 2026-04-21. Both failed to
 improve on CM2:
 
-- **CM14** (freeze mixer, train only DimBridge): abs_rel 0.2836
+- **CM14** (freeze mixer, train only DimBridge): |relative_depth_error| 0.2836
   (+246 %). Demonstrates that Phase-B distilled features at layers
   {5, 7, 9, 11} are *not* a drop-in fit for DA3's DualDPT — the mixer
   needs to remain trainable to shape features for the frozen head.
   DimBridge (a per-layer 384 → 768 linear) is a geometric adapter, not
   a feature generator.
-- **CM17** (unfrozen mixer + KD λ = 0.5): abs_rel 0.0994 (+21 %).
+- **CM17** (unfrozen mixer + KD λ = 0.5): |relative_depth_error| 0.0994 (+21 %).
   KD dominated the total loss (KD ≈ 0.04 vs silog ≈ 0.005) yet
   effective_rank *fell* 112 → 73 — student collapsed to the
   train-set projection of teacher features instead of inheriting
@@ -771,8 +771,8 @@ with scale ∈ [0.6, 1.0], horizontal flip p = 0.5, and per-image
 torchvision color jitter (brightness / contrast / saturation ± 0.4,
 hue ± 0.1). Depth and valid mask receive the same crop + flip.
 
-- abs_rel 0.0715 (**−12.8 % vs CM2**, the first run to cross the §9
-  abs_rel ≤ 0.073 gate).
+- |relative_depth_error| 0.0715 (**−12.8 % vs CM2**, the first run to cross the §9
+  |relative_depth_error| ≤ 0.073 gate).
 - δ<1.25 0.9664, rmse 0.1387 — both gates pass comfortably.
 - cross_view_nn 0.5911 (gate 0.55) — passes.
 - effective_rank 65.3 (still misses 150 gate) — augmentation does not
@@ -781,8 +781,8 @@ hue ± 0.1). Depth and valid mask receive the same crop + flip.
 
 Operationally, CM9 validates the §15.1 data-bound diagnosis without
 new downloads: synthetically multiplying the 374-image training set
-by the aug factor closes most of the abs_rel gap to DA3 (0.0715 vs
-0.0377). The remaining ~2× gap on abs_rel is consistent with CM8
+by the aug factor closes most of the |relative_depth_error| gap to DA3 (0.0715 vs
+0.0377). The remaining ~2× gap on |relative_depth_error| is consistent with CM8
 (real new data) being the next meaningful move — now blocked on disk
 space (root is 100 % full, ~4.7 GB free; MegaDepth / BlendedMVS /
 Hypersim all require ≥ 50 GB).
@@ -798,7 +798,7 @@ layers — mathematically identical to freezing DimBridge at its
 `weight = [I; I]` init. No Phase-B re-distill was needed since
 Phase-B has never used the bridge.
 
-- abs_rel 0.0880 (**+23.1 % vs CM9**, far past the §13.5 ≥ 2 %
+- |relative_depth_error| 0.0880 (**+23.1 % vs CM9**, far past the §13.5 ≥ 2 %
   reject gate).
 - feat_cos_mean 0.9854 (vs CM9 0.9414, DA3 0.9134) — the duplicated
   768-d output is rank-bound at 384 across its two halves, which
@@ -807,7 +807,7 @@ Phase-B has never used the bridge.
   genuinely different local vs global features); the duplicate gives
   it one stream twice.
 - effective_rank 76.5 (marginally above CM9's 65.3 but still misses
-  the 150 gate; the gain is not worth −23 % abs_rel).
+  the 150 gate; the gain is not worth −23 % |relative_depth_error|).
 
 Empirically confirms §9 R5 and §15.1 R3: the learned 384 → 768
 linear routes complementary information into DualDPT's two halves,
@@ -824,7 +824,7 @@ requires Phase-B re-distill).
 Run on 2026-04-21 from CM9 recipe plus `--drop-path 0.1
 --bridge-dropout 0.1 --weight-decay 0.15` (wd × 3 vs default 0.05).
 
-- abs_rel 0.0799 (**+11.7 % vs CM9 0.0715**) — reverted by §13.5.
+- |relative_depth_error| 0.0799 (**+11.7 % vs CM9 0.0715**) — reverted by §13.5.
 - log10 0.0357 (+12 %), rmse 0.1565 (+13 %).
 - effective_rank 63.9 ≈ CM9 65.3, cross_view_nn 0.6024 ≈ CM9 0.5911.
 - feat_cos_mean 0.968 (CM9 0.941) — marginal collapse from dropout.
@@ -848,7 +848,7 @@ Phase-B should sharpen the student representation; SILog (Phase-C) is
 the overfitting loss on a 374-image set, so fewer steps should
 reduce train-set memorisation.
 
-- abs_rel 0.0660 (**−7.7 % vs CM9 0.0715**) — kept by §13.5.
+- |relative_depth_error| 0.0660 (**−7.7 % vs CM9 0.0715**) — kept by §13.5.
 - log10 **0.0295** — clears the 0.031 gate for the first time.
 - effective_rank 83.1 (vs CM9 65.3) — **+27 %**, the largest gain so
   far, suggesting Phase-B was under-trained at 6 k.
@@ -879,7 +879,7 @@ Mamba-3 `state_dim=32` (vs default 64). Phase-B was re-distilled from
 scratch into `distill_cm11/ckpt_20000.pt` because state dim is an
 architectural parameter.
 
-- abs_rel 0.0711 (**+7.7 % vs CM10 0.0660**) — reverted by §13.5.
+- |relative_depth_error| 0.0711 (**+7.7 % vs CM10 0.0660**) — reverted by §13.5.
 - log10 0.0319 — regresses back above the 0.031 gate (CM10 cleared it).
 - effective_rank **71.80** (vs CM10 83.13) — **the gate CM11 was
   designed to improve went the wrong way by 14 %**. 4/6 gates now
@@ -905,7 +905,7 @@ opt-in diagnostic for future architecture sweeps.
 
 Outstanding from §15.2: **CM8 only** (larger distillation corpus;
 disk-blocked). All Tier-1 non-data, Tier-2, and Tier-3 levers have
-been exhausted — the remaining abs_rel gap to DA3 (0.0660 vs 0.0377,
+been exhausted — the remaining |relative_depth_error| gap to DA3 (0.0660 vs 0.0377,
 ~1.75 ×) now has a single remaining lever: real additional data.
 
 ### 15.9 Per-image investigation — SSM "wins" on images 10, 11 are a resolution artifact
@@ -915,16 +915,16 @@ SSM-3D beats DA3 on exactly 2 of 12 terrains images: indices 10 and
 11 (`DSC_0625`, `DSC_0626`), which are close-up shots of a corrugated
 / louvered shutter — a geometrically near-planar surface (depth clip
 ~18 cm) with strong periodic horizontal texture. DA3's per-image
-abs_rel spikes to 0.081 / 0.121 on those two (~5× its own mean across
+|relative_depth_error| spikes to 0.081 / 0.121 on those two (~5× its own mean across
 images 0–9); SSM-3D stays at 0.056 / 0.077.
 
 Reran CM10 eval with both models at 504 (`--img-size 504
 --da3-process-res 504`, SSM's pos_embed bicubic-resized via the CM2
 path). Results (`outputs/eval_cm10_504/`):
 
-- SSM-3D abs_rel mean = **0.2037** (vs CM10@224 = 0.0660). All 6 §9
+- SSM-3D |relative_depth_error| mean = **0.2037** (vs CM10@224 = 0.0660). All 6 §9
   gates fail. The 504-resize destroys the 224-trained geometry.
-- DA3 keeps its per-image pattern: abs_rel 0.126 / 0.110 on images
+- DA3 keeps its per-image pattern: |relative_depth_error| 0.126 / 0.110 on images
   10 / 11 — stripe-as-depth failure mode is resolution-invariant.
 - **The SSM-win on 10 / 11 does not persist at matched resolution.**
   DA3 beats SSM on all 12 images at 504.
@@ -943,7 +943,7 @@ variation.
 Implication: CM10's advantage on images 10 / 11 is **not an
 architectural win** — it's a side-effect of evaluating at lower
 resolution than DA3's native inference pipeline. The published CM10
-abs_rel (0.0660) remains valid as a benchmark number (eval protocol
+|relative_depth_error| (0.0660) remains valid as a benchmark number (eval protocol
 matches §9 gates, which are defined at the deployed inference paths
 — DA3 at 504, SSM at 224), but should not be interpreted as
 "SSM-3D is more robust to high-frequency planar texture."
@@ -976,14 +976,14 @@ Results at matched 504 (`outputs/eval_cm12/`):
 
 | Metric | DA3@504 | SSM-3D@504 (CM12) | vs CM10@504 (eval-only) |
 |---|---|---|---|
-| abs_rel | 0.0417 | **0.0676** ✅ | 0.2037 → **−67 %** |
+| \|relative_depth_error\| | 0.0417 | **0.0676** ✅ | 0.2037 → **−67 %** |
 | δ<1.25 | 0.9743 | **0.9856** ✅ (beats DA3) | 0.6369 → **+55 %** |
 | rmse | 0.0796 | **0.1242** ✅ | 0.4017 → **−69 %** |
 | log10 | 0.0175 | **0.0294** ✅ | 0.0810 → **−64 %** |
 | cross_view_nn | 0.1601 | 0.1724 ❌ | 0.3905 → −56 % |
 | effective_rank | 161.3 | 68.1 ❌ | 108.7 → −37 % |
 
-**Depth gates** (abs_rel / δ<1.25 / rmse / log10) all pass — 4/4.
+**Depth gates** (|relative_depth_error| / δ<1.25 / rmse / log10) all pass — 4/4.
 **δ<1.25 = 0.9856 *beats* DA3's 0.9743** — the first metric on which
 SSM-3D surpasses the teacher.
 
@@ -1000,7 +1000,7 @@ SSM-3D passes 4/6 gates — a tighter, more defensible story than
 CM10's 5/6 at asymmetric resolution. Phase-B distill loss settled at
 0.026 (vs CM10's ~0.04 at 224), confirming the teacher–student
 feature match is *better* at matched resolution, and the remaining
-abs_rel gap to DA3 (0.0417 vs 0.0676, 1.62×) is smaller than CM10's
+|relative_depth_error| gap to DA3 (0.0417 vs 0.0676, 1.62×) is smaller than CM10's
 apparent-but-inflated gap (0.0421 vs 0.0660 at matched-224, 1.57×).
 
 Retained: **CM9 + CM12** (CM2 + CM10 superseded by native-504
@@ -1033,7 +1033,7 @@ Results at matched 504 (`outputs/eval_cm20/`):
 
 | Metric | DA3@504 | SSM-3D CM12 | SSM-3D CM20 | CM20 vs CM12 |
 |---|---|---|---|---|
-| abs_rel | 0.0417 | 0.0676 | **0.1739** | **+157 %** ❌ |
+| \|relative_depth_error\| | 0.0417 | 0.0676 | **0.1739** | **+157 %** ❌ |
 | δ<1.25 | 0.9743 | 0.9856 | 0.6897 | −30 % ❌ |
 | rmse | 0.0796 | 0.1242 | 0.3319 | +167 % ❌ |
 | log10 | 0.0175 | 0.0294 | 0.0779 | +165 % ❌ |
@@ -1049,7 +1049,7 @@ DA3-SMALL's feature distribution**, and it cannot decode features that
 now live in DA3-LARGE-land. DimBridge (two 384→768 Linear + 500 Phase-C
 steps) does not have enough capacity to span that domain gap.
 
-Reverted per §13.5 — `abs_rel_cm20` (0.1739) is not ≤ CM12's 0.0676.
+Reverted per §13.5 — `|relative_depth_error|_cm20` (0.1739) is not ≤ CM12's 0.0676.
 Takeaway: **feature-ceiling lift requires joint head adaptation.** The
 deployed pipeline's weakest link is the frozen DualDPT, not the student
 backbone — distilling from a stronger teacher without unfreezing (or
@@ -1087,7 +1087,7 @@ Results at matched 504 (`outputs/eval_cm21/`):
 
 | Metric | DA3@504 | CM12 | **CM21** | vs CM12 |
 |---|---|---|---|---|
-| abs_rel | 0.0417 | 0.0676 | **0.0568** | **−16 %** ✅ |
+| \|relative_depth_error\| | 0.0417 | 0.0676 | **0.0568** | **−16 %** ✅ |
 | δ<1.25 | 0.9743 | 0.9856 | **0.9935** ✅ (beats DA3) | +0.8 % |
 | rmse | 0.0796 | 0.1242 | **0.1067** | **−14 %** ✅ |
 | log10 | 0.0175 | 0.0294 | **0.0248** | **−16 %** ✅ |
@@ -1095,10 +1095,10 @@ Results at matched 504 (`outputs/eval_cm21/`):
 | effective_rank | 161.3 | 68.11 | 69.29 | +1.7 % |
 
 All four depth metrics improved by 14–16 %. δ<1.25 = **0.9935** widens
-the lead over DA3's 0.9743. The abs_rel gap to DA3 closes from CM12's
+the lead over DA3's 0.9743. The |relative_depth_error| gap to DA3 closes from CM12's
 **1.62×** to **1.36×** — still not beating DA3-SMALL outright, but
 materially closer and well above the §13.5 gate-improvement threshold
-(`abs_rel_cm21 = 0.0568 ≤ 0.0662` required for keep). Representation
+(`|relative_depth_error|_cm21 = 0.0568 ≤ 0.0662` required for keep). Representation
 metrics are unchanged, as expected — only the depth head was tuned.
 
 Deployed configuration (after CM21):
@@ -1116,10 +1116,10 @@ weights ship (ours, not the public DA3-SMALL weights).
 
 Retained: **CM9 + CM12 + CM21**. The retained pipeline is now:
 `distill_cm12/ckpt_20000.pt` (Phase-B) → `depth_ft_cm21/ckpt_250.pt`
-(Phase-C with unfrozen DPT). Current best: abs_rel **0.0568**,
+(Phase-C with unfrozen DPT). Current best: |relative_depth_error| **0.0568**,
 δ<1.25 **0.9935**, rmse **0.1067**, log10 **0.0248**.
 
-Remaining headroom toward beating DA3-SMALL on abs_rel (target
+Remaining headroom toward beating DA3-SMALL on |relative_depth_error| (target
 < 0.0417): further data (CM8, disk-blocked), self-training on
 unlabelled multi-view, or longer CM21 schedule with held-out
 validation to time-stop before overfit. The data-starvation evidence
@@ -1136,7 +1136,7 @@ Monotonic improvement on held-out `terrains`:
 
 | Metric | DA3 | CM12 | CM21@250 | CM22@500 | **CM22@1000** |
 |---|---|---|---|---|---|
-| abs_rel | 0.0417 | 0.0676 | 0.0568 | 0.0582 | **0.0531** |
+| \|relative_depth_error\| | 0.0417 | 0.0676 | 0.0568 | 0.0582 | **0.0531** |
 | δ<1.25 | 0.9743 | 0.9856 | 0.9935 | 0.9940 | **0.9972** |
 | rmse | 0.0796 | 0.1242 | 0.1067 | 0.1111 | **0.1012** |
 | log10 | 0.0175 | 0.0294 | 0.0248 | 0.0252 | **0.0229** |
@@ -1144,10 +1144,10 @@ Monotonic improvement on held-out `terrains`:
 The @500 snapshot sits slightly *worse* than CM21@250 (cosine-schedule
 warmth peaks mid-run); @1000 is the strict best on all four depth
 metrics. No overfit signature: the metric that would diverge first
-(abs_rel std) narrowed (0.0352 DA3 / 0.0153 CM21 / **0.0142** CM22),
+(|relative_depth_error| std) narrowed (0.0352 DA3 / 0.0153 CM21 / **0.0142** CM22),
 meaning variance across scenes is tightening, not blowing up.
 
-Gap to DA3-SMALL on abs_rel tightens: CM12 **1.62×** → CM21 **1.36×**
+Gap to DA3-SMALL on |relative_depth_error| tightens: CM12 **1.62×** → CM21 **1.36×**
 → CM22 **1.27×**. δ<1.25 = 0.9972 vs DA3's 0.9743 — the widest lead
 SSM-3D has on any gate to date.
 
@@ -1166,7 +1166,7 @@ retraining from CM12 init with the same recipe and LRs but
 `--steps 8000 --ckpt-every 1000`, then sweeping all 8 ckpts on
 `terrains`.
 
-| step | abs_rel | δ<1.25 | rmse | log10 |
+| step | \|relative_depth_error\| | δ<1.25 | rmse | log10 |
 |---|---|---|---|---|
 | 1000 | **0.0642** | 0.9935 | 0.1195 | 0.0276 |
 | 2000 | 0.0669 | 0.9929 | 0.1225 | 0.0289 |
@@ -1177,7 +1177,7 @@ retraining from CM12 init with the same recipe and LRs but
 | 7000 | 0.0703 | 0.9924 | 0.1270 | 0.0303 |
 | 8000 | 0.0678 | 0.9956 | 0.1222 | 0.0293 |
 
-Overfit proven: monotonic regression 1000→4000 (abs_rel 0.0642 →
+Overfit proven: monotonic regression 1000→4000 (|relative_depth_error| 0.0642 →
 0.0854, +33 %), spike at 4k (train loss also spikes ~0.15 in the
 log), then noisy recovery that never returns to the @1000 peak.
 

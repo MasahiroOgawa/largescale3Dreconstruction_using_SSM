@@ -11,7 +11,8 @@ Pipeline (see plan at ~/.claude/plans/evalutate-this-algirhtym-...md §§1-6, §
          (shared-DPT smoke test; 384-d features duplicated → 768-d to match
          DA3's cat_token=True).
   5. Metrics
-       Depth (DA3 vs GT, median-aligned): abs_rel, δ<1.25, δ<1.25^2, rmse, log10.
+       Depth (DA3 vs GT, median-aligned): |relative_depth_error|, δ<1.25,
+                                           δ<1.25^2, rmse, log10.
        Repr (head-to-head):              feat_cos_mean, effective_rank,
                                           cross_view_nn_agreement (GT-warped).
   6. Memory: param counts + peak RSS delta around one warm forward pass each.

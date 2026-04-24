@@ -1,8 +1,8 @@
 """CM23: sweep depth metrics over multiple Phase-C ckpts to locate the overfit peak.
 
 Loads ETH3D `terrains` + DA3 once, then iterates ckpts, prints a table of
-(step, abs_rel, delta<1.25, rmse, log10) for SSM-3D. No visuals, no per-ckpt
-summary. Intended for a single ckpt-family sweep only.
+(step, |relative_depth_error|, delta<1.25, rmse, log10) for SSM-3D. No visuals,
+no per-ckpt summary. Intended for a single ckpt-family sweep only.
 """
 
 from __future__ import annotations
@@ -78,8 +78,8 @@ def main() -> None:
     ssm.to(args.device).eval()
 
     print(f"[3/3] sweeping {len(args.ckpts)} ckpts ...")
-    print(f"\n{'ckpt':<32} {'abs_rel':>8} {'d<1.25':>8} {'rmse':>8} {'log10':>8}")
-    print("-" * 70)
+    print(f"\n{'ckpt':<32} {'|rel_err|':>10} {'d<1.25':>8} {'rmse':>8} {'log10':>8}")
+    print("-" * 72)
 
     rows: list[tuple[str, float, float, float, float]] = []
     for ckpt_path in args.ckpts:
@@ -100,7 +100,7 @@ def main() -> None:
         else:
             shared_dpt = shared_dpt_base
 
-        abs_rels, d125s, rmses, log10s = [], [], [], []
+        rel_err_values, d125s, rmses, log10s = [], [], [], []
         for i in range(N):
             rgb = sample.images[i]
             gt = sample.gt_depth[i]
@@ -110,22 +110,22 @@ def main() -> None:
                     ssm, shared_dpt, rgb.unsqueeze(0).to(args.device), bridge=bridge,
                 )[0]
             dm = depth_metrics(dep.detach().cpu(), gt, valid, align=True).as_dict()
-            abs_rels.append(dm["abs_rel"])
+            rel_err_values.append(dm["|relative_depth_error|"])
             d125s.append(dm["delta<1.25"])
             rmses.append(dm["rmse"])
             log10s.append(dm["log10"])
 
-        abs_rel = sum(abs_rels) / N
+        rel_err = sum(rel_err_values) / N
         d125 = sum(d125s) / N
         rmse = sum(rmses) / N
         log10 = sum(log10s) / N
         name = ckpt_path.name
-        print(f"{name:<32} {abs_rel:>8.4f} {d125:>8.4f} {rmse:>8.4f} {log10:>8.4f}")
-        rows.append((name, abs_rel, d125, rmse, log10))
+        print(f"{name:<32} {rel_err:>10.4f} {d125:>8.4f} {rmse:>8.4f} {log10:>8.4f}")
+        rows.append((name, rel_err, d125, rmse, log10))
 
-    print("\nbest by abs_rel:")
+    print("\nbest by |relative_depth_error|:")
     best = min(rows, key=lambda r: r[1])
-    print(f"  {best[0]}: abs_rel={best[1]:.4f}, d<1.25={best[2]:.4f}")
+    print(f"  {best[0]}: |relative_depth_error|={best[1]:.4f}, d<1.25={best[2]:.4f}")
 
 
 if __name__ == "__main__":

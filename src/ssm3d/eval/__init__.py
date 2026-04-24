@@ -1,7 +1,7 @@
 """Evaluation utilities for comparing SSM-3D against Depth-Anything-3 on ETH3D."""
 
 from .metrics import (
-    abs_rel,
+    abs_relative_depth_error,
     delta_threshold,
     rmse,
     log10_metric,
@@ -13,7 +13,7 @@ from .metrics import (
 )
 
 __all__ = [
-    "abs_rel",
+    "abs_relative_depth_error",
     "delta_threshold",
     "rmse",
     "log10_metric",

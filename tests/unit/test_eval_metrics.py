@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from ssm3d.eval.metrics import (
-    abs_rel,
+    abs_relative_depth_error,
     align_scale_median,
     cross_view_nn_agreement,
     delta_threshold,
@@ -21,7 +21,7 @@ def test_perfect_depth_gives_zero_error():
     gt = torch.full((8, 8), 2.0)
     valid = torch.ones_like(gt, dtype=torch.bool)
     pred = gt.clone()
-    assert abs_rel(pred, gt, valid) == 0.0
+    assert abs_relative_depth_error(pred, gt, valid) == 0.0
     assert rmse(pred, gt, valid) == 0.0
     assert log10_metric(pred, gt, valid) == 0.0
     assert delta_threshold(pred, gt, valid, 1.25) == 1.0
@@ -48,7 +48,7 @@ def test_depth_metrics_as_dict_fields():
     pred = gt * 1.05
     valid = torch.ones_like(gt, dtype=torch.bool)
     m = depth_metrics(pred, gt, valid, align=False).as_dict()
-    for key in ["abs_rel", "delta<1.25", "delta<1.25^2", "rmse", "log10"]:
+    for key in ["|relative_depth_error|", "delta<1.25", "delta<1.25^2", "rmse", "log10"]:
         assert key in m
 
 

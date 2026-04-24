@@ -38,7 +38,7 @@ def align_scale_median(pred: Tensor, gt: Tensor, valid: Tensor) -> Tensor:
     return pred * scale
 
 
-def abs_rel(pred: Tensor, gt: Tensor, valid: Tensor) -> float:
+def abs_relative_depth_error(pred: Tensor, gt: Tensor, valid: Tensor) -> float:
     pv, gv = pred[valid], gt[valid]
     if pv.numel() == 0:
         return float("nan")
@@ -69,7 +69,7 @@ def delta_threshold(pred: Tensor, gt: Tensor, valid: Tensor, threshold: float = 
 
 @dataclass
 class DepthMetrics:
-    abs_rel: float
+    abs_relative_depth_error: float
     delta_1_25: float
     delta_1_25_sq: float
     rmse: float
@@ -77,7 +77,7 @@ class DepthMetrics:
 
     def as_dict(self) -> dict[str, float]:
         return {
-            "abs_rel": self.abs_rel,
+            "|relative_depth_error|": self.abs_relative_depth_error,
             "delta<1.25": self.delta_1_25,
             "delta<1.25^2": self.delta_1_25_sq,
             "rmse": self.rmse,
@@ -90,7 +90,7 @@ def depth_metrics(pred: Tensor, gt: Tensor, valid: Tensor, align: bool = True) -
     if align:
         pred = align_scale_median(pred, gt, valid)
     return DepthMetrics(
-        abs_rel=abs_rel(pred, gt, valid),
+        abs_relative_depth_error=abs_relative_depth_error(pred, gt, valid),
         delta_1_25=delta_threshold(pred, gt, valid, 1.25),
         delta_1_25_sq=delta_threshold(pred, gt, valid, 1.25 ** 2),
         rmse=rmse(pred, gt, valid),

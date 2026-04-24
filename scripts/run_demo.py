@@ -45,7 +45,7 @@ def _patch_grid(img_size: int, patch_size: int) -> tuple[int, int]:
 def collapse_smoke_check(
     net: SSM3DNet, images: torch.Tensor, cross_attn: torch.Tensor | None = None
 ) -> None:
-    """Print diagnostic numbers flagged in PLAN.md §3. Warn when outputs look flat.
+    """Print diagnostic numbers flagged in doc/PLAN.md §3. Warn when outputs look flat.
 
     - feat_cos_mean: mean off-diagonal cosine sim between patch tokens in view 0.
       > 0.7 means features have collapsed.
@@ -83,7 +83,7 @@ def collapse_smoke_check(
         if cross_row_max < thresh:
             warn.append("cross_attn_row_max")
     if warn:
-        print(f"[WARN] outputs are likely to look flat; see PLAN.md §3 ({', '.join(warn)})")
+        print(f"[WARN] outputs are likely to look flat; see doc/PLAN.md §3 ({', '.join(warn)})")
 
 
 def run_feature_and_depth_visuals(

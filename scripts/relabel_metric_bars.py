@@ -86,7 +86,7 @@ def main() -> None:
         OUT_DIR / "metric_bars_depth.png",
         suptitle="Depth metrics per image: DA3 vs SSM-3D  (ETH3D terrains, median-aligned, 42 views)",
         subtitles=[
-            "abs_rel = mean(|d̂−d|/d)   ↓ lower is better",
+            "|relative_depth_error| = mean(|d̂−d|/d)   ↓ lower is better",
             "δ<1.25 = frac{max(d̂/d, d/d̂) < 1.25}   ↑ higher is better",
             "rmse = √mean(d̂−d)²  [m]   ↓ lower is better",
             "log10 = mean|log₁₀d̂ − log₁₀d|   ↓ lower is better",
