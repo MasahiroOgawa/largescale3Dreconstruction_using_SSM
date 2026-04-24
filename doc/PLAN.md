@@ -639,6 +639,7 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 22 | **CM21 recipe × 1000 steps** (same LRs + aug; CM12 init; unfrozen DualDPT) | **0.0531** | **0.9972** | **0.1012** | **0.0229** | **69.48** | **kept (−21 % \|relative_depth_error\| vs CM12, −6.5 % vs CM21; 4/6 gates pass; δ<1.25 0.9972 beats DA3 0.9743; monotonic improvement @250/500/1000 confirms no overfit)** |
 | 23 | CM22 recipe × 8000 steps (ckpt every 1000; overfit-probe) | 0.0642 | 0.9935 | 0.1195 | 0.0276 | — | reverted (best @1000 = 0.0642 > CM22@1000 0.0531; 8 k cosine leaves LR too warm at step 1000, then monotonic regression 1000→4000 and noisy recovery prove overfit boundary. CM22's short schedule finishing near-zero LR is the correct operating point.) |
 | 24 | **WSD scheduler** (CM22 recipe + `--scheduler wsd --warmup-steps 100 --decay-steps 200`; fixed-length warmup+decay so LR shape is independent of `--steps`) | **0.0513** | **0.9992** | **0.0966** | **0.0221** | — | **kept (−3.4 % \|relative_depth_error\| vs CM22; 4/4 depth gates pass; δ<1.25 0.9992 is widest lead vs DA3 0.9743 to date; @250 even beats @1000 at 0.0510 — WSD shape decouples schedule from step count)** |
+| 25 | Schedule-Free AdamW (CM22 recipe + `--scheduler schedule_free --warmup-steps 100`; Defazio 2024, no external scheduler; Polyak-averaged iterate saved at ckpt) | 0.0549 | 0.9972 | 0.1038 | 0.0237 | — | reverted (+3.4 % \|relative_depth_error\| vs CM22; best @250 = 0.0535 > 0.0521 gate; Polyak averaging needs more than 1 k steps to stabilise in this Phase-C regime. Regime mismatch vs LM-pretraining scale where Schedule-Free thrives.) |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -1312,6 +1313,44 @@ longer schedule (e.g. `--steps 4000 --warmup-steps 100 --decay-steps
 stable plateau, so step-1000 comparisons stay apples-to-apples across
 runs. Deferred second WSD run (2000 or 4000 steps) pending CM25.
 
-### 15.18 CM25 result — pending
+### 15.18 CM25 result (reverted) — Schedule-Free AdamW under-converges at 1 k steps
 
-(to be filled after run)
+Run on 2026-04-24. CM22 recipe with `--scheduler schedule_free
+--warmup-steps 100`; same LRs (peak), same CM12 init, same CM9 aug,
+same 1000 steps. Ckpt saves wrap `opt.eval()` so serialised student
+weights are the Polyak-averaged ("z") iterates.
+
+Sweep on ETH3D `terrains` (12-view eval, median-aligned, `img_size=504`):
+
+| step | \|relative_depth_error\| | δ<1.25 | rmse | log10 |
+|---|---|---|---|---|
+| 250 | 0.0535 | 0.9944 | 0.1008 | 0.0233 |
+| 500 | 0.0565 | 0.9939 | 0.1058 | 0.0245 |
+| 750 | 0.0572 | 0.9957 | 0.1080 | 0.0248 |
+| 1000 | 0.0549 | 0.9972 | 0.1038 | 0.0237 |
+
+CM22@1000 reference 0.0531; CM24@1000 reference 0.0513.
+
+Best = 0.0535 @ step 250, which exceeds the §15.16 gate (≤ 0.0521)
+and is worse than CM22@1000 by +0.8 %. Fails §13.5 (≥ 2 %
+improvement required).
+
+Interpretation: the Polyak-ruppert averaging that powers Schedule-Free
+needs the running mean to stabilise before the "z" iterate becomes a
+good solution. In the 1 k-step Phase-C regime the running window is
+too short for the average to dominate the noise. At large-scale LM
+pretraining (tens of thousands of steps) this concern disappears,
+which is why Defazio 2024 reports matched-or-better results without a
+schedule — but the regime assumption does not hold here. Interestingly
+δ<1.25 at step 1000 matches CM22's 0.9972, so the *bulk* of
+predictions is fine; it's outlier pixels that the averaging has not
+smoothed yet.
+
+Reverted per §13.5. All CM25 ckpts retained as evidence for the
+decision (small, 4 × 104 MB). Next scheduler candidate (if any) would
+be a WSD-long run — see §15.17 deferred item.
+
+Verdict on the two-scheduler comparison: **WSD (CM24)** replaces CM22
+as the retained recipe; **Schedule-Free AdamW (CM25)** does not.
+CM24's fixed-shape warmup + plateau + cosine-tail is the right fit
+for Phase-C's short training horizon.
