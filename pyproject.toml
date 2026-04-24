@@ -29,6 +29,7 @@ dependencies = [
     "moviepy>=2.2.1",
     "evo>=1.36.3",
     "pycolmap>=4.0.3",
+    "schedulefree>=1.4.1",
 ]
 
 [project.optional-dependencies]

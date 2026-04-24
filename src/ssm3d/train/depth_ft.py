@@ -12,6 +12,7 @@ Pipeline (PLAN §9 Phase C):
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
@@ -20,7 +21,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 
 from ssm3d.bridge import DimBridgeStack
 from ssm3d.eval.dpt_adapter import SHARED_DPT_LAYERS, get_dualdpt
@@ -58,6 +59,13 @@ class DepthFTConfig:
     # param count is unchanged — DualDPT already ships with DA3.
     unfreeze_dpt: bool = False
     lr_dpt: float = 1e-5
+    # CM24 / CM25: decouple LR shape from total step count.
+    #   "cosine"        — original CM22 behaviour (CosineAnnealingLR, T_max=steps)
+    #   "wsd"           — WSD (Warmup-Stable-Decay) with fixed-length warmup + decay
+    #   "schedule_free" — Defazio 2024 AdamWScheduleFree; no external scheduler
+    scheduler: str = "cosine"
+    warmup_steps: int = 0  # used by wsd and schedule_free
+    decay_steps: int = 0   # used by wsd only (absolute steps, not a fraction)
 
 
 @dataclass
@@ -238,9 +246,7 @@ def depth_ft(
         raise RuntimeError(
             "depth_ft: no trainable parameters (freeze_mixer + no_bridge leaves nothing)."
         )
-    opt = AdamW(param_groups)
-    lr_ref = cfg.lr_attn if attn_params else cfg.lr_bridge
-    sched = CosineAnnealingLR(opt, T_max=cfg.steps, eta_min=lr_ref * 0.1)
+    opt, sched = _build_optimizer_and_scheduler(param_groups, cfg)
     use_amp = device.type == "cuda" and cfg.amp_dtype != "fp32"
     amp_dtype = _amp_dtype(cfg.amp_dtype)
 
@@ -298,7 +304,8 @@ def depth_ft(
                 attn_params + bridge_params + dpt_params, cfg.grad_clip
             )
         opt.step()
-        sched.step()
+        if sched is not None:
+            sched.step()
 
         if step % cfg.log_every == 0 or step == cfg.steps - 1:
             log.step.append(step)
@@ -315,6 +322,12 @@ def depth_ft(
 
         if (step + 1) % cfg.ckpt_every == 0 or step == cfg.steps - 1:
             ckpt_path = out_dir / f"ckpt_{step + 1}.pt"
+            # Schedule-Free: fold the Polyak-averaged weights into p.data
+            # before serialising, then restore training-mode weights so the
+            # loop continues from the same iterate.
+            sf_mode = cfg.scheduler == "schedule_free"
+            if sf_mode:
+                opt.eval()
             torch.save(
                 {
                     "step": step,
@@ -328,6 +341,62 @@ def depth_ft(
                 },
                 ckpt_path,
             )
+            if sf_mode:
+                opt.train()
             print(f"[depth_ft] saved {ckpt_path}")
 
     return log, bridge
+
+
+def _wsd_lambda(
+    step: int, warmup: int, decay: int, total: int, floor_frac: float = 0.1
+) -> float:
+    """Warmup-Stable-Decay LR multiplier. Warmup and decay are absolute lengths."""
+    if step < warmup:
+        return step / max(1, warmup)
+    stable_end = total - decay
+    if step < stable_end:
+        return 1.0
+    prog = (step - stable_end) / max(1, decay)
+    return floor_frac + 0.5 * (1 - floor_frac) * (1 + math.cos(math.pi * prog))
+
+
+def _build_optimizer_and_scheduler(
+    param_groups: list[dict], cfg: DepthFTConfig
+) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler | None]:
+    """Build optimizer + scheduler per cfg.scheduler. See DepthFTConfig."""
+    if cfg.scheduler == "schedule_free":
+        from schedulefree import AdamWScheduleFree
+
+        opt = AdamWScheduleFree(param_groups, warmup_steps=cfg.warmup_steps)
+        opt.train()
+        print(
+            f"[depth_ft] CM25 Schedule-Free AdamW: warmup_steps={cfg.warmup_steps}, "
+            "no external scheduler"
+        )
+        return opt, None
+
+    opt = AdamW(param_groups)
+    if cfg.scheduler == "wsd":
+        if cfg.warmup_steps + cfg.decay_steps > cfg.steps:
+            raise ValueError(
+                f"WSD: warmup ({cfg.warmup_steps}) + decay ({cfg.decay_steps}) "
+                f"> steps ({cfg.steps}); plateau would be negative."
+            )
+        sched = LambdaLR(
+            opt,
+            lambda s: _wsd_lambda(
+                s, cfg.warmup_steps, cfg.decay_steps, cfg.steps, floor_frac=0.1
+            ),
+        )
+        stable = cfg.steps - cfg.decay_steps
+        print(
+            f"[depth_ft] CM24 WSD: warmup 0..{cfg.warmup_steps}, "
+            f"stable {cfg.warmup_steps}..{stable}, decay {stable}..{cfg.steps} "
+            "(floor=0.1·peak)"
+        )
+        return opt, sched
+
+    lr_ref = param_groups[0]["lr"]
+    sched = CosineAnnealingLR(opt, T_max=cfg.steps, eta_min=lr_ref * 0.1)
+    return opt, sched

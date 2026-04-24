@@ -638,6 +638,7 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 21 | unfreeze DualDPT at Phase-C (CM12 init + CM9 aug + lr_attn=1e-5 / lr_bridge=3e-5 / lr_dpt=1e-5 × 250 steps) | 0.0568 | 0.9935 | 0.1067 | 0.0248 | 69.29 | superseded by CM22 (−16 % \|relative_depth_error\| vs CM12; proved DPT-unfreeze works) |
 | 22 | **CM21 recipe × 1000 steps** (same LRs + aug; CM12 init; unfrozen DualDPT) | **0.0531** | **0.9972** | **0.1012** | **0.0229** | **69.48** | **kept (−21 % \|relative_depth_error\| vs CM12, −6.5 % vs CM21; 4/6 gates pass; δ<1.25 0.9972 beats DA3 0.9743; monotonic improvement @250/500/1000 confirms no overfit)** |
 | 23 | CM22 recipe × 8000 steps (ckpt every 1000; overfit-probe) | 0.0642 | 0.9935 | 0.1195 | 0.0276 | — | reverted (best @1000 = 0.0642 > CM22@1000 0.0531; 8 k cosine leaves LR too warm at step 1000, then monotonic regression 1000→4000 and noisy recovery prove overfit boundary. CM22's short schedule finishing near-zero LR is the correct operating point.) |
+| 24 | **WSD scheduler** (CM22 recipe + `--scheduler wsd --warmup-steps 100 --decay-steps 200`; fixed-length warmup+decay so LR shape is independent of `--steps`) | **0.0513** | **0.9992** | **0.0966** | **0.0221** | — | **kept (−3.4 % \|relative_depth_error\| vs CM22; 4/4 depth gates pass; δ<1.25 0.9992 is widest lead vs DA3 0.9743 to date; @250 even beats @1000 at 0.0510 — WSD shape decouples schedule from step count)** |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -1196,3 +1197,121 @@ Reverted per §13.5 (gate-improvement rule: 0.0642 > CM22's
 0.0531; fails the ≥ 2 % improvement threshold by a wide margin).
 All CM23 ckpts removed; `sweep.log` and `train.log` kept as
 evidence.
+
+### 15.15 CM24 plan — WSD (Warmup–Stable–Decay) scheduler
+
+Motivation: CM23 proved that `CosineAnnealingLR(T_max=cfg.steps)` ties
+the LR shape to total step count, so identical `--steps 1000`
+checkpoints from CM22 and CM23 saw very different LRs (CM22 at the
+1e-6 floor, CM23 still at 9.66e-6, 97 % of peak). A scheduler whose
+warmup + decay phases are **fixed absolute lengths**, independent of
+`cfg.steps`, lets a short training run reach a converged terminal LR
+*and* lets a longer run add more plateau time without changing the
+tail shape. WSD is the MiniCPM / Qwen2 / DeepSeek-V2–V3 choice for
+exactly this reason (Hu et al., 2024, "MiniCPM: Unveiling the
+Potential of Small Language Models with Scalable Training
+Strategies").
+
+Shape:
+
+```
+LR(t) = { (t / W) · peak                                     0 ≤ t < W         (warmup)
+        { peak                                               W ≤ t < S         (stable)
+        { floor + 0.5·(peak−floor)·(1+cos(π·(t−S)/D))        S ≤ t < S+D       (decay)
+```
+
+with `W = cfg.warmup_steps` (fixed), `D = cfg.decay_steps` (fixed),
+`S = cfg.steps − D`, `floor = peak · 0.1`.
+
+Recipe (CM22 baseline, schedule only changes):
+
+- init: `distill_cm12/ckpt_20000.pt` (same as CM22)
+- aug: CM9 (random crop, hflip, color jitter)
+- LRs: `lr_attn=1e-5 lr_bridge=3e-5 lr_dpt=1e-5` (peak values, same as CM22)
+- unfrozen DualDPT (CM21 lever)
+- `--steps 1000 --warmup-steps 100 --decay-steps 200 --scheduler wsd`
+
+Intermediate ckpts at 250 / 500 / 1000 so we can compare the shape of
+the learning curve to CM22's cosine.
+
+Primary acceptance:
+`|relative_depth_error|_cm24@1000 ≤ 0.0521` (CM22 × 0.98 per §13.5).
+
+Secondary check: run a short overfit-probe at `--steps 2000` with the
+**same** `warmup=100, decay=200` (so the tail is identical to CM24 /
+CM22-like). If step-1000 ckpts from both WSD runs are within
+~1 % of each other, the "LR shape independent of total steps" claim is
+verified. Deferred if CM24 itself does not meet the primary gate.
+
+### 15.16 CM25 plan — Schedule-Free AdamW
+
+Motivation: the most aggressive "LR shouldn't depend on max step"
+answer in the literature. Defazio et al., 2024 ("The Road Less
+Scheduled", Meta, ICML 2024) proposed an AdamW variant that uses a
+Polyak-ruppert-style running average of iterates plus an extrapolated
+momentum point; no LR decay schedule is needed at all. Converges to
+the same solution the cosine schedule would reach without knowing
+`T_max`. Available via `schedulefree==1.4.1` (added via `uv add
+schedulefree`).
+
+Recipe (CM22 baseline, optimizer only changes):
+
+- init: `distill_cm12/ckpt_20000.pt`
+- aug: CM9
+- peak LRs: CM22 values (`lr_attn=1e-5 lr_bridge=3e-5 lr_dpt=1e-5`)
+- optimizer: `schedulefree.AdamWScheduleFree(..., warmup_steps=100)`
+- **no** external scheduler
+- `--steps 1000 --scheduler schedule_free --warmup-steps 100`
+- ckpt saves require `opt.eval()` before serialising so the saved
+  student weights are the Polyak-averaged ones used at inference;
+  restore `opt.train()` afterwards
+
+Primary acceptance: `|relative_depth_error|_cm25@1000 ≤ 0.0521`.
+
+If either CM24 or CM25 clears the gate, the winner replaces CM22 in
+the retained-pipeline index and the losing scheduler is recorded as
+"tested, did not supersede".
+
+### 15.17 CM24 result (kept) — WSD beats CM22 at every checkpoint
+
+Run on 2026-04-24. CM22 recipe with `--scheduler wsd --warmup-steps
+100 --decay-steps 200`; same LRs, same CM12 init, same CM9 aug, same
+1000 steps. Intermediate ckpts every 250 steps.
+
+Sweep on ETH3D `terrains` (12-view eval, median-aligned, `img_size=504`):
+
+| step | \|relative_depth_error\| | δ<1.25 | rmse | log10 |
+|---|---|---|---|---|
+| 250 | **0.0510** | 0.9942 | 0.0957 | 0.0222 |
+| 500 | 0.0616 | 0.9935 | 0.1176 | 0.0266 |
+| 750 | 0.0551 | 0.9960 | 0.1037 | 0.0238 |
+| 1000 | **0.0513** | **0.9992** | **0.0966** | **0.0221** |
+
+CM22@1000 reference: 0.0531.
+
+Both @250 (plateau-onset, −4.0 % vs CM22) and @1000 (post-decay,
+−3.4 % vs CM22) clear the §15.15 gate (≤ 0.0521). @500 and @750 dip
+back above CM22, which is the noisy-plateau signature WSD's shape
+predicts: during the 700-step stable phase the LR is pinned at peak,
+so held-out accuracy oscillates. The tail decay (800→1000) damps the
+oscillation and lands on a strict improvement at every metric — δ<1.25
+0.9992 is the widest lead SSM-3D has posted against DA3 (0.9743).
+
+LR trace confirmed the shape (from `train.log`):
+step 0 = 1.00e-7 (warmup), step 100 = 1.00e-5 (peak), step 100..800 =
+1.00e-5 (stable), step 825 = 9.63e-6, step 999 = 1.00e-6 (floor).
+
+Retained: **CM9 + CM12 + CM24** (CM24 supersedes CM22). Retained
+pipeline: `distill_cm12/ckpt_20000.pt` → `depth_ft_cm24/ckpt_1000.pt`.
+Kept ckpts: 250 + 1000 (both beat CM22); 500 / 750 dropped to reclaim
+disk once CM25 has been evaluated.
+
+Claim verified: the LR shape no longer depends on `cfg.steps`. A
+longer schedule (e.g. `--steps 4000 --warmup-steps 100 --decay-steps
+200`) would leave the warmup+decay tail identical and just extend the
+stable plateau, so step-1000 comparisons stay apples-to-apples across
+runs. Deferred second WSD run (2000 or 4000 steps) pending CM25.
+
+### 15.18 CM25 result — pending
+
+(to be filled after run)

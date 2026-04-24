@@ -128,6 +128,19 @@ def main() -> None:
         help="CM12: chunked SSD query-axis chunk size (None = full T x T mask). "
              "Needed when training at img_size>=504 to fit in 12 GB VRAM.",
     )
+    ap.add_argument(
+        "--scheduler", choices=["cosine", "wsd", "schedule_free"], default="cosine",
+        help="LR scheduler. CM22/23 used 'cosine' (T_max=steps); "
+             "CM24 = 'wsd' with fixed warmup/decay; CM25 = 'schedule_free' (no scheduler).",
+    )
+    ap.add_argument(
+        "--warmup-steps", type=int, default=0,
+        help="Linear warmup length in steps (wsd + schedule_free only).",
+    )
+    ap.add_argument(
+        "--decay-steps", type=int, default=0,
+        help="WSD tail length in steps (absolute, not a fraction of --steps).",
+    )
     ap.add_argument("--amp-dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=0)
@@ -199,6 +212,9 @@ def main() -> None:
         weight_decay=args.weight_decay,
         unfreeze_dpt=args.unfreeze_dpt,
         lr_dpt=args.lr_dpt,
+        scheduler=args.scheduler,
+        warmup_steps=args.warmup_steps,
+        decay_steps=args.decay_steps,
     )
     data_iter = _build_iter(dataset, seed=args.seed)
     depth_ft(student, teacher, data_iter, cfg, args.out, bridge=bridge)
