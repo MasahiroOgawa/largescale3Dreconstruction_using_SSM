@@ -1882,3 +1882,116 @@ reorder/concat path in
 `third_party/depth-anything-3/.../vision_transformer.py`). The
 implementation in `train_distill.py` will need a small slicing
 helper — verify before kicking off the run.
+
+### 15.28 Corrected diagnostic — § 15.25–§ 15.27 superseded
+
+**The earlier probes measured the wrong feature stream.** Two
+independent issues compounded:
+
+1. Probe 2c hooked the block via `register_forward_hook(blk)`, which
+   fires *during* `block(x, ...)` — for DA3's cross-view layers
+   (5 / 7 / 9 / 11) the captured `x` is in `b (s n) c` shape with
+   T ≈ 15563, before `process_attention` re-rearranges back to
+   `(b, s, n, c)`. The "262 / 249 / 219 / 177" numbers were ranks
+   over multi-view clouds, not the per-view layer outputs that the
+   next block sees.
+2. Phase-B distillation supervises *post-`self.norm`* aux features
+   (line 397 of `vision_transformer.py`:
+   `aux_outputs = [self.norm(out) for out in aux_outputs]`). All
+   the per-layer probes used pre-norm block outputs. The norm drops
+   rank by 30–100 points — a magnitude that completely changes the
+   trajectory shape.
+
+The corrected measurement pulls features the same way distillation
+does — via `_teacher_features` / `_student_features` (which call
+`get_intermediate_layers(... export_feat_layers=range(12))` and
+return post-norm aux). Mean rank over 12 ETH3D `terrains` images,
+img_size = 504:
+
+| layer | DA3 teacher | CM12 (Phase-B) | CM24 (Ph-B+C) | CM26 (Ph-B+C, sd=128) |
+|---|---|---|---|---|
+| 0  | 120.73 | 123.91 | 124.12 | 117.20 |
+| 1  | 118.71 | 145.58 | 145.76 | 143.95 |
+| 2  | 127.34 | 136.83 | 135.56 | 130.05 |
+| **3**  | 126.92 | **84.55** | **91.85** | **85.99** |
+| 4  | 134.93 | 92.24  | 102.39 | 102.32 |
+| **5**  | 149.89 | 97.81  | 109.01 | 103.50 |
+| 6  | 154.73 | 101.57 | 115.73 | 110.31 |
+| **7**  | 167.24 | 100.32 | 112.08 | 111.02 |
+| 8  | 163.70 | 95.81  | 105.99 | 105.89 |
+| **9**  | 151.59 | 76.39  | 86.76  | 82.70  |
+| 10 | 146.22 | 68.34  | 77.03  | 72.78  |
+| **11** | 139.01 | 62.48  | 71.70  | 65.75  |
+
+(Bold rows = supervised distillation layers; non-bold = unsupervised.)
+
+Logs: `outputs/runs/probe2c_corrected.log` (teacher only) and
+`outputs/runs/probe2_corrected_postnorm.log` (full table).
+
+**New picture, replacing § 15.25–§ 15.26:**
+
+- Layers 0–2: **student is at or above teacher rank.** Mamba-3 plus
+  warm-start are not the problem at the bottom of the stack.
+- Layer 3: **52-point cliff** (137 → 85). This is where the student
+  diverges, not layer 9. Phase-C lifts the bottom of the cliff by
+  ~7 points but does not move it.
+- Layers 4–11: student climbs back partially (peak 116 at layer 6,
+  CM24) but never matches teacher (which peaks at 167 at layer 7).
+  The supervised layers (5 / 7 / 9 / 11) are downstream symptoms of
+  the layer-3 collapse, not the bottleneck themselves.
+- CM26 vs CM24 layer-by-layer: CM26 is consistently ~5 points
+  *lower* than CM24 — confirms § 15.23 in post-norm space too.
+
+**Reframed hypotheses:**
+
+- **β-refined** — student's *unsupervised* layer 3 self-organises
+  into a low-rank manifold; the supervised layers 5 / 7 / 9 / 11 only
+  feel gradient pressure to match teacher targets, but inherit a
+  rank-85 input from layer 3 that they can only partially recover.
+  Fix: add layers 3 (and 0–11) to the distill supervision set so
+  layer 3 has direct alignment pressure. Loss-side fix.
+- **γ** — Mamba-3 SSD's preferred minimum at depth ≥ 3 is
+  rank-compressed regardless of supervision (i.e., even all-layer
+  distillation can't push layer 3 above ~120). Fix: architectural —
+  the user's two-stream concat (cross-view branch added to each
+  block) is the leading candidate, since it would directly increase
+  the rank capacity rather than rely on training to coax it out.
+
+**Revised CM29 plan (supersedes § 15.27 plan).**
+
+CM12 *already* distills at (5, 7, 9, 11) — the original "β = enable
+intermediate distillation" framing was moot. The refined CM29 turns
+on **distillation at every layer 0–11** to test β-refined.
+
+- `scripts/train_distill.py --teacher-layers 0 1 2 3 4 5 6 7 8 9 10 11`
+  (existing CLI; no code change). All other flags match CM12 / CM24:
+  `--img-size 504 --patch-size 14 --chunk-size 128 --steps 20000
+  --batch-size 1 --out outputs/runs/distill_cm29a`.
+- After Phase-B, run
+  `uv run python scripts/eval_effective_rank.py` together with the
+  corrected post-norm probe (one-shot inline as above) to compare
+  per-layer rank vs CM12.
+- **Acceptance for β-refined:** layer-3 student rank ≥ 115 (vs
+  CM12's 85, i.e. close the cliff to within 15 of teacher 127).
+  Secondary: layers 5 / 7 / 9 / 11 student rank ≥ +30 vs CM12.
+- **If gate passes:** β-refined confirmed → run Phase-C (CM30)
+  and reassess depth metrics.
+- **If gate fails:** γ is the live hypothesis → CM31 = two-stream
+  cross-view branch in Mamba-3 (per § 15.28 user proposal). Phase-B
+  re-distill required there too.
+
+Cost: ~2 h 40 min Phase-B + ~5 min diagnostic. No Phase-C until the
+β-refined rank gate passes.
+
+**Probe ladder status (revised):**
+
+- ✅ 1 — teacher rank (rejects A as before, now with the caveat that
+  187 was the 768-dim cat-output, not the supervised aux).
+- ✅ 2 / 2b / 2c — pre-norm trajectory; localisation to layers 9–11
+  was an artefact of the wrong feature stream. Real localisation is
+  layer 3.
+- ✅ 2c-corrected — post-norm per-layer rank for teacher and three
+  student ckpts (this section).
+- ⏳ CM29-a — all-layer distillation, β-refined gate.
+- CM31 (γ-fix, conditional on CM29-a failing) — two-stream Mamba-3
+  with cross-view branch, mirroring DA3's local-vs-global structure.
