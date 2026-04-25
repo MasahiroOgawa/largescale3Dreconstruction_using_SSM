@@ -640,6 +640,9 @@ DualDPT params to the Phase-C optimizer at `lr_dpt = lr_attn / 3`.
 | 23 | CM22 recipe × 8000 steps (ckpt every 1000; overfit-probe) | 0.0642 | 0.9935 | 0.1195 | 0.0276 | — | reverted (best @1000 = 0.0642 > CM22@1000 0.0531; 8 k cosine leaves LR too warm at step 1000, then monotonic regression 1000→4000 and noisy recovery prove overfit boundary. CM22's short schedule finishing near-zero LR is the correct operating point.) |
 | 24 | **WSD scheduler** (CM22 recipe + `--scheduler wsd --warmup-steps 100 --decay-steps 200`; fixed-length warmup+decay so LR shape is independent of `--steps`) | **0.0513** | **0.9992** | **0.0966** | **0.0221** | — | **kept (−3.4 % \|relative_depth_error\| vs CM22; 4/4 depth gates pass; δ<1.25 0.9992 is widest lead vs DA3 0.9743 to date; @250 even beats @1000 at 0.0510 — WSD shape decouples schedule from step count)** |
 | 25 | Schedule-Free AdamW (CM22 recipe + `--scheduler schedule_free --warmup-steps 100`; Defazio 2024, no external scheduler; Polyak-averaged iterate saved at ckpt) | 0.0549 | 0.9972 | 0.1038 | 0.0237 | — | reverted (+3.4 % \|relative_depth_error\| vs CM22; best @250 = 0.0535 > 0.0521 gate; Polyak averaging needs more than 1 k steps to stabilise in this Phase-C regime. Regime mismatch vs LM-pretraining scale where Schedule-Free thrives.) |
+| 26 | **Mamba-3 state_dim 64→128** (CM24 recipe, Phase-B re-distilled with `--state-dim 128`, Phase-C with `--state-dim 128 --scheduler wsd --warmup-steps 100 --decay-steps 200`) | pending | — | — | — | — | pending (probes per-head SSD-mixing-matrix rank ceiling: raising state_dim lifts per-head rank bound from 64 → 128 while ~linear param growth in B/C projections) |
+| 27 | **Mamba-3 num_heads 6→12** (head_dim 64→32, state_dim kept at CM26-winner; Phase-B re-distilled; warm_start_mamba3_from_qkv disabled because QKV heads=6) | pending | — | — | — | — | pending (probes aggregate concat rank H·N: 2× more parallel SSD streams, same total params) |
+| 28 | **Mamba-3 MIMO** (per-token decay promoted from scalar-per-head `(H,)` to vector-per-head `(H, r)` with r=4; implements Gu & Dao 2024 §4 MIMO; Phase-B re-distilled) | pending | — | — | — | — | pending (per-head rank ceiling lifts from N → r·N, the full lever proposed after CM24) |
 
 ### 14.1 Rationale for skipping CM6 & CM7
 
@@ -1354,3 +1357,292 @@ Verdict on the two-scheduler comparison: **WSD (CM24)** replaces CM22
 as the retained recipe; **Schedule-Free AdamW (CM25)** does not.
 CM24's fixed-shape warmup + plateau + cosine-tail is the right fit
 for Phase-C's short training horizon.
+
+### 15.19 CM26 plan — Mamba-3 state_dim 64→128
+
+Motivation: CM24 closes the gap to DA3-SMALL |relative_depth_error| to
+1.27 × but effective_rank still sits around 69 while DA3 sits at 145.
+Gu & Dao 2024 §3.7 bounds the rank of the SSD mixing matrix
+`L ⊙ (C · Bᵀ)` per head by `state_dim`. Our code fixes `state_dim = 64`
+(see `src/ssm3d/mamba3/projections.py:55`), so the per-head ceiling is
+64; with six heads, the aggregate ceiling is H·N = 384 — but observed
+effective_rank is far below that, suggesting each head is actually
+rank-limited rather than the concat.
+
+CM11 tried the *opposite* direction (state_dim 32) and regressed. The
+untried arrow is upward. CM26 doubles `state_dim` to 128 so that each
+head can carry twice as many independent state modes. Cost is linear
+in the B/C projection (`2 · H · state_dim = 2 · 6 · 128 = 1536` extra
+`dim`-wide input rows per layer, i.e. ~1.2 M extra Phase-B params on
+a 22 M backbone).
+
+Phase-B must be re-distilled: the Mamba-3 projection shapes change
+with `state_dim`, so `distill_cm12/ckpt_20000.pt` is incompatible. Cost
+estimate from CM12 log: ~2 h 40 min on the local GPU at img_size=504,
+chunk_size=128, batch=1.
+
+Recipe:
+
+- Phase-B: `scripts/train_distill.py --img-size 504 --patch-size 14
+  --chunk-size 128 --state-dim 128 --steps 20000 --batch-size 1
+  --out outputs/runs/distill_cm26` (all other hyperparameters match
+  CM12 / CM24).
+- Phase-C: `scripts/train_depth.py --init
+  outputs/runs/distill_cm26/ckpt_20000.pt --img-size 504 --patch-size
+  14 --chunk-size 128 --state-dim 128 --scheduler wsd --warmup-steps
+  100 --decay-steps 200 --steps 1000 --batch-size 1 --lr-attn 1e-5
+  --lr-bridge 3e-5 --unfreeze-dpt --lr-dpt 1e-5 --augment --out
+  outputs/runs/depth_ft_cm26` (CM24 recipe lifted to state_dim 128).
+
+Acceptance: primary gate is CM24 × 0.98 (§13.5), i.e.
+`|relative_depth_error|_cm26@1000 ≤ 0.0503`. Secondary monitor is
+`effective_rank`: we want ≥ CM24's value so we're sure the rank-ceiling
+lever actually fires. If |relative_depth_error| improves but
+effective_rank does not, that falsifies the CM26 hypothesis — the
+bottleneck is elsewhere (warm-start init, mask shape, or
+over-regularisation).
+
+### 15.20 CM27 plan — Mamba-3 num_heads 6→12
+
+Motivation: complementary to CM26. Same aggregate parameter budget
+(`2 · H · state_dim` and `dim · dim` project sizes stay constant if we
+halve `head_dim` when doubling `num_heads`). Splits each head's state
+into two sub-streams, doubling the concat-rank ceiling while keeping
+per-head rank the same. Mamba-2 / Mamba-3 literature reports
+multi-head is critical for expressivity; Mamba-3 paper §4.2 notes
+per-head specialization emerges around H ≥ 8.
+
+Note: at H=12, `head_dim = dim / H = 384 / 12 = 32` — this is the
+minimum dimension that still supports RoPE's half-pair rotation. At
+H=16 head_dim=24 which loses RoPE-pair alignment; hence the cap at
+12.
+
+Warm-start problem: `warm_start_mamba3_from_qkv` (see
+`src/ssm3d/weights.py`) copies DINOv2's qkv weight-matrix slices into
+Mamba-3's B/C/V projections, but DINOv2 has `num_heads=6` so the
+per-head shape is `(6, 64)` not `(12, 32)`. CM27 has to disable the
+warm-start for the qkv-sliced paths and rely on Phase-B distillation
+alone to teach the Mamba-3 mixer to match DA3 features.
+
+Recipe:
+
+- Phase-B: `scripts/train_distill.py --img-size 504 --patch-size 14
+  --chunk-size 128 --state-dim <winner of CM26> --num-heads 12 --steps
+  20000 --batch-size 1 --out outputs/runs/distill_cm27`. Note `--num-heads`
+  is a new CLI flag introduced in this CM; default remains 6 so CM24 and
+  earlier runs are unaffected.
+- Phase-C: identical to CM26 with `--num-heads 12 --state-dim <winner>`.
+
+Acceptance: same 0.98 gate vs CM26 winner.
+
+Runs only if CM26 itself clears its gate. If CM26 falsifies the
+rank-ceiling hypothesis (|relative_depth_error| unchanged despite
+effective_rank change), CM27 is cancelled and we jump to CM28.
+
+### 15.21 CM28 plan — Mamba-3 MIMO
+
+Motivation: CM26 and CM27 are the two single-axis "cheap" realisations
+of the rank-ceiling hypothesis. CM28 is the full Mamba-3 MIMO (Gu &
+Dao 2024 §4, *Multiple-Input-Multiple-Output Structured Masked
+Attention*) that both papers cite as the rank-ceiling fix.
+
+Today our code carries `delta: (B, H, T)`, `A_log: (B, H, T)`, `lam:
+(B, H, T)` — scalar-per-head-per-token. The SSD update
+`x_t = A_t · x_{t-1} + B_t · v_t` contributes at most a rank-1
+outer-product to the hidden state per step, because A_t is a scalar
+multiplier. MIMO promotes these to `(B, H, r, T)` with r parallel
+"channels" sharing B, C, V. Each step then contributes rank-r, and
+over a sequence of length T the total accumulated rank is bounded by
+`r · state_dim` per head.
+
+Implementation diff-plan (all in `src/ssm3d/mamba3/`):
+
+1. `projections.py::AttentionProjections.__init__`: add `mimo_rank`
+   argument (default 1, i.e. SISO-per-head = today's code path);
+   output size grows by `3 · H · (mimo_rank - 1)` to carry the new
+   streams. `delta_bias / A_bias / lam_bias` reshape from `(H,)` to
+   `(H, mimo_rank)`.
+2. `projections.py::AttentionProjections.forward`: delta/A_log/lam
+   return shape `(B, H, r, T)` instead of `(B, H, T)`.
+3. `mask.py::build_three_term_mask` / `build_three_term_mask_rows`:
+   add broadcast over the r axis. Output mask shape becomes
+   `(B, H, r, T, T)` — but we can fold r into the batch axis to keep
+   `ssd_forward` unchanged, provided we tile B, C, V `r` times along
+   that axis.
+4. `self_attention.py::ssd_forward`: once B/C/V are r-tiled the
+   matmul structure is the same; after the final matmul we sum-reduce
+   over the r axis before merging heads.
+
+r=4 is the default (paper's reported sweet spot at D/H ≈ 32-64).
+Phase-B must be re-distilled.
+
+Recipe:
+
+- Phase-B: `scripts/train_distill.py --img-size 504 --patch-size 14
+  --chunk-size 128 --state-dim <winner of CM26> --num-heads <winner
+  of CM27> --mimo-rank 4 --steps 20000 --batch-size 1 --out
+  outputs/runs/distill_cm28`.
+- Phase-C: same plus `--mimo-rank 4`.
+
+Implementation cost: ~6 h to write the MIMO shape-broadcast code
+path, add tests in `tests/unit/test_mamba3_mimo.py` that verify
+shapes, numerical match when `mimo_rank=1`, and non-zero gradient
+flow across all r streams. Then 2 h 40 min Phase-B + ~1 h Phase-C.
+
+Acceptance: 0.98 gate vs CM27 winner (or CM26 winner, if CM27
+cancelled). Secondary: effective_rank ≥ 150 (the §9 stretch target,
+which would mean we've actually cleared the rank bottleneck for the
+first time in the project).
+
+### 15.22 Execution order and conditional logic
+
+1. **CM26 first** (minimum-risk one-flag change). If its
+   |relative_depth_error| beats CM24 by ≥ 2 % and effective_rank
+   improves, the rank-ceiling hypothesis is confirmed → proceed to
+   CM27.
+2. **CM27 only if CM26 confirms.** If CM26 regresses or
+   effective_rank does not move, skip CM27 (same mechanism,
+   different axis).
+3. **CM28 always runs** once the prior two are resolved — MIMO is
+   the general form of the lever and we want a clean apples-to-apples
+   comparison vs the single-axis variants.
+
+Revert rule unchanged per §13.5. All ckpts retained during this
+sequence for mutual ablation comparison; pruned after CM28 outcome
+is final.
+
+### 15.23 CM26 result (reverted) — rank-ceiling hypothesis falsified
+
+Run on 2026-04-25. Phase-B from `distill_cm26/ckpt_20000.pt`
+(state_dim=128, otherwise CM12 recipe). Phase-C with the §15.19
+recipe verbatim: WSD scheduler, warmup 100 / decay 200, 1000 steps,
+`--unfreeze-dpt`, `--augment`, lr-attn 1e-5 / lr-bridge 3e-5 /
+lr-dpt 1e-5.
+
+Default `--ckpt-every=500` so only ckpt_500 / ckpt_1000 were saved;
+the §15.19 gate is specifically @ step 1000 so the cadence does not
+affect the decision.
+
+Sweep on ETH3D `terrains` (12-view, median-aligned, img_size=504):
+
+| step | \|relative_depth_error\| | δ<1.25 | rmse | log10 |
+|---|---|---|---|---|
+| 500 | 0.0576 | 0.9867 | 0.1100 | 0.0250 |
+| 1000 | 0.0528 | 0.9960 | 0.0994 | 0.0228 |
+
+CM24@1000 reference 0.0513; gate (§15.19) ≤ 0.0503.
+
+**Primary gate: FAIL.** CM26@1000 = 0.0528 is +2.9 % vs CM24 (a
+regression, not the −2 % required by §13.5).
+
+**Secondary diagnostic — and the more interesting result.** Mean
+backbone effective_rank (12 ETH3D `terrains` images, img_size=504,
+script: `scripts/eval_effective_rank.py`):
+
+| ckpt | state_dim | effective_rank |
+|---|---|---|
+| CM24 ckpt_1000 | 64 | 71.85 |
+| CM26 ckpt_1000 | 128 | 65.92  (−8.3 %) |
+
+Doubling the per-head state dim *did not* raise the observed
+effective rank — it lowered it. The §15.19 hypothesis ("the per-head
+SSD rank ceiling H·N = 384 is the bottleneck; observed rank ≈ 70 sits
+under that ceiling because state_dim=64 is too small") is therefore
+falsified by direct measurement: the rank limit is not
+state_dim-per-head. The extra 64 state dims either learned to
+duplicate the existing modes (concat-rank stays low) or noise that
+the optimiser couldn't shape into a useful contribution within the
+1000 Phase-C steps.
+
+**Reverted per §13.5.** Per §15.22 conditional logic, **CM27 is
+cancelled** (same mechanism, different axis — no reason to expect a
+different outcome when the mechanism itself is the wrong lever). All
+CM26 ckpts retained as evidence for the falsification.
+
+**CM28 (MIMO) is paused, not cancelled.** MIMO is also a rank-ceiling
+lever (parallel state streams, total rank ≤ r·state_dim per head).
+If the active constraint is upstream of the per-head state, MIMO will
+hit the same wall — and we'd spend ~6 h coding the MIMO mask
+broadcast first. Before deciding whether to run it, we need to know
+*where* rank is actually being lost. That diagnostic ladder is
+§15.24.
+
+### 15.24 Rank bottleneck diagnostic ladder (replaces the eager CM28)
+
+The CM26 falsification means we know the bottleneck is *not* the
+SSD per-head state ceiling. The five remaining candidates, in input
+→ output order along the model, are:
+
+A. **Distillation target itself is rank-limited on this scene.**
+   DA3-SMALL features were measured at effective_rank ≈ 145 in §9
+   *across the original eval mix*. If on ETH3D `terrains` at 504 the
+   teacher is also ≈ 70, the student is matching teacher rank
+   exactly and there is no rank to gain without changing the
+   target.
+
+B. **Layer-wise rank collapse.** A specific Mamba-3 block (early
+   warm-started layers? late layers compressing to bridge?) might
+   be collapsing rank that the prior layers had. Mean rank hides
+   per-layer behaviour.
+
+C. **B/C projection rank.** SSD's mixing matrix is `L ⊙ (C · Bᵀ)`
+   per head; even with state_dim=128, the matrix can only hit a rank
+   bounded by `min(rank(B), rank(C))` over the input feature
+   distribution. If B and C are themselves rank-low (their input is
+   the same `dim=384` activation, factorised through a small
+   intermediate), the state ceiling never matters.
+
+D. **Warm-start as a lid.** `warm_start_mamba3_from_qkv` copies
+   DINOv2's qkv slices into B/C/V, and DINOv2 was *trained at
+   img_size=224*; its qkv may produce rank-~70 features at 504 by
+   default. Cold-started Mamba-3 (or Phase-B with no qkv copy) might
+   reach higher rank, at the cost of slower convergence.
+
+E. **Phase-C objective doesn't reward high rank.** Depth is an
+   intrinsically low-rank task (one scalar per pixel, smoothly
+   varying), so the depth-ft loss can be minimised by collapsing
+   features along directions orthogonal to depth-relevant
+   variation. CM21 unfreeze + CM9 aug both push toward "match the
+   depth target," not "preserve representation richness."
+
+Five probes, cheapest first:
+
+1. **(A) Teacher rank on ETH3D.** Run
+   `scripts/eval_effective_rank.py` on the **DA3-SMALL** teacher
+   features for the same 12 `terrains` images. ~2 min. If teacher is
+   ≤ 80, target is the lid → consider DA3-LARGE teacher (CM20 was
+   reverted but the rank target may be the right framing) or a
+   different scene mix at distill time.
+
+2. **(B) Layer-wise rank.** Extend
+   `scripts/eval_effective_rank.py` to print rank at each of the 12
+   Mamba-3 block outputs (use forward hooks on
+   `student.backbone.vit.blocks[k]`). ~10 min to extend + 5 min to
+   run for CM24, CM26, and DA3 teacher. Locates the collapse layer.
+
+3. **(C) Projection rank.** Without a forward pass — compute the
+   numerical rank of the learned `B_proj.weight` and `C_proj.weight`
+   matrices for each layer of CM24 (and the warm-started init for
+   reference). ~5 min. If projections are themselves rank-≈70, the
+   state-dim lever was always going to fail.
+
+4. **(D) Cold-start probe.** A short Phase-B (4000 steps,
+   state_dim=64) with `warm_start=False` at distill time. ~30 min.
+   Compare effective_rank at step 4000 against the CM12 (warm-start)
+   ckpt at the same step. If cold-start rank > warm-start rank, the
+   init is the lid and we have a new Phase-B recipe.
+
+5. **(E) Rank-preserving Phase-C objective.** Add a small term
+   `−λ · log(effective_rank(features))` to the Phase-C loss
+   (`src/ssm3d/train/depth_ft.py`). Tiny λ (1e-3 to 1e-2). Trains
+   the same 1000 steps as CM24. ~1 h. Tests whether the depth-ft
+   objective is actively suppressing rank.
+
+Decision rule: run probes 1→4 in order, stop at the first one that
+*shifts* effective_rank by > 10 % (vs CM24). That is the lever.
+Probe 5 is independent — run it regardless once 1–4 finish, because
+it tells us about the Phase-C loss landscape even if a different
+probe identifies the dominant constraint.
+
+No checkpoint deletion until probes 1–4 complete (we may want to
+re-measure on CM26 vs CM24 layer-wise).

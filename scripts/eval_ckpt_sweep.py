@@ -56,6 +56,11 @@ def main() -> None:
     ap.add_argument("--chunk-size", type=int, default=128)
     ap.add_argument("--max-images", type=int, default=12)
     ap.add_argument("--device", type=str, default="cuda")
+    ap.add_argument(
+        "--state-dim", type=int, default=64,
+        help="Mamba-3 SSD recurrent state dim. Must match the ckpt being loaded "
+             "(default 64; CM26 uses 128).",
+    )
     args = ap.parse_args()
 
     torch.manual_seed(0)
@@ -73,6 +78,7 @@ def main() -> None:
     ssm = SSM3DNet(
         size="small", img_size=args.img_size, patch_size=args.patch_size,
         depth=12, chunk_size=args.chunk_size,
+        mamba_state_dim=args.state_dim,
     )
     load_dinov2_backbone(ssm.backbone.vit, ensure_dinov2_vits14())
     ssm.to(args.device).eval()
