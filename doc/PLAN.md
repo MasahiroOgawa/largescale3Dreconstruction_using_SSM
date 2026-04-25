@@ -1646,3 +1646,239 @@ probe identifies the dominant constraint.
 
 No checkpoint deletion until probes 1–4 complete (we may want to
 re-measure on CM26 vs CM24 layer-wise).
+
+### 15.25 Probe results (so far) — bottleneck localised to late blocks, born in Phase-B
+
+Date: 2026-04-25. All measurements: ETH3D `terrains`, 12 images,
+img_size=504, mean over images. Logs in
+`outputs/runs/probe1_teacher_rank.log`,
+`outputs/runs/probe2_per_layer.log`,
+`outputs/runs/probe2b_phaseB_vs_phaseC.log`. Reproduce via
+`scripts/eval_effective_rank.py` (with `--include-da3-teacher` for
+probe 1, `--per-layer` for probes 2 / 2b).
+
+**Probe 1 — DA3-SMALL teacher rank.**
+
+| source | C | effective_rank |
+|---|---|---|
+| DA3-SMALL teacher (last layer) | 768 | 187.21 |
+| CM24 ckpt_1000 (state_dim=64) | 384 | 71.85 |
+| CM26 ckpt_1000 (state_dim=128) | 384 | 65.92 |
+
+Teacher hits 187 on the same images. Student is at 38 % of teacher
+rank. → **Hypothesis A (teacher target is the lid) REJECTED.**
+Substantial rank capacity to gain.
+
+**Probe 2 — per-layer rank, CM24 vs CM26.** Forward hooks on each of
+the 12 Mamba-3 block outputs (cls stripped, patches only).
+
+| layer | CM24 (sd=64) | CM26 (sd=128) |
+|---|---|---|
+| 0 | 143.17 | 132.80 |
+| 1 | 180.89 | 178.50 |
+| 2 | 177.67 | 173.68 |
+| 3 | 156.79 | 154.99 |
+| 4 | 175.25 | 177.75 |
+| 5 | 168.93 | 165.78 |
+| 6 | 174.36 | 171.21 |
+| 7 | 158.12 | 161.39 |
+| 8 | 148.40 | 152.27 |
+| 9 | 122.34 | 117.23 |
+| 10 | 109.90 | 105.74 |
+| 11 | 99.92 | 91.53 |
+| (post-vit-norm) | 71.85 | 65.92 |
+
+Findings:
+
+- Layers 1–8 sit at 150–180 — healthy and comparable to teacher's 187.
+- Rank collapses gradually across layers 9–11 (148 → 122 → 110 → 100),
+  then drops a further 28 points at the final `vit.norm` LayerNorm
+  (100 → 72).
+- CM24 and CM26 trajectories track within ±5 everywhere → state_dim
+  was not the lever. This is the §15.23 result in spatial form.
+- DPT taps are `SHARED_DPT_LAYERS = (5, 7, 9, 11)`; the collapse
+  correlates spatially with the latter half of that set.
+
+**Probe 2b — Phase-B-only vs Phase-B+Phase-C, both at sd=64.**
+`distill_cm12/ckpt_20000.pt` (Phase-B alone) vs
+`depth_ft_cm24/ckpt_1000.pt` (Phase-B + Phase-C):
+
+| layer | Phase-B (cm12) | Phase-B+C (cm24) | Δ from Phase-C |
+|---|---|---|---|
+| 0 | 142.90 | 143.17 | +0.3 |
+| 1 | 181.61 | 180.89 | −0.7 |
+| 2 | 180.06 | 177.67 | −2.4 |
+| 3 | 154.97 | 156.79 | +1.8 |
+| 4 | 171.07 | 175.25 | +4.2 |
+| 5 | 161.88 | 168.93 | +7.0 |
+| 6 | 166.42 | 174.36 | +7.9 |
+| 7 | 151.08 | 158.12 | +7.0 |
+| 8 | 142.31 | 148.40 | +6.1 |
+| 9 | 110.54 | 122.34 | +11.8 |
+| 10 | 98.64 | 109.90 | +11.3 |
+| 11 | 86.75 | 99.92 | +13.2 |
+
+Phase-C *raises* rank at every layer, most strongly in layers 5–11
+(+6 to +13). → **Hypothesis E (Phase-C compresses rank) REJECTED.**
+Phase-C is mildly rank-*restoring*, not rank-suppressing.
+
+The rank collapse in layers 9–11 already exists after Phase-B alone
+(110 / 99 / 87) and is therefore born inside Phase-B distillation —
+i.e., produced by the interaction of Mamba-3 architecture, DINOv2
+warm-start, and the DA3 final-layer distillation target.
+
+**Eliminations after probes 1 / 2 / 2b:**
+
+- A (teacher target lid) — REJECTED by probe 1.
+- E (Phase-C suppresses rank) — REJECTED by probe 2b.
+- C (uniform B/C projection rank lid) — UNLIKELY: would hit all layers
+  uniformly; layers 1–8 are fine.
+- D (uniform warm-start lid) — UNLIKELY: same reason.
+
+**Surviving hypothesis: B (late-block-specific rank collapse in
+Phase-B), with three sub-cases:**
+
+- B-α: the DA3 teacher itself collapses rank in its mid-layers
+  (~10/11) and only recovers at the final block. Student faithfully
+  copies the collapse but fails to copy the recovery. Implication:
+  distill more layers, or distill with a feature-pyramid loss.
+- B-β: DA3 carries high rank through every layer (140 → 187). The
+  student's distill loss aligns only the final-layer features, so
+  layers 1–8 self-organize to *some* high-rank manifold while
+  layers 9–11 are pulled toward a low-rank path that happens to
+  reach the final-layer target. Implication: layer-wise
+  intermediate distillation.
+- B-γ: Same observable as B-β, but the cause is Mamba-3 SSD's
+  compression behaviour as gradient flows into late layers from the
+  final-layer loss — not a property of the loss itself. Implication:
+  architectural change in late blocks (e.g., wider B/C projections,
+  no SSD in last 3 blocks, or a parallel residual that bypasses the
+  mixer in those layers).
+
+Probe 2c (next, ~1 min) measures DA3 per-layer rank to distinguish
+B-α from B-β/γ. If teacher's layer-9–11 rank is also ~100, B-α; if
+teacher stays high through every layer, B-β/γ — and we then need a
+loss-side probe (intermediate-layer distill) to separate β from γ.
+
+**Probe ladder status:**
+
+- ✅ 1 — teacher rank (rejected A).
+- ✅ 2 — per-layer rank, CM24 vs CM26 (localised collapse to late blocks).
+- ✅ 2b — Phase-B vs Phase-B+C (rejected E).
+- ✅ 2c — DA3 teacher per-layer rank (rejected B-α; see §15.26).
+- 3 — projection rank: deprioritised; would surprise after the
+  layer-wise localisation.
+- 4 — cold-start probe: deprioritised; warm-start is layer-uniform.
+- 5 — rank-preserving Phase-C term: cancelled (Phase-C already raises
+  rank).
+
+### 15.26 Probe 2c — DA3 teacher per-layer rank, B-α rejected
+
+DA3 backbone (`da3.model.backbone.pretrained.blocks`, 12 blocks).
+Forward hooks on each block. Note: layers 5 / 7 / 9 / 11 are
+**cross-view alternation** layers in DA3 (T = 15563 tokens, all 12
+views concatenated); the other layers are per-view (T = 1296). Rank
+on cross-view layers is over the multi-view token cloud and is not
+strictly apples-to-apples with the per-view layers, but the
+non-cross-view layers alone tell the story cleanly.
+
+| layer | DA3-SMALL eff_rank | tokens | (CM24 student, for context) |
+|---|---|---|---|
+| 0 | 206.42 | 1296 | 143.17 |
+| 1 | 225.20 | 1296 | 180.89 |
+| 2 | 228.00 | 1296 | 177.67 |
+| 3 | 229.24 | 1296 | 156.79 |
+| 4 | 235.74 | 1296 | 175.25 |
+| 5 | 262.07 | 15563 (cross-view) | 168.93 |
+| 6 | 231.54 | 1296 | 174.36 |
+| 7 | 249.34 | 15563 (cross-view) | 158.12 |
+| 8 | 208.68 | 1296 | 148.40 |
+| 9 | 219.40 | 15563 (cross-view) | 122.34 |
+| 10 | 174.83 | 1296 | 109.90 |
+| 11 | 177.01 | 15563 (cross-view) | 99.92 |
+| post-norm | 187.21 | 1296 | 71.85 |
+
+DA3 stays at 175–235 through every per-view layer (0–4, 6, 8, 10) and
+ends post-norm at 187. Its `vit.norm` drops rank by only ~10 points
+(175 → 187 includes the cross-view-mixed final-block path; comparable
+single-block magnitude is small). The student's `vit.norm` drops
+rank by ~28 points.
+
+→ **Hypothesis B-α REJECTED.** Teacher does not collapse rank in
+its late blocks. The student carries ~60 points less rank than DA3
+at *every* comparable layer, with the gap widening from 60 (layer 0)
+to 65 (layer 10) and then to 115 post-norm.
+
+The student's late-block collapse is therefore something the student
+does **without teacher precedent**. Surviving hypotheses:
+
+- **B-β: final-layer-only distillation lets late blocks self-organise
+  along a low-rank path.** The student's Phase-B loss aligns the last
+  layer's features to DA3's last layer, but layers 0–11 receive only
+  the gradient signal that comes through that final-layer match.
+  Layers 1–8 (which sit further from the loss) self-organise into a
+  high-rank manifold; layers 9–11 (which sit close to the loss) are
+  pulled into a low-rank manifold that reaches the target with fewer
+  active directions.
+
+- **B-γ: Mamba-3 SSD compresses rank when gradient-pressed.** The
+  same observable (low rank in late blocks under final-layer loss)
+  but the cause is architectural: the SSD mixer in late layers
+  prefers low-rank solutions under gradient flow, regardless of loss
+  shape. Layer-wise distillation would not help.
+
+The cheapest way to distinguish β from γ is to redo Phase-B with
+distill loss applied at layers 5 / 7 / 9 / 11 (the DPT taps) in
+addition to the final layer. If late-block student rank rises toward
+teacher's, β is correct (and we have a fix). If it stays low, γ —
+the answer is architectural (e.g., widen B/C projection input, or
+swap SSD for plain attention in the last 3 blocks).
+
+That experiment is CM-level, not a 1-min probe. Plan in §15.27.
+
+### 15.27 CM29 plan — intermediate-layer Phase-B distillation
+
+**Motivation.** §15.25 + §15.26 localise the student's rank
+bottleneck to layers 9–11 + the final norm, and rule out the teacher,
+Phase-C, and uniform mechanisms (warm-start, projection rank). The
+last two surviving causes (B-β, B-γ) differ in whether **changing the
+loss surface** (β) or **changing the architecture** (γ) is required.
+CM29 tests β by adding intermediate-layer distillation supervision.
+
+**Recipe (Phase-B only at this stage).**
+
+- `scripts/train_distill.py` — add a `--distill-layers` flag (list of
+  ints, default `[11]` = current behaviour). If multi-element, the
+  loss is `Σ_i w_i · (mse + cos)` between student layer `i` and
+  teacher layer `i`. Initial weights uniform.
+- Distill at layers `(5, 7, 9, 11)` to match `SHARED_DPT_LAYERS` so
+  the supervised layers exactly match the DPT taps.
+- All other hyperparameters: CM12 recipe (state_dim=64, img_size=504,
+  patch_size=14, chunk_size=128, 20 000 steps, batch=1).
+- Output: `outputs/runs/distill_cm29/`.
+
+**Diagnostic (no Phase-C needed for the verdict).**
+
+After Phase-B, run `scripts/eval_effective_rank.py --per-layer` on
+`distill_cm29/ckpt_20000.pt` (sd=64). Acceptance for the *β
+hypothesis*: late-block rank ≥ +30 points vs CM12 at layers 9–11
+(i.e., layer 11 ≥ 117 vs CM12's 87, or comparable at 9/10). If this
+gate passes, β is confirmed and we proceed to Phase-C with the same
+recipe (CM30 = Phase-C of CM29). If late-block rank does not rise,
+γ is confirmed and CM29 is reverted; next experiment becomes
+architectural (CM31, plan TBD — likely "swap SSD for plain attention
+in blocks 9–11").
+
+**Cost.** ~2 h 40 min Phase-B + ~5 min diagnostic. No Phase-C in this
+CM unless rank gate passes.
+
+**Note on cross-view layers.** Layers 5 / 7 / 9 / 11 are cross-view
+in DA3 (T = 15563), but the student backbone is purely per-view (T =
+1296). Distillation supervision at those layers means matching the
+student's per-view tokens to DA3's per-view *slices* of the
+cross-view output (DA3's first-1296 tokens correspond to view 0
+patches; the next 1296 to view 1 patches; etc., per the
+reorder/concat path in
+`third_party/depth-anything-3/.../vision_transformer.py`). The
+implementation in `train_distill.py` will need a small slicing
+helper — verify before kicking off the run.

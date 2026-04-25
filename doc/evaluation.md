@@ -127,22 +127,83 @@ feat_cos_mean(feats)  where feats: (N, C)
 
 ### `effective_rank` ↑
 
-`exp(entropy(singular-value distribution))` — a continuous, smoother
-version of rank.
+`exp(entropy(singular-value distribution))` — a continuous,
+energy-weighted soft rank of the **per-image patch-token cloud**.
 
-```
-effective_rank(feats):
-    s = svd(feats − mean).singular_values
-    p = s / sum(s)
-    return exp( −Σ p_i · log p_i )
+#### Input
+
+The metric is computed **once per image**, with input `feats` of shape
+`(T, C)`:
+
+- `T` = number of patch tokens in that image, e.g. `36 × 36 = 1296` at
+  `img_size=504, patch_size=14`.
+- `C` = channel dimension, e.g. `384` for SSM-3D / DINOv2-S, `768` for
+  DA3 (concat of two 384-dim streams).
+
+So each row of `feats` is one patch's feature vector; each column is
+one channel's activation across all patches. The reported number is
+the **mean over the N images** in the eval set.
+
+A single 384-D patch vector trivially has rank 1 — the interesting
+question is *collective*: viewing the T patches as a point cloud in
+`C`-D space, **how many independent directions does the cloud spread
+along?**
+
+#### Definition
+
+```python
+effective_rank(feats):                    # feats: (T, C) per image
+    f = feats - feats.mean(axis=0)        # subtract per-channel mean
+                                          # across T tokens (rank-1 DC offset removal)
+    s = svd(f).singular_values            # (min(T, C),) singular values, descending
+    p = s / sum(s)                        # normalize spectrum to a probability distribution:
+                                          # p_i = share of total spectral energy along
+                                          # the i-th principal direction
+    H = -sum(p_i * log(p_i))              # Shannon entropy of that distribution
+    return exp(H)                         # exp(H) = "effective number of equiprobable modes"
 ```
 
-- Ranges in `[1, min(N, C)]`. Higher = richer feature subspace.
-- Catches *low-rank* collapse that `feat_cos_mean` misses: tokens can
-  point in different directions but span only a 2-3-dim subspace.
-- Acceptance gate: we track ≥ 150 as the stretch target; CM22@1000 sits
-  at 69 — still usable because the depth metrics are green, but worth
-  monitoring (see `doc/PLAN.md §15.13`).
+Implementation:
+[`effective_rank`](../src/ssm3d/eval/metrics.py).
+
+#### Properties
+
+- **Range:** `[1, min(T, C)]`. With `T = 1296` and `C = 384`, the
+  binding cap is `C`.
+- **Mean-centering:** removes the rank-1 DC offset along the
+  per-channel mean direction, so the metric measures the rank of the
+  *variation* of the cloud, not the rank of a constant bias plus
+  variation.
+- **Limits:**
+  - All `σ_i` equal (cloud uniformly fills the subspace) →
+    `H = log K` → `effective_rank = K`. Maximum.
+  - One `σ_1` dominates (rank-1 collapse) → `H ≈ 0` →
+    `effective_rank ≈ 1`. Minimum.
+  - 72 modes carrying ~equal energy + 312 nearly-zero modes →
+    `effective_rank ≈ 72`.
+- **Why entropy of the spectrum, not "count `σ_i > threshold`":**
+  numerical rank is discrete and threshold-sensitive; many small
+  singular values exist in trained nets due to noise. `exp(H(p))` is
+  the **information-theoretic effective dimensionality** of the
+  spectrum — continuous, energy-weighted, and matches "soft rank"
+  intuition.
+- **Scale-invariant:** multiplying `feats` by a constant leaves the
+  ratios `p_i` unchanged.
+
+#### Why we track it
+
+Catches *low-rank collapse* that `feat_cos_mean` misses: tokens can
+point in different directions (low cosine similarity) but still span
+only a 2–3-dim subspace. For 3D reconstruction we want the model to
+encode many independent scene attributes (geometry, texture,
+viewpoint cues, semantics) per token, so a high effective_rank is a
+**capacity metric** for the representation.
+
+Acceptance gate: ≥ 150 is the stretch target. As of CM26 the SSM-3D
+student sits at ~72 on ETH3D `terrains` while DA3-SMALL hits ~187
+on the same images — i.e. the rank ceiling is not the teacher; the
+bottleneck is inside the student. See `doc/PLAN.md §15.23–§15.24` for
+the diagnostic ladder.
 
 ### `cross_view_nn_agreement` ↑
 
