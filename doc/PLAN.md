@@ -1995,3 +1995,144 @@ Cost: ~2 h 40 min Phase-B + ~5 min diagnostic. No Phase-C until the
 - ⏳ CM29-a — all-layer distillation, β-refined gate.
 - CM31 (γ-fix, conditional on CM29-a failing) — two-stream Mamba-3
   with cross-view branch, mirroring DA3's local-vs-global structure.
+
+### 15.29 CM29-a result (rank gate fails) — β-refined rejected; CM30 plan
+
+Run on 2026-04-25. Phase-B with `--teacher-layers 0..11` (12-layer
+distillation supervision) on top of the CM12 recipe (DA3-SMALL
+teacher, state_dim=64, img_size=504, 20 000 steps, batch=1). Final
+loss 0.0432, healthy convergence. Diagnostic via
+`scripts/eval_effective_rank.py` style helper, post-norm per-layer
+mean rank over 12 ETH3D `terrains` images (log:
+`outputs/runs/cm29a_per_layer_rank.log`):
+
+| layer | DA3 | CM12 (4-layer sup) | CM29a (12-layer sup) | Δ |
+|---|---|---|---|---|
+| 0  | 121 | 124 | 93  | **−31** |
+| 1  | 119 | 146 | 107 | **−38** |
+| 2  | 127 | 137 | 117 | **−19** |
+| 3  | 127 | 85  | 101 | +17 |
+| 4  | 135 | 92  | 105 | +13 |
+| 5  | 150 | 98  | 112 | +14 |
+| 6  | 155 | 102 | 110 | +8 |
+| 7  | 167 | 100 | 115 | +15 |
+| 8  | 164 | 96  | 106 | +10 |
+| 9  | 152 | 76  | 88  | +11 |
+| 10 | 146 | 68  | 74  | +6 |
+| 11 | 139 | 62  | 70  | +7 |
+
+**Gate result:** §15.28 set the β-refined gate at "layer 3 ≥ 115
+(close to teacher 127)". CM29-a got 101 — fails by 14 points.
+Secondary gate "supervised layers ≥ +30" also fails (max +15 at
+layer 7). → **β-refined REJECTED as a sufficient fix.**
+
+**Two findings, one expected and one not:**
+
+- *Expected.* Adding direct supervision at layers 3–10 *helped* —
+  every layer 3+ gained 6–17 points of rank. The hypothesis was
+  directionally correct; the magnitude is just under the gate.
+- *Unexpected.* Layers 0–2 *lost* rank (−31, −38, −19). CM12 left
+  layers 0–2 unsupervised so they stayed near DINOv2-S's warm-start
+  representation, which is *higher rank* than DA3's teacher target
+  at those positions. Adding supervision pulled the student *down*
+  to match a lower-rank teacher.
+
+The early-layer regression is the more important data point: it
+falsifies any version of "more supervision is always better." When
+the teacher's *own* rank at a position is lower than the student's
+warm-start, supervising that position is harmful. CM30's supervision
+set should skip layers 0–2.
+
+The fact that even with 12-layer supervision the student plateaus
+~70 at layer 11 (vs teacher 139) means the student is hitting a
+**structural** rank cap, not a supervision-strength cap. This is
+γ-shape evidence — Mamba-3 SSD has a preferred low-rank minimum at
+depth ≥ 3 that loss-side pressure cannot break.
+
+**Phase-C of CM29-a is skipped.** Late-layer rank (layer 11 = 70)
+is essentially CM24's (72), so the depth metric would land near
+CM24's 0.0513 — within noise. Not informative.
+
+### 15.30 CM30 plan — DA3-LARGE teacher + selective layer supervision
+
+**Motivation.** Three lines converge:
+
+1. **Project goal (PLAN §1, §15.11 closing remarks):** to *beat*
+   DA3-SMALL with a Mamba-3 backbone of the same deployed size,
+   distillation must use a *richer* teacher than DA3-SMALL itself,
+   per the standard "student bounded by teacher" result. The §15.11
+   takeaway already prescribed this:
+   > "Future work toward beating DA3-SMALL must … (i) jointly retrain
+   > DualDPT on top of the LARGE-distilled features, or (ii) stay
+   > in-family with DA3-SMALL teacher and find a non-feature lever."
+2. **CM20's result (§15.11):** DA3-LARGE teacher *did* lift
+   representation metrics (effective_rank +16 %, cross_view_nn
+   +108 %) — but the frozen DualDPT couldn't decode the
+   LARGE-shaped features and depth collapsed. CM20 was reverted.
+3. **CM21+'s recipe change (§15.12):** `--unfreeze-dpt` is now part
+   of every retained Phase-C recipe (CM22, CM24). The frozen-DualDPT
+   blocker for CM20 is structurally removed.
+
+**Therefore CM20 + CM21 (DA3-LARGE teacher with an unfrozen DualDPT)
+has never actually been run** — it is the experiment §15.11 outlined
+as the path toward beating DA3-SMALL.
+
+**Layer-mapping precision (code change).** With DA3-LARGE (24
+blocks) and a 12-block student, we need *separate* layer-index
+lists for the two sides — student layer 5 should align with teacher
+layer 11 (same fractional depth), not teacher layer 5. The existing
+`_student_features` / `_teacher_features` shared a single `layers`
+list; CM20 silently fell back to single-layer (final-layer)
+supervision because student layers 15/19/23 don't exist. Fixed in
+this commit:
+
+- `DistillConfig` adds `student_layers: tuple[int, ...] | None`.
+- `scripts/train_distill.py --student-layers ...` exposes it.
+- The two lists must have the same length (validated at config
+  time).
+- Default behaviour preserved: when only `--teacher-layers` is
+  supplied (or when teacher and student have equal depth), student
+  uses the same indices.
+
+**CM30 recipe.**
+
+- Phase-B: `scripts/train_distill.py
+  --teacher depth-anything/DA3-LARGE-1.1
+  --teacher-layers 11 15 19 23
+  --student-layers 5 7 9 11
+  --img-size 504 --patch-size 14 --chunk-size 128
+  --steps 20000 --batch-size 1
+  --out outputs/runs/distill_cm30`
+  (Same student-side supervision pattern as CM12 / CM24, paired
+  with the matched-fractional-depth teacher layers. `--student-layers
+  3 5 7 9 11` is reserved for a follow-up if CM30 confirms the
+  teacher win — splitting the two changes keeps the ablation clean.)
+- Phase-C (= CM31): identical to CM24 — WSD scheduler, warmup 100 /
+  decay 200, 1000 steps, `--unfreeze-dpt`, `--augment`, lr-attn
+  1e-5 / lr-bridge 3e-5 / lr-dpt 1e-5. `--init
+  outputs/runs/distill_cm30/ckpt_20000.pt`.
+
+**Cost.** Phase-B ~4 h (DA3-LARGE forward is ~2× slower than
+DA3-SMALL on this GPU; 24 blocks × 1024 dim). Phase-C ~1 h. Eval
+~10 min.
+
+**Acceptance.** Primary gate: `|relative_depth_error|_cm30@1000 ≤
+0.0500` (better than CM24's 0.0513 by ≥ 2.5 %, comfortably below
+DA3-SMALL's published number on this scene). Secondary monitors:
+
+- `effective_rank` (last-layer post-norm, 768-dim DPT-feed):
+  expected to rise above CM24's 71.85 toward CM20's level (~80) or
+  higher — confirms the LARGE-teacher signal is reaching the
+  features.
+- `cross_view_nn` ≥ 0.30 (CM20 hit 0.358 with frozen DPT; with
+  unfrozen DPT the eval head can adapt and we should see ≥ that
+  number reflected in the depth metric).
+
+**If CM30 passes:** the project's beat-DA3-SMALL goal is achieved,
+and CM31 = "+ add layer 3 supervision (`--student-layers 3 5 7 9 11`,
+`--teacher-layers 7 11 15 19 23`)" becomes the natural follow-up to
+test whether the layer-3 cliff fix gives an additional bump.
+
+**If CM30 fails:** the residual block is architectural, and CM31
+becomes the user's two-stream Mamba-3 (cross-view branch) — the
+remaining γ-fix candidate.

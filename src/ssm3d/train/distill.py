@@ -53,6 +53,7 @@ class DistillConfig:
     batch_size: int = 4
     grad_clip: float = 1.0
     layers: tuple[int, ...] = DISTILL_LAYERS
+    student_layers: tuple[int, ...] | None = None
     amp_dtype: str = "bf16"
     log_every: int = 50
     ckpt_every: int = 1000
@@ -170,6 +171,12 @@ def distill(
 
     student_dim = int(student.backbone.vit.embed_dim)
     teacher_dim = int(da3_model.model.backbone.pretrained.embed_dim)
+    student_layers = tuple(cfg.student_layers) if cfg.student_layers is not None else tuple(cfg.layers)
+    if len(student_layers) != len(cfg.layers):
+        raise ValueError(
+            f"student_layers length ({len(student_layers)}) must equal "
+            f"teacher layers length ({len(cfg.layers)})"
+        )
     projector: DistillProjector | None = None
     if teacher_dim != student_dim:
         projector = DistillProjector(
@@ -211,7 +218,7 @@ def distill(
         with torch.autocast(
             device_type=device.type, dtype=amp_dtype, enabled=use_amp
         ):
-            student_feats = _student_features(student, images, cfg.layers)
+            student_feats = _student_features(student, images, student_layers)
             loss = torch.zeros((), device=device)
             loss_l2 = torch.zeros((), device=device)
             loss_cos = torch.zeros((), device=device)

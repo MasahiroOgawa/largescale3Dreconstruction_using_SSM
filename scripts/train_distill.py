@@ -78,6 +78,12 @@ def main() -> None:
              "teachers.",
     )
     ap.add_argument(
+        "--student-layers", type=int, nargs="+", default=None,
+        help="CM30: layer indices to extract from the student. Must have the "
+             "same length as --teacher-layers. Defaults to --teacher-layers "
+             "(only correct when teacher and student have the same depth).",
+    )
+    ap.add_argument(
         "--scenes",
         nargs="+",
         default=list(TRAIN_SCENES),
@@ -136,6 +142,12 @@ def main() -> None:
         del small
 
     print("[4/4] starting distillation ...")
+    student_layers = tuple(args.student_layers) if args.student_layers is not None else None
+    if student_layers is not None and len(student_layers) != len(layers):
+        ap.error(
+            f"--student-layers ({len(student_layers)}) and --teacher-layers "
+            f"({len(layers)}) must have the same length"
+        )
     cfg = DistillConfig(
         steps=args.steps,
         ckpt_every=args.ckpt_every,
@@ -145,6 +157,7 @@ def main() -> None:
         amp_dtype=args.amp_dtype,
         device=args.device,
         layers=layers,
+        student_layers=student_layers,
     )
     data_iter = _build_iter(dataset, seed=args.seed)
     distill(student, teacher, data_iter, cfg, args.out, bridge=None)
