@@ -69,6 +69,7 @@ class SSM3DBackbone(nn.Module):
         drop_path_rate: float = 0.0,
         alt_start: int = -1,
         cat_token: bool = False,
+        use_fused_kernel: bool = False,
     ) -> None:
         super().__init__()
         self.img_size = img_size
@@ -81,6 +82,7 @@ class SSM3DBackbone(nn.Module):
             bidirectional=mamba_bidirectional,
             three_term=mamba_three_term,
             chunk_size=chunk_size,
+            use_fused_kernel=use_fused_kernel,
         )
         block_fn = partial(Block, attn_class=attn_class)
 

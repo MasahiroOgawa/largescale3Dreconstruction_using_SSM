@@ -38,6 +38,7 @@ class Mamba3Attention(nn.Module):
         bidirectional: bool = True,
         three_term: bool = True,
         chunk_size: Optional[int] = None,
+        use_fused_kernel: bool = False,
     ) -> None:
         super().__init__()
         self.inner = Mamba3SelfAttention(
@@ -50,6 +51,7 @@ class Mamba3Attention(nn.Module):
             out_proj=True,
             proj_bias=proj_bias,
             chunk_size=chunk_size,
+            use_fused_kernel=use_fused_kernel,
         )
         self.proj_drop = nn.Dropout(proj_drop) if proj_drop > 0 else nn.Identity()
 

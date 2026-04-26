@@ -61,6 +61,18 @@ def main() -> None:
         help="Mamba-3 SSD recurrent state dim. Must match the ckpt being loaded "
              "(default 64; CM26 uses 128).",
     )
+    ap.add_argument(
+        "--alt-start", type=int, default=-1,
+        help="DA3-style alternation: from this layer onward, odd layers run "
+             "cross-view (B, S*N, C). -1 disables (legacy partial-swap, CM12 → "
+             "CM30). 4 = full-swap mirror of DA3-SMALL.",
+    )
+    ap.add_argument(
+        "--cat-token", action="store_true",
+        help="When set, output features at tap layers concat [local, current] → "
+             "doubled channel dim. Required with --alt-start ≥ 0 for the "
+             "DA3-faithful mirror.",
+    )
     args = ap.parse_args()
 
     torch.manual_seed(0)
@@ -79,6 +91,7 @@ def main() -> None:
         size="small", img_size=args.img_size, patch_size=args.patch_size,
         depth=12, chunk_size=args.chunk_size,
         mamba_state_dim=args.state_dim,
+        alt_start=args.alt_start, cat_token=args.cat_token,
     )
     load_dinov2_backbone(ssm.backbone.vit, ensure_dinov2_vits14())
     ssm.to(args.device).eval()

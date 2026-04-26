@@ -2,3 +2,4 @@
 - [Prefer git submodule over pip for hackable upstream deps](memory/feedback_submodule_over_pip.md) — research/architecture deps go to `third_party/<name>/`
 - [Don't gate between pre-approved sequential steps](memory/feedback_dont_gate_planned_steps.md) — once a multi-step plan is agreed, execute through it without re-asking between steps
 - [/cleanup-commit-push between each step](memory/feedback_cleanup_between_steps.md) — each step lands as its own clean per-step commit + push
+- [Every step must report efficiency AND accuracy](memory/feedback_efficiency_and_accuracy_together.md) — every variant-vs-DA3 comparison reports both; reuse `eval_ckpt_sweep.py` / `eval_recon_metrics.py` / `eval_ray_metrics.py`

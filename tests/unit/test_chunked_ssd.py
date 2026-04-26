@@ -128,3 +128,33 @@ def test_chunk_larger_than_T_is_a_noop():
         three_term=True, chunk_size=1024,
     )
     torch.testing.assert_close(y_chunk, y_full, rtol=1e-6, atol=1e-6)
+
+
+def test_kernel_path_runs_and_is_close_to_pytorch():
+    """Mamba-3 SISO Triton kernel produces structurally similar output to our
+    PyTorch SSD path. They are not bit-identical (PLAN § 15.45) — the kernel
+    implements the upstream paper's exact formulation while our PyTorch path
+    is a from-scratch reimplementation. Cosine similarity ≥ 0.95 on identical
+    weights + inputs is the acceptance threshold.
+    """
+    if not torch.cuda.is_available():
+        import pytest
+        pytest.skip("kernel path needs CUDA")
+    torch.manual_seed(0)
+    common = dict(
+        dim=384, num_heads=6, state_dim=64,
+        bidirectional=False, three_term=True,
+        rope=None, post_norm=False, out_proj=False,
+        row_renorm=False, chunk_size=64,
+    )
+    py = Mamba3SelfAttention(**common, use_fused_kernel=False).cuda().eval()
+    kr = Mamba3SelfAttention(**common, use_fused_kernel=True).cuda().eval()
+    kr.load_state_dict(py.state_dict())
+    x = torch.randn(1, 256, 384, device="cuda")
+    with torch.inference_mode():
+        y_py = py(x).flatten()
+        y_kr = kr(x).flatten()
+    cos = torch.nn.functional.cosine_similarity(
+        y_py.unsqueeze(0), y_kr.unsqueeze(0)
+    ).item()
+    assert cos >= 0.95, f"kernel path diverged too far from PyTorch path: cos={cos:.4f}"

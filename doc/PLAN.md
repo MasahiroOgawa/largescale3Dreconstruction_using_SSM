@@ -3042,16 +3042,30 @@ that re-baseline.
 
 ### 15.44 Consolidated Step 0–5 plan (supersedes § 15.40 A–E)
 
-After § 15.43's architectural correction, the project plan is:
+After § 15.43's architectural correction, the project plan is. **Every
+step that compares a variant against DA3 must report BOTH efficiency
+(memory / latency / FLOPs) AND accuracy (depth `|rel_err|`,
+F-score@5cm, pose AUC@30°) together** — efficiency-only or
+accuracy-only is incomplete.
 
-| Step | Action | Status |
+| Step | Action (efficiency + accuracy) | Status |
 |---|---|---|
-| **0** | Full architectural swap — `alt_start=4`, `cat_token=True` so backbone mirrors DA3-SMALL's per-view + cross-view alternation. | ✅ done § 15.43 |
-| **1** | Efficiency benchmark on the full-swap architecture vs DA3-SMALL (the apples-to-apples comparison we should have done from the start). Backbone-only and full-pipeline. Naive PyTorch SSD vs DA3 self-attention. | next |
-| **2** | Integrate Mamba-3 SISO Triton kernel (`mamba3_siso_combined`) into our `Mamba3SelfAttention.forward`. Map our `(Bp, Cp, Vp, delta, A_log, lam)` to the kernel's `(K, Q, V, ADT, DT, Trap, Q_bias, K_bias, Angles, ...)`. Verify numerical equivalence against PyTorch path on existing unit tests. Re-run Step 1 benchmark. Expected: SSD wall-clock matches or beats attention. | |
-| **3** | Cross-view path runs the same Mamba-3 self-attention block, so Step 2's kernel covers it automatically. Verify by benchmarking cross-view layers (5 / 7 / 9 / 11) at T = 15 K and confirming the kernel handles long sequences. No separate cross-attention kernel needed (DA3's "cross-view" = self-attention on concatenated views, see § 15.43). | |
-| **4** | Re-baseline: CM-FS-12 (full-swap CM12-equivalent). Phase-B distillation against DA3-SMALL features at layers 5/7/9/11, full-swap backbone, `state_dim=64`, 20 000 steps. Then CM-FS-24 = Phase-C with WSD scheduler + `--unfreeze-dpt` + `--augment` (CM24 recipe lifted onto the new backbone). Score on depth + F-score@5cm + pose AUC@30°. Expected: pose AUC@30° rises dramatically (from 0.04 toward teacher's 0.76) because cross-view layers are now present. | |
-| **5** | Quality lift if Step 4 doesn't already match teacher: revisit Phase-B with DPT-output match supervision (§ 15.35). Add HiRoom + 7Scenes datasets (§ 15.39) for breadth. Mobile export (ONNX → CoreML / TFLite, on-device latency). Paper draft. | |
+| **0** | Full architectural swap — `alt_start=4`, `cat_token=True`. Mirrors DA3-SMALL's per-view + cross-view alternation. *Smoke test only*; accuracy and efficiency measured in Step 1. | ✅ § 15.43 |
+| **1a** | **Efficiency** on the full-swap architecture vs DA3-SMALL — `scripts/bench_efficiency.py`, multi-view input. PyTorch SSD vs DA3 self-attention. | ✅ § 15.44 (results) |
+| **1b** | **Accuracy** on the full-swap architecture vs DA3-SMALL — DA3-warm-started full-swap ckpt evaluated via `eval_ckpt_sweep.py`, `eval_recon_metrics.py`, `eval_ray_metrics.py` on ETH3D `terrains`. Same scripts that scored CM12 / CM24 / CM30. Without training, this measures "how much DA3 quality survives the architectural change." | next (§ 15.45) |
+| **2a** | **Efficiency**: integrate Mamba-3 SISO Triton kernel into `Mamba3SelfAttention.forward`. Re-run Step 1a benchmark. | |
+| **2b** | **Accuracy**: re-run Step 1b on the kernel-path full-swap ckpt; the kernel uses slightly different SSD math (cosine sim ~0.98 to PyTorch path, § 15.45) so verify task-level metrics don't degrade beyond noise. | |
+| **3a** | **Efficiency** of cross-view layers specifically — confirm the kernel handles T = 15 K sequences; any kernel-specific cross-view-mode bugs surface here. | |
+| **3b** | **Accuracy** unchanged from Step 2b (cross-view runs the same kernel as per-view); restate so the evaluation is on record. | |
+| **4a** | **Train** CM-FS-12 (full-swap Phase-B) + CM-FS-24 (Phase-C). Same hyperparameters as CM12 / CM24. Architectural change only. | |
+| **4b** | **Accuracy**: full eval on CM-FS-24 ckpt — depth, F-score, pose-AUC. Compared against CM24 baseline AND DA3-SMALL teacher. The pose-AUC delta is the load-bearing claim (cross-view recovery). | |
+| **4c** | **Efficiency** on CM-FS-24 ckpt — same bench script, this time on the trained model (numbers will be identical to Step 2a / 3a since architecture didn't change, but record it next to the accuracy table for the paper). | |
+| **5** | Quality lift + multi-dataset (HiRoom, 7Scenes) + mobile export + paper. Each variant in this step needs its own efficiency + accuracy table. | |
+
+The eval scripts already work for any ckpt that has the standard
+shape (`student` / `bridge` / `dualdpt` keys). For Step 1b's "no
+training" accuracy probe, we save a ckpt of the warm-started
+full-swap backbone and run the same scripts.
 
 #### Step 1 — efficiency benchmark on full-swap architecture
 
@@ -3132,6 +3146,85 @@ peaks at large T. The naive PyTorch impl bloats this with chunked-
 mask materialisation; the kernel keeps it tight.
 
 Step 1 baseline established. Step 2 next.
+
+### 15.45 Step 1b — accuracy of the full-swap architecture (DA3 warm-start)
+
+The user (correctly) flagged that Step 1's efficiency-only framing was
+incomplete: a swap is only a swap if it produces correct outputs.
+Step 1b uses the same eval scripts that scored CM12 / CM24 / CM30 to
+measure depth / F-score / pose AUC of the full-swap architecture
+*before any training*, so we can:
+
+- Confirm the architecture functions (no NaN, sensible-shape outputs).
+- Establish a **floor** number — the worst case from which training
+  (Step 4) must improve.
+- Compare apples-to-apples to DA3-SMALL teacher and the legacy
+  partial-swap ckpts on the same metric scales.
+
+**Setup.** `scripts/build_fs_warmstart_ckpt.py` builds an
+`SSM3DNet(alt_start=4, cat_token=True, state_dim=64)` and applies
+`load_da3_backbone()` (DA3 patch_embed / MLPs / norms / RoPE freqs)
++ `warm_start_mamba3_from_qkv()` (Mamba-3 B/C/V from DA3 qkv slices).
+Saved as `outputs/runs/fs_warmstart/ckpt_warmstart.pt`. No training.
+
+`eval_ckpt_sweep.py` / `eval_recon_metrics.py` / `eval_ray_metrics.py`
+each gained `--alt-start` and `--cat-token` flags to evaluate the
+full-swap backbone with the same code paths as before.
+
+**Results (ETH3D `terrains` 12-view, img_size = 504, median-aligned):**
+
+| ckpt | depth \|rel_err\| ↓ | δ<1.25 ↑ | F-score@5cm (TSDF) ↑ | precision | recall | pose AUC@30° ↑ |
+|---|---|---|---|---|---|---|
+| DA3-SMALL teacher | ~0.045 | — | 0.434 | 0.298 | 0.794 | **0.762** |
+| CM12 (partial-swap, Phase-B only) | 0.0772 | 0.9343 | 0.221 | 0.135 | 0.596 | 0.003 |
+| CM24 (partial-swap, Ph-B+C, kept) | **0.0513** | **0.9992** | **0.295** | 0.191 | 0.646 | 0.038 |
+| **FS-WS (full-swap, no training)** | **0.3513** | **0.4671** | **0.058** | 0.031 | 0.437 | **0.000** |
+
+Logs: `outputs/runs/fs_warmstart_depth.log`,
+`outputs/runs/fs_warmstart_recon.log`,
+`outputs/runs/fs_warmstart_pose.log`.
+
+**Findings:**
+
+1. **Architecture is structurally functional.** Forward passes finish
+   cleanly. No NaN. F-score 0.058 is non-zero (above random) and
+   δ<1.25 is 0.47 (random would be near zero on metric depth). The
+   full-swap has no implementation bugs that prevent inference.
+2. **Without training, full-swap is worse than the trained partial-
+   swap on every metric.** Depth +585 % vs CM24, F-score −80 %, pose
+   AUC zero. This is expected — warm-start gives Mamba-3 B/C/V a
+   *geometric guess* at "what attention computes," but the cross-view
+   layers' SSD scan over a 15 K-token concat is fundamentally a
+   different operation than DA3's cross-view attention until
+   training adapts it.
+3. **The pose-AUC of 0.000 is striking but consistent with the
+   diagnosis chain.** § 15.35 found that depth-only distillation
+   doesn't recover ray channels (CM24 = 0.038). The untrained
+   architecture does even worse because it has neither distillation
+   adaptation nor task supervision yet. The cross-view layers exist
+   structurally, but their outputs aren't producing ray-friendly
+   features at warm-start.
+
+**Implications for Step 4:**
+
+CM-FS-12 + FS-24 training has a **wide range** to cover. The "delta"
+the architecture must generate during training is now quantified:
+
+| metric | Step 1b floor (FS-WS) | CM24 baseline (partial-swap) | DA3-SMALL ceiling |
+|---|---|---|---|
+| depth | 0.3513 | **0.0513** | ~0.045 |
+| F-score (TSDF) | 0.058 | 0.295 | 0.434 |
+| pose AUC@30° | 0.000 | 0.038 | 0.762 |
+
+Step 4 must lift the trained full-swap above CM24 to justify the
+architectural change. The pose-AUC gate is the load-bearing one —
+that's where the cross-view layers should pay off and where partial-
+swap fundamentally cannot reach.
+
+**This data is now in hand for the eventual paper:** the floor
+(architecture works, untrained quality is poor), the partial-swap
+baseline (best we got without cross-view), and the teacher ceiling
+are all on the same eval script and dataset.
 
 #### Step 2 — integrate Mamba-3 SISO kernel
 

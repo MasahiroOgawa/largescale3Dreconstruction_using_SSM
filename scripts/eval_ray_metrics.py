@@ -40,10 +40,12 @@ from ssm3d.weights import load_dinov2_backbone
 
 
 def build_ssm(ckpt: Path, state_dim: int, img_size: int, patch_size: int,
-              chunk_size: int, device: str):
+              chunk_size: int, device: str, alt_start: int = -1,
+              cat_token: bool = False):
     net = SSM3DNet(
         size="small", img_size=img_size, patch_size=patch_size, depth=12,
         chunk_size=chunk_size, mamba_state_dim=state_dim,
+        alt_start=alt_start, cat_token=cat_token,
     )
     load_dinov2_backbone(net.backbone.vit, ensure_dinov2_vits14())
     state = torch.load(ckpt, map_location="cpu", weights_only=False)
@@ -151,6 +153,11 @@ def main() -> None:
     ap.add_argument("--chunk-size", type=int, default=128)
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--mode", choices=["ray", "pose", "both"], default="pose")
+    ap.add_argument("--alt-start", type=int, default=-1,
+                    help="DA3-style alternation start. -1 = legacy partial-swap; "
+                         "4 = full-swap mirror of DA3-SMALL.")
+    ap.add_argument("--cat-token", action="store_true",
+                    help="Required with --alt-start ≥ 0 for full-swap.")
     args = ap.parse_args()
 
     scene_dir = download_eth3d_terrains(args.data_root, scene="terrains", download_depth=False)
@@ -186,6 +193,7 @@ def main() -> None:
         ssm, bridge, tuned_dpt_state = build_ssm(
             ckpt_path, args.state_dim, args.img_size, args.patch_size,
             args.chunk_size, args.device,
+            alt_start=args.alt_start, cat_token=args.cat_token,
         )
         if tuned_dpt_state is not None:
             shared_dpt = copy.deepcopy(shared_dpt_base)

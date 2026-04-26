@@ -130,6 +130,7 @@ class Mamba3SelfAttention(nn.Module):
         row_renorm: bool = True,
         post_norm: bool = True,
         chunk_size: Optional[int] = None,
+        use_fused_kernel: bool = False,
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -141,6 +142,7 @@ class Mamba3SelfAttention(nn.Module):
         self.rope = rope
         self.row_renorm = row_renorm
         self.chunk_size = chunk_size
+        self.use_fused_kernel = use_fused_kernel
 
         self.projections = AttentionProjections(dim, num_heads, state_dim)
         # Per-head pre-tanh gate for the reverse SSD stream. Zero-init means
@@ -164,6 +166,8 @@ class Mamba3SelfAttention(nn.Module):
         A_log: Tensor,
         lam: Tensor,
     ) -> Tensor:
+        if self.use_fused_kernel:
+            return self._one_direction_kernel(Bp, Cp, Vp, delta, A_log, lam)
         if self.chunk_size is not None and self.chunk_size < Bp.shape[-2]:
             return ssd_forward_chunked(
                 Bp, Cp, Vp, delta, A_log, lam,
@@ -173,6 +177,66 @@ class Mamba3SelfAttention(nn.Module):
             )
         L = self._build_mask(delta, A_log, lam)
         return ssd_forward(Bp, Cp, Vp, L, row_renorm=self.row_renorm)
+
+    def _one_direction_kernel(
+        self,
+        Bp: Tensor,
+        Cp: Tensor,
+        Vp: Tensor,
+        delta: Tensor,
+        A_log: Tensor,
+        lam: Tensor,
+    ) -> Tensor:
+        """Mamba-3 SISO Triton kernel path. State-spaces/mamba >= v2.3.1.
+
+        The kernel signature uses (Q, K, V) attention naming; SSD-DA3 maps:
+            our Cp (query proj)   → kernel Q   (B, T, H, state_dim)
+            our Bp (key proj)     → kernel K   (B, T, H, state_dim)
+            our Vp (values)       → kernel V   (B, T, H, head_dim)
+            our delta * A_log     → kernel ADT (B, H, T)   — α_t = exp(δ·A_log_t)
+            our delta             → kernel DT  (B, H, T)
+            our lam (sigmoid)     → kernel Trap(B, H, T)   — λ_t ∈ [0, 1]
+
+        RoPE: our 2D RoPE is applied in `forward` *before* `_one_direction`,
+        so we pass `Angles=zeros` to skip the kernel's internal 1D rotary
+        (Angles=0 ⇒ Angles_Cumsum=0 ⇒ rotation is identity).
+
+        `row_renorm` (softmax-like row normalisation) is **not** supported by
+        the upstream kernel — it is a SSM-3D-specific design choice that
+        injects a divide-by-row-magnitude after the SSD matmul. Caller must
+        set `row_renorm=False` (or the renorm should be added as a
+        post-kernel correction, not done here).
+        """
+        from mamba_ssm.ops.triton.mamba3.mamba3_siso_combined import mamba3_siso_combined
+
+        Bsz, H, T, headdim_v = Vp.shape
+        state_dim = Bp.shape[-1]
+
+        # Layout: (B, H, T, D) → (B, T, H, D)
+        Q = Cp.transpose(1, 2).contiguous()
+        K = Bp.transpose(1, 2).contiguous()
+        V = Vp.transpose(1, 2).contiguous()
+
+        ADT = delta * A_log
+        DT = delta
+        Trap = lam
+
+        Q_bias = torch.zeros(H, state_dim, dtype=Q.dtype, device=Q.device)
+        K_bias = torch.zeros(H, state_dim, dtype=K.dtype, device=K.device)
+        # Pass headdim_angles = state_dim // 2 (rotary's natural half-pair size)
+        # but with all-zero angles → identity rotation. Avoids forcing the
+        # kernel to a degenerate `headdim_angles=0` case.
+        headdim_angles = state_dim // 2
+        Angles = torch.zeros(
+            Bsz, T, H, headdim_angles, dtype=Q.dtype, device=Q.device,
+        )
+
+        out = mamba3_siso_combined(
+            Q, K, V, ADT, DT, Trap, Q_bias, K_bias, Angles,
+            chunk_size=self.chunk_size if self.chunk_size is not None else 64,
+        )
+        # (B, T, H, head_dim) → (B, H, T, head_dim)
+        return out.transpose(1, 2).contiguous()
 
     def forward(
         self,

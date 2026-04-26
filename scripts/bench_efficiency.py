@@ -56,6 +56,7 @@ def build_attention_backbone(
 def build_ssd_backbone(
     img_size: int, patch_size: int = 14, depth: int = 12, chunk_size: int = 128,
     state_dim: int = 64, alt_start: int = -1, cat_token: bool = False,
+    use_fused_kernel: bool = False,
 ) -> SSM3DBackbone:
     return SSM3DBackbone(
         size="small",
@@ -66,6 +67,7 @@ def build_ssd_backbone(
         mamba_state_dim=state_dim,
         alt_start=alt_start,
         cat_token=cat_token,
+        use_fused_kernel=use_fused_kernel,
     )
 
 
@@ -239,7 +241,18 @@ def run_one(
         lambda: build_ssd_backbone(
             img_size=img_size, patch_size=patch_size, depth=depth,
             chunk_size=chunk_size, state_dim=state_dim,
-            alt_start=4, cat_token=True,
+            alt_start=4, cat_token=True, use_fused_kernel=False,
+        ),
+        x, T_patches, depth, state_dim, is_attn=False, alt_start=4,
+        device=device, chunk_size=chunk_size,
+    ))
+
+    rows.append(_measure_variant(
+        "SSD full-swap +Triton kernel",
+        lambda: build_ssd_backbone(
+            img_size=img_size, patch_size=patch_size, depth=depth,
+            chunk_size=chunk_size, state_dim=state_dim,
+            alt_start=4, cat_token=True, use_fused_kernel=True,
         ),
         x, T_patches, depth, state_dim, is_attn=False, alt_start=4,
         device=device, chunk_size=chunk_size,
@@ -303,15 +316,15 @@ def main() -> None:
                       f"{r['latency_ms']:>13.2f} {r['flops_G']:>10.2f}")
             all_rows.append(r)
 
-    # Apples-to-apples: full-swap SSD vs full-swap self-attn (DA3 native).
-    print("\nFull-swap SSD / Self-attn (DA3 native) ratios — load-bearing comparison:")
+    # Apples-to-apples: full-swap SSD (kernel) vs full-swap self-attn (DA3 native).
+    print("\nFull-swap SSD +kernel / Self-attn (DA3 native) ratios — load-bearing comparison:")
     print(f"{'img':>5} {'tokens':>7} {'mem ratio':>11} {'lat ratio':>11} {'FLOPs ratio':>12}")
     print("-" * 50)
     by_size: dict[int, dict] = {}
     for r in all_rows:
         by_size.setdefault(r["img_size"], {})[r["model"]] = r
     for s in args.sizes:
-        ssd = by_size[s].get("SSD full-swap (alt_start=4)", {})
+        ssd = by_size[s].get("SSD full-swap +Triton kernel", {})
         attn = by_size[s].get("Self-attn full-swap (DA3 native)", {})
         if ssd.get("OOM") or attn.get("OOM") or not ssd or not attn:
             label_oom = "OOM" if (ssd.get("OOM") or attn.get("OOM")) else ""
