@@ -37,7 +37,23 @@ class BackboneOutput:
 
 
 class SSM3DBackbone(nn.Module):
-    """DA3 DINOv2 backbone with Mamba-3 self-attention."""
+    """DA3 DINOv2 backbone with Mamba-3 attention.
+
+    DA3-SMALL alternates per-view self-attention and cross-view attention from
+    layer `alt_start` onward (5/7/9/11 are cross-view in the default config).
+    Crucially, DA3's "cross-view" is *the same self-attention block* run on a
+    `(B, S*N, C)` concatenated multi-view sequence rather than `(B*S, N, C)`
+    per-view — see `vision_transformer.py::process_attention` line 364, which
+    calls the same `block(x, ...)` regardless of mode and only differs in the
+    rearrange before/after. So a single Mamba-3 self-attention module handles
+    both modes; we just need to enable `alt_start` and `cat_token`.
+
+    Defaults (`alt_start=-1`, `cat_token=False`) keep the legacy partial-swap
+    backbone (per-view only, all 12 layers self-attention) for backward
+    compatibility with the CM12 → CM30 ckpt ladder. Set `alt_start=4`,
+    `cat_token=True` to mirror DA3-SMALL's full hybrid architecture (PLAN
+    § 15.43 onward).
+    """
 
     def __init__(
         self,
@@ -51,6 +67,8 @@ class SSM3DBackbone(nn.Module):
         mamba_three_term: bool = True,
         chunk_size: Optional[int] = None,
         drop_path_rate: float = 0.0,
+        alt_start: int = -1,
+        cat_token: bool = False,
     ) -> None:
         super().__init__()
         self.img_size = img_size
@@ -71,7 +89,8 @@ class SSM3DBackbone(nn.Module):
             img_size=img_size,
             patch_size=patch_size,
             block_fn=block_fn,
-            cat_token=False,  # don't concatenate local+global (alt_start is off)
+            cat_token=cat_token,
+            alt_start=alt_start,
             drop_path_rate=drop_path_rate,
         )
         if depth is not None:
@@ -144,6 +163,8 @@ class SSM3DNet(nn.Module):
         chunk_size: Optional[int] = None,
         drop_path_rate: float = 0.0,
         mamba_state_dim: int = 64,
+        alt_start: int = -1,
+        cat_token: bool = False,
     ) -> None:
         super().__init__()
         self.backbone = SSM3DBackbone(
@@ -151,9 +172,13 @@ class SSM3DNet(nn.Module):
             depth=depth, chunk_size=chunk_size,
             drop_path_rate=drop_path_rate,
             mamba_state_dim=mamba_state_dim,
+            alt_start=alt_start,
+            cat_token=cat_token,
         )
+        # cat_token=True doubles the main-feature channel dim ([local_x ‖ current_x]).
+        feature_channels = self.backbone.embed_dim * (2 if cat_token else 1)
         self.depth_head = SimpleDepthHead(
-            in_channels=self.backbone.embed_dim, hidden=head_hidden, image_size=img_size
+            in_channels=feature_channels, hidden=head_hidden, image_size=img_size
         )
 
     def features_grid(self, images: torch.Tensor) -> torch.Tensor:

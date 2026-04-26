@@ -2957,3 +2957,89 @@ If the kernel can only handle the SISO Mamba-2 case, we'd either
 lambda gating (and acknowledge the architectural simplification in
 the paper), or (b) write a custom Triton kernel that adds the
 three-term piece.
+
+### 15.43 Step 0 — full architectural swap (self + cross-view)
+
+**Diagnosis underlying this step.** A user observation forced a
+re-examination of our backbone. DA3-SMALL alternates per-view
+self-attention and cross-view attention from layer `alt_start = 4`
+onward (so layers 5 / 7 / 9 / 11 are cross-view in DA3's
+12-block vit_small). Our `SSM3DBackbone` was constructed with
+`cat_token=False` and the implicit default `alt_start = -1` — i.e.,
+**every layer was per-view self-attention; we had no cross-view
+layers at all.** This explains the entire pattern of diagnostic
+results from CM12 → CM30:
+
+- **pose AUC@30° = 5 % of teacher** (§ 15.35) — pose estimation
+  needs cross-view geometric reasoning. Our backbone could not do
+  it by construction.
+- **late-layer rank collapse** (§§ 15.25, 15.28) — DA3's cross-view
+  layers inject information from other views into per-view tokens,
+  raising effective rank. Our per-view-only stack could not.
+- **depth retention at 88 % of teacher** but recon F-score at 65 %
+  (§§ 15.36, 15.37) — depth from a single view doesn't strictly need
+  cross-view, so it was the only task our partial swap could partly
+  do. F-score (which compounds errors across views in 3D) shows the
+  cost of the missing cross-view signal.
+- **distillation never aligned correctly at supervised layers
+  5 / 7 / 9 / 11** (§ 15.28 corrected probe) — DA3's output at those
+  layers conditions on all views; our output conditions on one.
+  Per-channel feature distillation cannot bridge that.
+
+The fix: enable DA3's alternation in our backbone.
+
+**Critical implementation insight.** DA3's "cross-view attention"
+is **the same self-attention block** run on a `(B, S*N, C)`
+concatenated multi-view sequence rather than `(B*S, N, C)` per-view.
+See `vision_transformer.py::process_attention` line 364: the same
+`block(x, ...)` call is used for both modes; only the `rearrange`
+before/after differs. So **a single Mamba-3 self-attention module
+handles both per-view (T = 1296) and cross-view (T = 15 563)
+operations** — we don't need a different "cross-attention" module
+for this swap. The existing `Mamba3CrossAttention` (true Q/KV
+cross-attention) is a different design, not what DA3 uses.
+
+This makes Step 0 a one-line change conceptually: expose `alt_start`
+and `cat_token` on `SSM3DBackbone` and let DA3's existing rearrange
+logic handle the rest.
+
+**Code changes (this commit):**
+
+- `src/ssm3d/model.py::SSM3DBackbone.__init__`: added `alt_start`
+  (default `-1`, legacy partial-swap) and `cat_token` (default
+  `False`). Pass through to `vit_small`.
+- `src/ssm3d/model.py::SSM3DNet.__init__`: same flags forwarded; the
+  `SimpleDepthHead`'s input channel count auto-doubles when
+  `cat_token=True` (since the [local ‖ current] concat produces
+  768-dim main features).
+- `tests/integration/test_forward_pass.py::test_ssm3dnet_full_swap_forward`
+  added — verifies `alt_start=2, cat_token=True` produces
+  doubled-channel features on multi-view input.
+
+**Backward compatibility.** Defaults are unchanged
+(`alt_start=-1, cat_token=False`), so every CM12 → CM30 ckpt loads
+and runs identically. The new config is **opt-in**.
+
+**Verified:**
+
+- Forward pass with `alt_start=4, cat_token=True` on `(B=1, S=4)`
+  multi-view input runs cleanly; `camera_token` parameter is
+  registered; main features come out at `2 * embed_dim`.
+- All 69 tests pass (68 existing + 1 new).
+
+**Implications for the existing CM ladder.** Every result so far
+(CM12 → CM30, all the §15.x tables) is on the *partial-swap*
+backbone. The full-swap backbone is a different model:
+- Adds the camera_token parameter.
+- Layer 5 / 7 / 9 / 11 do cross-view scans over much longer
+  sequences (T = 12 × 1296 ≈ 15 K tokens).
+- Output features at tap layers are 768-dim instead of 384-dim
+  (no DimBridge needed).
+
+We need a fresh CM12-equivalent on the full-swap backbone as the new
+baseline before iterating on quality. PLAN § 15.44 (next) will plan
+that re-baseline.
+
+### 15.44 (placeholder) Step 1 — efficiency benchmark on full-swap architecture
+
+To be filled in as the work lands.
