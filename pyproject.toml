@@ -31,6 +31,7 @@ dependencies = [
     "pycolmap>=4.0.3",
     "schedulefree>=1.4.1",
     "open3d>=0.19.0",
+    "transformers>=5.6.2",
 ]
 
 [project.optional-dependencies]

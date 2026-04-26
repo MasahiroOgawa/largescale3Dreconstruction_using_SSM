@@ -1,3 +1,6 @@
 [submodule "third_party/depth-anything-3"]
 	path = third_party/depth-anything-3
 	url = https://github.com/ByteDance-Seed/Depth-Anything-3
+[submodule "third_party/mamba-ssm"]
+	path = third_party/mamba-ssm
+	url = https://github.com/state-spaces/mamba.git

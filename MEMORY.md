@@ -1,1 +1,2 @@
 - [Diagrams first for cross-file plans](memory/feedback_diagrams_first.md) — add ASCII flowcharts (baseline/modified/diff) to the plan before file lists
+- [Prefer git submodule over pip for hackable upstream deps](memory/feedback_submodule_over_pip.md) — research/architecture deps go to `third_party/<name>/`
