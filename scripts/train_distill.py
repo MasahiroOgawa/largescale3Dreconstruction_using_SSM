@@ -55,6 +55,22 @@ def main() -> None:
         help="CM11: Mamba-3 SSD recurrent state dim (default 64; CM11 uses 32).",
     )
     ap.add_argument(
+        "--alt-start", type=int, default=-1,
+        help="CM-FS (§ 15.43): DA3-style cross-view alternation start. "
+             "-1 = legacy partial-swap (CM12 → CM30); 4 = full-swap mirror "
+             "of DA3-SMALL.",
+    )
+    ap.add_argument(
+        "--cat-token", action="store_true",
+        help="CM-FS: required with --alt-start ≥ 0 for full-swap.",
+    )
+    ap.add_argument(
+        "--use-fused-kernel", action="store_true",
+        help="CM-FS: route Mamba-3 self-attention through the upstream "
+             "Triton kernel (PLAN § 15.46/§ 15.47). Recommended for "
+             "full-swap training to get the kernel's 30-150x speedup.",
+    )
+    ap.add_argument(
         "--chunk-size", type=int, default=None,
         help="CM12: chunked SSD query-axis chunk size (None = full T x T mask). "
              "Needed when distilling at img_size>=504 to fit in 12 GB VRAM.",
@@ -116,6 +132,9 @@ def main() -> None:
         depth=12,
         mamba_state_dim=args.state_dim,
         chunk_size=args.chunk_size,
+        alt_start=args.alt_start,
+        cat_token=args.cat_token,
+        use_fused_kernel=args.use_fused_kernel,
     )
     teacher = load_da3(hf_model=args.teacher, device=args.device)
     teacher_blocks = len(teacher.model.backbone.pretrained.blocks)

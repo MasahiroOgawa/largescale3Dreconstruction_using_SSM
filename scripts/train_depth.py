@@ -124,6 +124,20 @@ def main() -> None:
              "Must match the Phase-B ckpt used for --init.",
     )
     ap.add_argument(
+        "--alt-start", type=int, default=-1,
+        help="CM-FS (§ 15.43): DA3-style cross-view alternation start. "
+             "-1 = legacy partial-swap; 4 = full-swap mirror.",
+    )
+    ap.add_argument(
+        "--cat-token", action="store_true",
+        help="CM-FS: required with --alt-start ≥ 0 for full-swap.",
+    )
+    ap.add_argument(
+        "--use-fused-kernel", action="store_true",
+        help="CM-FS: route Mamba-3 self-attention through the upstream "
+             "Triton kernel (PLAN § 15.46/§ 15.47).",
+    )
+    ap.add_argument(
         "--chunk-size", type=int, default=None,
         help="CM12: chunked SSD query-axis chunk size (None = full T x T mask). "
              "Needed when training at img_size>=504 to fit in 12 GB VRAM.",
@@ -174,6 +188,9 @@ def main() -> None:
         drop_path_rate=args.drop_path,
         mamba_state_dim=args.state_dim,
         chunk_size=args.chunk_size,
+        alt_start=args.alt_start,
+        cat_token=args.cat_token,
+        use_fused_kernel=args.use_fused_kernel,
     )
     teacher = load_da3(device=args.device)
     load_da3_backbone(student.backbone.vit, teacher, verbose=True)
