@@ -2582,14 +2582,188 @@ primary metric for that goal. CM24's 0.527 (vs teacher's 0.809) is
 the real gap to close, and the depth-only ladder hasn't been
 attacking the right thing.
 
-### 15.37 (placeholder) Re-score CM12 / CM24 / CM30 on broadened metrics
+### 15.37 Re-scored leaderboard — depth, F-score, pose-AUC across kept + reverted CMs
 
-To be filled in as the work lands.
+Consolidated all four metrics on the three checkpoints we have running
+artefacts for. ETH3D `terrains`, 12-view, img_size = 504, median-aligned
+depth where applicable. Logs:
+`outputs/runs/recon_full_rescore.log`,
+`outputs/runs/pose_full_rescore.log`.
 
-### 15.38 (placeholder) DA3 official benchmark integration
+| ckpt | state | `\|rel_err\|` ↓ | F-score@5cm ↑ | pose AUC@30° ↑ | δ<1.25 ↑ |
+|---|---|---|---|---|---|
+| **DA3-SMALL teacher** | reference | ~0.045 | **0.809** | **0.762** | n/a |
+| CM12 ckpt_20000 | Phase-B only | 0.0772 | 0.436 | 0.0030 | 0.9343 |
+| **CM24 ckpt_1000** | kept | **0.0513** | **0.527** | 0.0379 | 0.9992 |
+| CM30 ckpt_1000 | reverted | 0.0943 | 0.378 | 0.0030 | 0.9067 |
 
-To be filled in as the work lands.
+Normalised vs teacher (1.000 = teacher, > 1.0 means worse for ↓
+metrics):
 
-### 15.39 (placeholder) HiRoom + 7Scenes datasets
+| ckpt | depth | F-score | pose | δ<1.25 |
+|---|---|---|---|---|
+| CM12 | 1.72× | 0.54 | 0.004 | n/a |
+| CM24 | 1.14× | **0.65** | **0.05** | n/a |
+| CM30 | 2.10× | 0.47 | 0.004 | n/a |
 
-To be filled in as the work lands.
+#### Re-scored verdicts
+
+The depth-only ladder ranks: DA3 ≫ CM24 > CM12 > CM30.
+The F-score ladder ranks: DA3 ≫ CM24 > CM12 > CM30.
+The pose-AUC ladder ranks: DA3 ≫≫ CM24 ≫ CM12 = CM30.
+
+The ranking is **stable across all three metrics** — CM24 is best of
+the kept + reverted ckpts on every dimension. CM12 is moderate on
+depth/F-score but as catastrophic as CM30 on pose. CM30's regression
+on depth is the worst of the three.
+
+So no leaderboard inversions, but two important re-framings:
+
+1. **CM24's "best by 14 % on depth" is more accurately "best by 35 % on
+   3D reconstruction"** (F-score 0.527 vs DA3's 0.809). The depth
+   metric understates the geometric gap; F-score quantifies it
+   correctly. The §13.5 acceptance gate primary should switch from
+   `|rel_err|` to F-score@5cm.
+
+2. **Pose AUC@30° is functionally zero for every kept recipe.** The
+   ranking 0.038 / 0.003 / 0.003 is essentially "all close to zero."
+   Distillation-from-DA3-SMALL-features cannot recover the ray
+   information by construction (§ 15.35 diagnosis). Pose-AUC has to
+   come from a different training signal — DPT-output match, full DA3
+   replication, or direct ray-GT supervision.
+
+CM12 vs CM24 on F-score (0.436 → 0.527, +21 %) confirms that Phase-C's
+`--unfreeze-dpt` + GT depth supervision genuinely improves 3D
+consistency, not just per-pixel `|rel_err|`. So the Phase-C add-on is
+load-bearing — keep it in any future recipe.
+
+CM30's collapse to 0.378 F-score (vs CM24's 0.527, −28 %) is consistent
+with the rank diagnosis (§ 15.31): low-rank backbone features produce
+geometrically inconsistent depth even when median-aligned `|rel_err|`
+looks "only" 84 % worse.
+
+#### What this section unblocks
+
+§ 15.38 (DA3 official benchmark integration) and § 15.39 (HiRoom +
+7Scenes datasets) extend this re-score to:
+
+- DA3's full benchmark protocol (TSDF fusion mesh, F-score variants,
+  pose AUC at the per-pair-relative scale).
+- Scenes other than ETH3D `terrains` to rule out scene-specific
+  artefacts.
+
+The current §13.5 gate hierarchy (proposed): primary = F-score@5cm
+(recon_posed), secondary = `|rel_err|`, tertiary = pose AUC@30°. A
+recipe must improve F-score by ≥ 2 % vs the retained best AND not
+regress on the others.
+
+### 15.38 DA3 official benchmark integration — partial (metrics-equivalent)
+
+DA3's bench evaluator
+(`python -m depth_anything_3.bench.evaluator model.path=$MODEL`) loads
+its model via `DepthAnything3.from_pretrained(model_path)`, so a full
+CLI integration would require packaging
+`SSM3DNet + DimBridge + DualDPT` as an HF-loadable bundle (or
+monkey-patching `from_pretrained` to recognise our `.pt` ckpts). That
+adapter is non-trivial (~2 days of work) and is deferred.
+
+What we *do* have, integrated and metric-equivalent:
+
+- DA3's `compute_pose` (cherry-picked from `bench/utils.py`) drives
+  § 15.35 pose-AUC eval via `scripts/eval_ray_metrics.py --mode pose`.
+  Output is verbatim what DA3's bench reports.
+- DA3's `evaluate_3d_reconstruction`, `create_tsdf_volume`,
+  `fuse_depth_to_tsdf`, `sample_points_from_mesh` drive § 15.36
+  recon-posed via `scripts/eval_recon_metrics.py`. `--mode tsdf`
+  matches DA3's official recon protocol; `--mode backproject` is a
+  simpler view-concat approximation.
+
+TSDF-mode numbers on ETH3D `terrains` (12-view, img_size = 504,
+median-aligned per view; log
+`outputs/runs/recon_tsdf_full.log`):
+
+| source | F@5cm (TSDF) | F@5cm (back-proj) |
+|---|---|---|
+| DA3-SMALL teacher | 0.434 | 0.809 |
+| CM24 ckpt_1000 | **0.295** | 0.527 |
+| CM12 ckpt_20000 | 0.221 | 0.436 |
+| CM30 ckpt_1000 | 0.167 | 0.378 |
+
+The ranking is preserved; TSDF mode is uniformly stricter. Two
+caveats vs DA3's published numbers (DA3-GIANT recon_posed on ETH3D
+in DA3-BENCH = 0.79):
+
+1. Per-view median alignment doesn't preserve *inter-view* scale
+   consistency, which TSDF fusion needs. DA3-BENCH likely uses a
+   single global scale per scene (RANSAC-based), not per-view.
+2. ETH3D `terrains` (our scene) is not the same as DA3-BENCH's
+   ETH3D split, which is from `huggingface.co/datasets/depth-
+   anything/DA3-BENCH` and uses different scenes / preprocessing.
+
+For absolute numbers comparable to DA3's table, we need DA3-BENCH
+scenes (§ 15.39). For relative ordering across our CMs, the metric
+functions we've integrated are sufficient.
+
+**Status:** DA3 metric functions integrated (`compute_pose`,
+`evaluate_3d_reconstruction`, TSDF helpers); full bench CLI
+integration deferred behind an HF-model-bundle adapter.
+
+### 15.39 HiRoom + 7Scenes datasets — plan, not yet implemented
+
+**Goal:** evaluate on multiple scenes / datasets to (a) get numbers on
+DA3's published axis, (b) rule out scene-specific artefacts in the
+ETH3D `terrains` results.
+
+**DA3-BENCH structure** (from
+`third_party/depth-anything-3/src/depth_anything_3/bench/datasets/hiroom.py`):
+
+```
+HiRoom/
+├── {scene}/
+│   ├── image/             # RGB
+│   ├── depth/             # GT depth maps
+│   ├── pose/              # cam poses (.npy per image)
+│   ├── cam_K.npy          # shared intrinsics
+│   └── aliasing_mask/     # occlusion masks
+└── fused_pcd/
+    └── {scene}.ply        # GT fused point cloud (recon target)
+```
+
+7Scenes (`sevenscenes.py`) follows a similar layout. Both are
+indoor RGB-D — ground truth depth is denser than ETH3D outdoor
+laser scans, and TSDF fusion should be more cooperative (no
+inter-view scale issues if depth is metric).
+
+**Implementation plan (deferred — needs decision on dataset
+download):**
+
+1. Download DA3-BENCH HiRoom (~0.7 GB) + 7Scenes (~3.3 GB) to
+   `data/da3_bench/`:
+   ```
+   hf download depth-anything/DA3-BENCH --include "hiroom.zip" \\
+       --local-dir data/da3_bench --repo-type dataset
+   cd data/da3_bench && unzip hiroom.zip
+   ```
+2. Add `src/ssm3d/data/hiroom.py` with `load_hiroom_scene` returning
+   the same `ETH3DSample`-shaped dataclass our existing scripts use:
+   `images`, `image_paths`, `gt_depth`, plus a parallel
+   `load_hiroom_cams` returning `intrinsics` / `extrinsics` dicts.
+3. Add `src/ssm3d/data/sevenscenes.py` analogously.
+4. Add `--scene` flag to `eval_recon_metrics.py` /
+   `eval_ray_metrics.py` to dispatch to the right loader.
+5. Run the full re-score (CM12 / CM24 / CM30) on HiRoom + 7Scenes;
+   report alongside ETH3D `terrains`.
+
+**Cost:** ~1 day to wire loaders + ~5 min to download + ~30 min
+runtime per dataset for full eval.
+
+**Why deferred:** the bigger immediate question is *what training
+recipe to try next* given § 15.35's finding that distillation
+fundamentally breaks the ray channels. The eval-expansion work is
+mature enough to gate any new CM correctly; adding more datasets
+will refine numbers but won't change the qualitative picture
+(every kept recipe is catastrophic on pose). The user's call:
+prioritise (a) Phase-B with DPT-output match supervision (§ 15.35
+recommendation 1) so we have a recipe that *can* clear the broader
+gates, or (b) HiRoom + 7Scenes loaders first for cleaner gates on
+that recipe?

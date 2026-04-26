@@ -80,7 +80,11 @@ def view_pcd(
     image_hw: tuple[int, int],
     voxel_down: float | None = 0.02,
 ) -> np.ndarray:
-    """Concatenate world points from all views into one cloud, optionally down-sampled."""
+    """Concatenate world points from all views into one cloud, optionally down-sampled.
+
+    Simpler than TSDF fusion; usable when RGB images aren't needed and per-view
+    coverage is comparable.
+    """
     pts = [
         backproject_depth_to_world(d, K, E, image_hw)
         for d, K, E in zip(depth_per_view, K_per_view, extr_per_view)
@@ -93,6 +97,46 @@ def view_pcd(
         pcd = pcd.voxel_down_sample(voxel_down)
         cloud = np.asarray(pcd.points)
     return cloud
+
+
+def tsdf_fused_pcd(
+    depth_per_view: list[torch.Tensor],
+    rgb_per_view: list[torch.Tensor],   # (3, H_img, W_img) in [0, 1]
+    K_per_view: list[np.ndarray],
+    extr_per_view: list[np.ndarray],
+    image_hw: tuple[int, int],
+    max_depth: float = 30.0,
+    voxel_length: float = 4.0 / 512.0,
+    sdf_trunc: float = 0.04,
+    sample_points: int = 1_000_000,
+) -> np.ndarray:
+    """DA3 official protocol: TSDF-fuse depth + RGB across views into a mesh,
+    then sample points uniformly. Closer to DA3-BENCH's recon scoring."""
+    from depth_anything_3.bench.utils import (
+        create_tsdf_volume, fuse_depth_to_tsdf, sample_points_from_mesh,
+    )
+    H_img, W_img = image_hw
+    depths_np = np.stack([
+        F.interpolate(
+            d.unsqueeze(0).unsqueeze(0).float(), size=(H_img, W_img),
+            mode="bilinear", align_corners=False,
+        ).squeeze().cpu().numpy()
+        for d in depth_per_view
+    ]).astype(np.float32)
+    rgb_np = np.stack([
+        np.ascontiguousarray(
+            (r.permute(1, 2, 0).cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+        )
+        for r in rgb_per_view
+    ])
+    # DA3's fuse_depth_to_tsdf wants per-view K already at depth resolution.
+    Ks = np.stack(K_per_view).astype(np.float32)
+    Es = np.stack(extr_per_view).astype(np.float32)
+
+    volume = create_tsdf_volume(voxel_length=voxel_length, sdf_trunc=sdf_trunc)
+    mesh = fuse_depth_to_tsdf(volume, depths_np, rgb_np, Ks, Es, max_depth=max_depth)
+    pcd = sample_points_from_mesh(mesh, num_points=sample_points)
+    return np.asarray(pcd.points)
 
 
 def build_ssm(ckpt: Path, state_dim: int, img_size: int, patch_size: int,
@@ -145,7 +189,12 @@ def main() -> None:
                          "are scale-ambiguous so this is meaningful only after median "
                          "alignment.")
     ap.add_argument("--voxel-down", type=float, default=0.02,
-                    help="Voxel downsample size; 0 to disable.")
+                    help="Voxel downsample size for back-project mode; 0 to disable.")
+    ap.add_argument("--mode", choices=["backproject", "tsdf"], default="tsdf",
+                    help="`tsdf` matches DA3's official recon protocol "
+                         "(volume fusion + mesh sample); `backproject` is simpler.")
+    ap.add_argument("--max-depth", type=float, default=30.0,
+                    help="TSDF max-depth truncation in meters.")
     args = ap.parse_args()
 
     from depth_anything_3.bench.utils import evaluate_3d_reconstruction
@@ -162,8 +211,14 @@ def main() -> None:
     image_hw = (args.img_size, args.img_size)
 
     gt_depths = [sample.gt_depth[i] for i in range(len(image_names))]
-    gt_cloud = view_pcd(gt_depths, Ks, Es, image_hw, voxel_down=args.voxel_down)
-    print(f"[GT cloud] {len(gt_cloud):,} points after voxel_down={args.voxel_down}")
+    rgb_per_view = [sample.images[i] for i in range(len(image_names))]
+    if args.mode == "tsdf":
+        gt_cloud = tsdf_fused_pcd(
+            gt_depths, rgb_per_view, Ks, Es, image_hw, max_depth=args.max_depth,
+        )
+    else:
+        gt_cloud = view_pcd(gt_depths, Ks, Es, image_hw, voxel_down=args.voxel_down)
+    print(f"[GT cloud] {len(gt_cloud):,} points (mode={args.mode})")
 
     da3 = load_da3(DEFAULT_HF_MODEL, device=args.device)
     shared_dpt_base = get_dualdpt(da3)
@@ -176,7 +231,12 @@ def main() -> None:
     for i in range(len(image_names)):
         d = upsample_depth(teacher_d[i], image_hw)
         teacher_d_aligned.append(aligned_depth(d, gt_depths[i]))
-    teacher_cloud = view_pcd(teacher_d_aligned, Ks, Es, image_hw, voxel_down=args.voxel_down)
+    if args.mode == "tsdf":
+        teacher_cloud = tsdf_fused_pcd(
+            teacher_d_aligned, rgb_per_view, Ks, Es, image_hw, max_depth=args.max_depth,
+        )
+    else:
+        teacher_cloud = view_pcd(teacher_d_aligned, Ks, Es, image_hw, voxel_down=args.voxel_down)
     m = evaluate_3d_reconstruction(teacher_cloud, gt_cloud, threshold=args.threshold)
     print(f"{'DA3-SMALL teacher':<48} {m['fscore']:>8.4f} {m['precision']:>7.4f} "
           f"{m['recall']:>7.4f} {m['acc']:>8.4f} {m['comp']:>9.4f}")
@@ -197,7 +257,12 @@ def main() -> None:
         for i in range(len(image_names)):
             d = upsample_depth(out["depth"][i], image_hw)
             d_per.append(aligned_depth(d, gt_depths[i]))
-        cloud = view_pcd(d_per, Ks, Es, image_hw, voxel_down=args.voxel_down)
+        if args.mode == "tsdf":
+            cloud = tsdf_fused_pcd(
+                d_per, rgb_per_view, Ks, Es, image_hw, max_depth=args.max_depth,
+            )
+        else:
+            cloud = view_pcd(d_per, Ks, Es, image_hw, voxel_down=args.voxel_down)
         m = evaluate_3d_reconstruction(cloud, gt_cloud, threshold=args.threshold)
         print(f"{str(ckpt_path):<48} {m['fscore']:>8.4f} {m['precision']:>7.4f} "
               f"{m['recall']:>7.4f} {m['acc']:>8.4f} {m['comp']:>9.4f}")
