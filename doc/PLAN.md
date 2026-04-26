@@ -2507,14 +2507,89 @@ shape; first try the cheapest fix — adding DPT-output-match
 supervision to Phase-B — and re-evaluate on the broader metric set
 before committing to the bigger pivots.
 
-### 15.36 (placeholder) Re-score CM12 / CM24 / CM30 on broadened metrics
+### 15.36 3D reconstruction (F-score, Chamfer) — recon_posed on ETH3D
+
+DA3's reconstruction metric back-projects predicted depth + camera
+parameters into world-frame 3D points and compares to a GT-derived
+point cloud via `evaluate_3d_reconstruction` in
+`third_party/depth-anything-3/.../bench/utils.py` (KDTree NN +
+acc / comp / F-score at a distance threshold).
+
+Two evaluation modes in DA3's spec:
+
+- **`recon_posed`**: GT camera intrinsics + extrinsics, predicted
+  depth → 3D points. Isolates the depth-quality contribution to 3D
+  consistency.
+- **`recon_unposed`**: predicted intrinsics + extrinsics + predicted
+  depth. Tests the joint depth-and-pose pipeline.
+
+§ 15.35 showed predicted poses are catastrophic for our checkpoints
+(AUC@30° ≈ 0.04), so `recon_unposed` would be uninformatively bad.
+This section does **`recon_posed`** only.
+
+`scripts/eval_recon_metrics.py` implements the pipeline:
+
+- median-align predicted depth to GT (same as our depth eval),
+- back-project (depth, K, w2c) → world points per view,
+- voxel-downsample (default 0.02 m) and concatenate,
+- F-score at threshold 0.05 m via DA3's `evaluate_3d_reconstruction`.
+
+#### First numbers
+
+ETH3D `terrains` 12-view, img_size=504:
+
+| source | F-score@5cm | precision | recall | acc (m) | comp (m) |
+|---|---|---|---|---|---|
+| DA3-SMALL teacher | **0.809** | 0.752 | 0.876 | 0.038 | 0.024 |
+| CM24 ckpt_1000 | 0.527 | 0.404 | 0.757 | 0.078 | 0.034 |
+| CM30 ckpt_1000 | 0.378 | 0.260 | 0.692 | 0.165 | 0.047 |
+
+Log: `outputs/runs/recon_first_run.log`.
+
+#### Triangulating CM24 vs DA3-SMALL across all four metrics
+
+| metric (CM24 vs teacher) | CM24 | teacher | CM24 / teacher |
+|---|---|---|---|
+| depth `\|relative_depth_error\|` (↓) | 0.0513 | ~0.045 | **88 %** |
+| F-score@5cm (↑) | 0.527 | 0.809 | **65 %** |
+| pose AUC@30° (↑) | 0.0379 | 0.762 | **5 %** |
+
+The three metrics form a coherent gradient: depth quality is
+preserved best (88 %), 3D-consistency degrades when depth values are
+re-projected to world coordinates (65 %), and pose extraction —
+which depends on the *ray* channels distillation explicitly didn't
+constrain — collapses to 5 %.
+
+Diagnostically: CM24's reconstruction precision (0.40) is half of
+teacher's (0.75) while recall is only modestly worse (0.76 vs 0.88).
+That means CM24 produces many extra points *outside* the 5 cm
+threshold (depth has outliers when re-projected to 3D) but covers
+most of the GT surface. Median alignment hides per-pixel scale
+errors that compound into 3D position errors at long range.
+
+#### Implications
+
+The recon_posed metric is the single best summary of "how good is
+the depth as a geometric signal" — it captures both per-pixel
+accuracy and 3D consistency in one number. Re-scoring the kept CM
+ladder against this is § 15.37; the §13.5 acceptance gate should
+probably switch primary criterion from `|rel_err|` (which has
+been hiding the structural issues) to F-score@5cm.
+
+Open question: the user's broader project goal is *3D
+reconstruction*, not *depth estimation*. F-score is the right
+primary metric for that goal. CM24's 0.527 (vs teacher's 0.809) is
+the real gap to close, and the depth-only ladder hasn't been
+attacking the right thing.
+
+### 15.37 (placeholder) Re-score CM12 / CM24 / CM30 on broadened metrics
 
 To be filled in as the work lands.
 
-### 15.37 (placeholder) DA3 official benchmark integration
+### 15.38 (placeholder) DA3 official benchmark integration
 
 To be filled in as the work lands.
 
-### 15.38 (placeholder) HiRoom + 7Scenes datasets
+### 15.39 (placeholder) HiRoom + 7Scenes datasets
 
 To be filled in as the work lands.
