@@ -2136,3 +2136,122 @@ test whether the layer-3 cliff fix gives an additional bump.
 **If CM30 fails:** the residual block is architectural, and CM31
 becomes the user's two-stream Mamba-3 (cross-view branch) — the
 remaining γ-fix candidate.
+
+### 15.31 CM30 result (reverted) — DA3-LARGE multi-layer distill regresses depth
+
+Run on 2026-04-26.
+
+**Phase-B per-layer rank** (post-norm, mean over 12 ETH3D `terrains`
+images, img_size=504; log:
+`outputs/runs/cm30_per_layer_rank.log`):
+
+| layer | DA3-S teacher | CM12 (SMALL, 4-layer) | CM29a (SMALL, 12-layer) | CM30 (LARGE, 4-layer) | CM30 vs CM12 |
+|---|---|---|---|---|---|
+| 0  | 121 | 124 | 93  | 52 | **−72** |
+| 1  | 119 | 146 | 107 | 62 | **−84** |
+| 2  | 127 | 137 | 117 | 51 | **−86** |
+| 5  | 150 | 98  | 112 | 72 | −26 |
+| 7  | 167 | 100 | 115 | 73 | −27 |
+| 9  | 152 | 76  | 88  | 65 | −11 |
+| 11 | 139 | 62  | 70  | 40 | **−22** |
+
+CM30's last-layer rank (40) is **far below** every prior recipe
+including CM12 (62) — i.e., switching to the LARGE teacher with
+proper 4-layer supervision *regressed* representation rank by 36 %.
+This contradicts CM20's reported +16 % rank gain (§15.11), which
+turns out to have been an artefact of CM20's silent single-layer
+fallback (the `_student_features` / `_teacher_features` zip
+truncation that the §15.30 `--student-layers` change just fixed).
+
+**Phase-C depth** (CM24 recipe verbatim, `--init
+distill_cm30/ckpt_20000.pt`; log: `outputs/runs/cm30_eval.log`):
+
+| step | \|relative_depth_error\| | δ<1.25 | rmse | log10 |
+|---|---|---|---|---|
+| 500 | 0.1275 | 0.8476 | 0.2441 | 0.0545 |
+| 1000 | 0.0943 | 0.9067 | 0.1863 | 0.0414 |
+
+Reference: CM24 = 0.0513. Gate (§15.30) = ≤ 0.0500.
+**CM30@1000 = 0.0943 → +84 % vs CM24, gate FAILS.** δ<1.25 collapses
+0.9992 → 0.9067 — many pixels now > 25 % off.
+
+**Diagnosis.** The §15.30 acceptance hypothesis ("LARGE-teacher
+features → richer student features → better depth via
+`--unfreeze-dpt`") fails because of an unanticipated optimisation
+loophole:
+
+- Phase-B loss balance: λ_l2 = 1, λ_cos = 1. At convergence the L2
+  component sat at 0.0003 while the cos component was 0.034 — i.e.,
+  cosine dominated the gradient.
+- `DistillProjector` (per-layer `Linear(384, 1024)`) absorbs the
+  dim mismatch with ~1.6 M extra params *only during Phase-B*.
+- Cosine loss is direction-only; magnitude information is discarded.
+  With four cosine constraints (one per supervised layer pair) and
+  a 1.6 M-param projector to satisfy them, the optimiser can find a
+  *low-rank* student configuration that, when projected to 1024-dim
+  by four independent linear maps, lands close (in cosine) to the
+  teacher's four target directions. The projector picks up the
+  rank lift; the student backbone collapses to ~rank-40.
+- The projector is discarded at Phase-C — leaving the deployed
+  student with rank-40 features. `--unfreeze-dpt` lets the DPT
+  head adapt, but the head can only use whatever directions exist
+  in the backbone. Rank-40 in → rank-40 features available for
+  depth → poor depth.
+
+The accumulated evidence on the LARGE-teacher path:
+
+| CM | teacher | DPT | supervision | \|rel_err\| |
+|---|---|---|---|---|
+| CM12 | SMALL | frozen (auto) | 4 layers | 0.0676 |
+| CM20 | LARGE | **frozen** | 1 layer (silent) | 0.1739 ❌ |
+| CM24 | SMALL | unfrozen | 4 layers | **0.0513** ✅ |
+| CM30 | LARGE | unfrozen | 4 layers (real) | 0.0943 ❌ |
+
+The straightforward "swap teacher to LARGE + unfreeze DPT" recipe
+does not beat DA3-SMALL, and properly fixing CM20's silent-single-
+layer bug made the depth metric *worse* (0.1739 → fixed → 0.0943
+is better, but vs CM24's 0.0513 it is still worse). Reverted per
+§13.5; CM30 ckpts retained as evidence.
+
+### 15.32 CM31 candidates — three paths after the LARGE-teacher recipe failure
+
+The §15.31 diagnosis points to *the loss design* and/or the
+*structural rank cap of Mamba-3* as the surviving levers, with the
+DA3-LARGE teacher choice still defensible if either is fixed.
+
+**CM31a — Loss rebalance (cheapest).** Same CM30 setup with
+`λ_l2 ↑ λ_cos ↓` (e.g. `λ_l2 = 10, λ_cos = 1`). Forces magnitude-
+aware supervision; the projector can no longer hide rank loss in
+scale. Acceptance: rank ≥ 70 at layer 11 → re-run Phase-C and
+check depth gate. Cost: ~5 h (re-distill + Phase-C + eval).
+
+**CM31b — Projector-less alignment (cleaner).** Remove
+`DistillProjector` entirely. Replace with a non-trainable teacher
+projection: PCA-truncate teacher's 1024-dim features to 384-dim
+(or take leading-384 channels by variance) and compute the loss in
+the shared 384-dim space. Forces the student to live in a
+teacher-equivalent 384-dim subspace — direct constraint, no
+adjustable absorber. Code change: ~1 h (one-time PCA, swap
+projector for fixed transform). Cost: ~6 h total.
+
+**CM31c — Architectural (the user's two-stream proposal).** Add a
+cross-view Mamba-3 branch alongside the per-view branch in each
+block, mirroring DA3's local-vs-global alternation. Doubles the
+student's effective channel capacity from 384 to 768 at the
+DPT-fed taps. Doesn't depend on teacher choice; resolves the
+γ-shape rank cap directly. Code change: ~6–8 h (new branch in
+`Mamba3SelfAttention`, masking helper, weight-loading hooks).
+Phase-B re-distill required. Cost: ~12 h total.
+
+**Decision criteria.** CM31a tests "is the loss design the
+limiting factor?" cheaply. CM31b tests the same hypothesis with a
+cleaner constraint (and is the right design even if rebalancing
+works). CM31c tests "is the architecture the limiting factor?" and
+is the deepest fix. If CM31a falsifies the loss-side hypothesis
+quickly, we jump to CM31c; if it confirms, CM31b becomes the
+cleaner production recipe and CM31c stacks on top.
+
+**Recommended order: CM31a → (if positive) CM31b → CM31c stacked
+on the winner.** CM31c stands alone as a parallel track if the
+user wants to commit GPU time to the architectural lever in
+parallel with the loss-design experiments.
