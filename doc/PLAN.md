@@ -2767,3 +2767,193 @@ prioritise (a) Phase-B with DPT-output match supervision (§ 15.35
 recommendation 1) so we have a recipe that *can* clear the broader
 gates, or (b) HiRoom + 7Scenes loaders first for cleaner gates on
 that recipe?
+
+### 15.40 Efficiency-first research plan — A–E roadmap
+
+User directive (2026-04-26):
+
+> "I just want to confirm the effectiveness of mamba3 based attention.
+> … I want to focus on attention effectiveness. … I never write paper
+> with negative result. So accomplish the best result, which might be
+> computation efficiency. But to insist that, compare computation
+> resource including memory usage. If our implementation can fit even
+> smart phone, it is valuable enough."
+
+The research framing locks in: **"DA3-quality geometric prediction
+on mobile via SSD attention."** This is a positive-claim,
+efficiency-first paper of the well-established "drop-in replacement
+at minimal retraining cost" genre (BlackMamba, Hyena, MambaVision,
+Vision Mamba). The story is *not* "match DA3-SMALL exactly" but
+"recover ≥ N % of DA3-SMALL quality at K× lower memory and J×
+faster inference, fitting in mobile RAM at high resolutions where
+quadratic attention does not."
+
+Quality bar relaxes accordingly: CM24's current 65 % retention of
+DA3-SMALL F-score is plausibly already enough *if* the efficiency
+numbers are dramatic. Mobile vision papers routinely accept 10–20 %
+quality drops for 5–10× efficiency gains.
+
+#### Why efficiency
+
+Mamba-3 SSD memory and FLOPs scale as O(T) per token; transformer
+self-attention scales as O(T²). At our typical 504² input → 1296
+tokens the attention matrix alone is ~20 MB / layer × 12 layers ≈
+240 MB of peak activations; SSD's recurrent state is ~1 MB / layer
+× 12 ≈ 12 MB. At 1024² → 5184 tokens, attention activations balloon
+to ~3.8 GB (will not fit on phones); SSD stays at ~50 MB. **The
+high-resolution regime is where the story sells.**
+
+Mobile constraints: flagship phones target ≤ 1–2 GB peak app
+memory. Both models' weights (~34 M params, ~68 MB FP16) fit. The
+deciding factor is activation peak — which is where SSD wins.
+
+#### A–E roadmap
+
+| Step | What | Cost | Decision criterion |
+|---|---|---|---|
+| **A** | Efficiency benchmark — peak memory + latency + FLOPs for SSD-DA3 vs full-DA3 at (224, 384, 504, 1024). Backbone-only and full-pipeline. | 1 day | If SSD ≥ 5× memory advantage at 504²: continue. If less: rethink the value-prop. |
+| **B** | Push quality up — CM31 (DPT-output match supervision per § 15.35) | ~5 h GPU + 1 day code | F-score@5cm ≥ 0.55 on ETH3D (vs CM24's 0.527) |
+| **C** | Multi-dataset eval — add HiRoom + 7Scenes loaders | 1 day code + 1 h GPU | Three-dataset table; consistent ordering |
+| **D** | Mobile export demo — ONNX → CoreML / TFLite → measure latency on phone | 2 days | Phone latency < 1 s/frame at 384² |
+| **E** | Paper draft — efficiency-vs-quality scatter, scaling curves, metric tables | 1 week | Submit-ready |
+
+Total: ~3 weeks to a workshop submission with a strong positive
+claim.
+
+#### Why Step A first
+
+Three reasons:
+
+1. **Low risk.** Benchmarking is orthogonal to training; runs on
+   existing checkpoints; no data needed.
+2. **Anchors the narrative.** If memory advantage at 504² is
+   < 2× (because chunked SSD has hidden activations our
+   implementation didn't optimise away), the paper angle weakens —
+   better to know now and rethink before more training.
+3. **Relaxes the quality target.** If the gap is 30× as expected,
+   the paper holds even with current quality. Steps B/C become
+   "polish" rather than "rescue."
+
+#### Comparable prior work (to model after)
+
+- **BlackMamba** (Anthony et al., 2024) — Mamba-block drop-in for
+  transformer LMs, brief fine-tune, standard LM benchmarks.
+- **Hyena** (Poli et al., 2023) — implicit-conv replacement for
+  attention, parity with minimal retraining.
+- **MambaVision** (Hatamizadeh et al., 2024) — SSM-attention hybrid
+  backbone, ImageNet + ADE20K benchmarks.
+- **Vision Mamba / ViM** (Zhu et al., 2024) — pure SSM vision
+  backbone, classification + segmentation.
+
+All cite the "swap one component, retrain modestly, evaluate on
+standard benchmarks" pattern as a methodologically valid approach.
+
+### 15.41 Step A — efficiency benchmark results (naive PyTorch SSD)
+
+`scripts/bench_efficiency.py` runs the **backbone-only** comparison
+(12 ViT-S blocks; only the mixer differs) at multiple input
+resolutions. Both backbones have ~22 M params; only the attention
+implementation changes. Logs:
+`outputs/runs/bench_efficiency.log`,
+`outputs/runs/bench_efficiency_large.log`.
+
+| input | tokens | SSD peak (MiB) | Attn peak (MiB) | SSD lat (ms) | Attn lat (ms) | SSD FLOPs (G) | Attn FLOPs (G) | mem ratio | lat ratio | FLOPs ratio |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 224² | 256 | 103 | 97 | 15.6 | 2.1 | 9.7 | 9.7 | 1.06× | 7.4× | 1.01× |
+| 392² | 784 | 129 | 109 | 33.8 | 6.4 | 29.7 | 33.4 | 1.18× | 5.3× | 0.89× |
+| 504² | 1296 | 151 | 117 | 71.3 | 12.2 | 49.0 | 61.3 | 1.29× | 5.9× | 0.80× |
+| 1022² | 5329 | 336 | 199 | 1055 | 101 | 201 | 450 | 1.69× | 10.4× | 0.45× |
+| 1400² | 10000 | 551 | 290 | 4787 | 320 | 378 | 1275 | 1.90× | 15.0× | 0.30× |
+| 1568² | 12544 | 660 | 341 | 9215 | 489 | 474 | 1894 | 1.93× | 18.9× | 0.25× |
+| 1820² | 16900 | 861 | 429 | 19972 | 855 | 638 | 3230 | 2.01× | 23.4× | 0.20× |
+| 2240² | 25600 | 1264 | 602 | 46247 | 1894 | 966 | 6946 | 2.10× | 24.4× | **0.14×** |
+
+#### What the data says
+
+**FLOPs scale as theory predicts.** Attention is O(T²·D),
+SSD is O(T·D·N). At 2240² (25 600 tokens) SSD does 7× fewer FLOPs
+than attention. The asymptotic crossover is real — at small T (≤ 392)
+attention has fewer FLOPs because of the smaller projection share;
+SSD wins at long T.
+
+**Wall-clock and memory go the *opposite* direction.** Attention is
+5–24× *faster* and uses 1–2× *less* memory at every tested size.
+This is because PyTorch's `scaled_dot_product_attention` uses
+**FlashAttention-class fused kernels** that never materialize the
+T×T matrix — empirical attention memory is O(T·D), not O(T²·D).
+Our SSD implementation is **naive PyTorch** (chunked masks built as
+real tensors via `build_three_term_mask` + `ssd_forward_chunked`),
+without a fused CUDA kernel.
+
+**Attention does not OOM at any tested size.** Even at 25 600 tokens
+on a 12 GB GPU, attention peaks at 602 MiB. The "transformer can't
+fit at high resolution" deployment-failure mode never triggered — it
+only would for sizes our GPU itself OOMs at, well beyond mobile-
+relevant resolutions.
+
+#### Honest verdict
+
+**The efficiency claim is unsupported by the current implementation.**
+On consumer GPU, transformer attention is faster and lower-memory at
+all relevant input sizes thanks to FlashAttention. Mamba's published
+efficiency claims rely on `selective_scan_cuda` /
+`mamba_chunk_scan_combined` — fused CUDA kernels we are not using.
+
+Three options to recover the value-prop:
+
+A. **Integrate Mamba-2/3 official CUDA kernels.** Replace
+   `ssd_forward_chunked` in `src/ssm3d/mamba3/self_attention.py`
+   with `mamba_chunk_scan_combined` from `mamba-ssm` (PyPI:
+   `mamba-ssm`, depends on `causal-conv1d`). Mamba's published
+   speed claims (≥ FlashAttention speed at long T) are entirely
+   from this kernel. Estimated ≥ 5× speed-up on the SSD path.
+B. **Benchmark on mobile devices.** FlashAttention isn't available
+   on CoreML / TFLite / NNAPI; on those runtimes attention has to
+   materialize the T×T matrix. SSD still doesn't have a fused
+   kernel there either, but the playing field is more level. The
+   mobile-only argument is narrower (relies on attention being
+   *worse* on mobile, not SSD being *better* on consumer GPU).
+C. **Push input sizes high enough that attention OOMs.** Our 12 GB
+   GPU doesn't OOM attention at 2240²; mobile devices with 4 GB
+   would OOM attention at much smaller sizes. But this conflates
+   two arguments (memory vs platform).
+
+A is the necessary engineering step to even make B and C credible.
+**Without A, there is no efficiency story.**
+
+### 15.42 Step A.1 — integrate `mamba-ssm` CUDA kernel
+
+**Goal:** replace the naive PyTorch SSD scan with
+`mamba_chunk_scan_combined` so wall-clock latency and memory match
+what Mamba's papers report.
+
+**Plan:**
+
+1. `uv add mamba-ssm causal-conv1d` — official packages from
+   `state-spaces/mamba` GitHub. They compile CUDA kernels at install;
+   need a CUDA-capable PyTorch and matching toolkit. Verify build
+   succeeds on this system before proceeding.
+2. Identify the kernel API: `mamba_chunk_scan_combined(x, dt, A, B,
+   C, D, ...)`. Map our `(Vp, delta, A_log, Bp, Cp)` params onto
+   this signature. Confirm Mamba-3's three-term mask + lambda
+   decay is supported (Mamba-2 kernel may need extension; Mamba-3
+   may have its own kernel in `goombalab/mamba3` or similar).
+3. Wire kernel call into `Mamba3SelfAttention._one_direction`
+   behind a `--use-fused-kernel` config (default off until parity
+   is verified).
+4. Numerical equivalence test: set `use_fused_kernel=True` and
+   re-run `tests/unit/test_mamba3_*`. Outputs must match the
+   PyTorch path within reasonable tolerance (1e-4 fp32, larger fp16).
+5. Re-run `scripts/bench_efficiency.py`. Expected: latency ratio at
+   504² flips from ~6× slower → ~1× or better; memory ratio
+   flips from 1.3× → ~0.5×.
+6. Refresh § 15.41 table with kernel-based numbers.
+
+**Risk:** the Mamba-3 paper introduces structural extensions (the
+three-term mask `L`, the per-head lambda decay `lam`) that
+`mamba_chunk_scan_combined` from Mamba-2 does not natively support.
+If the kernel can only handle the SISO Mamba-2 case, we'd either
+(a) fall back to Mamba-2-style SSD without the three-term mask /
+lambda gating (and acknowledge the architectural simplification in
+the paper), or (b) write a custom Triton kernel that adds the
+three-term piece.
