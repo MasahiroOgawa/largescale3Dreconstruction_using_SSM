@@ -141,11 +141,12 @@ def tsdf_fused_pcd(
 
 def build_ssm(ckpt: Path, state_dim: int, img_size: int, patch_size: int,
               chunk_size: int, device: str, alt_start: int = -1,
-              cat_token: bool = False):
+              cat_token: bool = False, use_fused_kernel: bool = False):
     net = SSM3DNet(
         size="small", img_size=img_size, patch_size=patch_size, depth=12,
         chunk_size=chunk_size, mamba_state_dim=state_dim,
         alt_start=alt_start, cat_token=cat_token,
+        use_fused_kernel=use_fused_kernel,
     )
     load_dinov2_backbone(net.backbone.vit, ensure_dinov2_vits14())
     state = torch.load(ckpt, map_location="cpu", weights_only=False)
@@ -197,6 +198,9 @@ def main() -> None:
                          "4 = full-swap mirror of DA3-SMALL.")
     ap.add_argument("--cat-token", action="store_true",
                     help="Required with --alt-start ≥ 0 for full-swap.")
+    ap.add_argument("--use-fused-kernel", action="store_true",
+                    help="Route Mamba-3 self-attention through the upstream "
+                         "Triton kernel (PLAN § 15.46).")
     ap.add_argument("--mode", choices=["backproject", "tsdf"], default="tsdf",
                     help="`tsdf` matches DA3's official recon protocol "
                          "(volume fusion + mesh sample); `backproject` is simpler.")
@@ -253,6 +257,7 @@ def main() -> None:
             ckpt_path, args.state_dim, args.img_size, args.patch_size,
             args.chunk_size, args.device,
             alt_start=args.alt_start, cat_token=args.cat_token,
+            use_fused_kernel=args.use_fused_kernel,
         )
         if tuned_dpt_state is not None:
             shared_dpt = copy.deepcopy(shared_dpt_base)

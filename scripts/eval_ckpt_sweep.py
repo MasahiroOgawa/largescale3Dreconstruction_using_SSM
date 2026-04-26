@@ -73,6 +73,12 @@ def main() -> None:
              "doubled channel dim. Required with --alt-start ≥ 0 for the "
              "DA3-faithful mirror.",
     )
+    ap.add_argument(
+        "--use-fused-kernel", action="store_true",
+        help="Route Mamba-3 self-attention through the upstream Triton kernel "
+             "(`mamba3_siso_combined`). Cosine sim ~0.98 vs PyTorch path; not "
+             "bit-identical (PLAN § 15.45 / § 15.46).",
+    )
     args = ap.parse_args()
 
     torch.manual_seed(0)
@@ -92,6 +98,7 @@ def main() -> None:
         depth=12, chunk_size=args.chunk_size,
         mamba_state_dim=args.state_dim,
         alt_start=args.alt_start, cat_token=args.cat_token,
+        use_fused_kernel=args.use_fused_kernel,
     )
     load_dinov2_backbone(ssm.backbone.vit, ensure_dinov2_vits14())
     ssm.to(args.device).eval()

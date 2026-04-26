@@ -167,6 +167,7 @@ class SSM3DNet(nn.Module):
         mamba_state_dim: int = 64,
         alt_start: int = -1,
         cat_token: bool = False,
+        use_fused_kernel: bool = False,
     ) -> None:
         super().__init__()
         self.backbone = SSM3DBackbone(
@@ -176,6 +177,7 @@ class SSM3DNet(nn.Module):
             mamba_state_dim=mamba_state_dim,
             alt_start=alt_start,
             cat_token=cat_token,
+            use_fused_kernel=use_fused_kernel,
         )
         # cat_token=True doubles the main-feature channel dim ([local_x ‖ current_x]).
         feature_channels = self.backbone.embed_dim * (2 if cat_token else 1)
