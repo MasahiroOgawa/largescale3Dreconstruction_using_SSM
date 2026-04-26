@@ -3515,6 +3515,80 @@ side caveat; mobile demo as the deployment proof.
 The CM-FS-24 ckpt at `outputs/runs/depth_ft_cm_fs_24/ckpt_1000.pt`
 is the new project baseline replacing CM24.
 
+### 15.50.1 Step 5a result (reverted) — generic MSE was the wrong loss
+
+CM-FS-12-DPTM (full-swap + kernel + DPT-output match Phase-B) +
+CM-FS-24-DPTM (Phase-C unchanged from CM24 recipe).
+
+The DPT-match supervision used **MSE on (depth, ray, depth_conf,
+ray_conf)** with weights (1.0, 1.0, 0.1). All metrics regressed:
+
+| metric | CM-FS-24 (Step 4) | **CM-FS-24-DPTM (Step 5a)** |
+|---|---|---|
+| depth `\|rel_err\|` ↓ | **0.0462** | 0.0987 (+114 % worse) |
+| F-score@5cm (TSDF) ↑ | **0.260** | 0.167 (−36 %) |
+| pose AUC@30° ↑ | 0.022 | **0.0035** (−84 %) |
+
+Phase-C with `--unfreeze-dpt` likely undid the DPT-match alignment,
+and the MSE objective itself is wrong: DA3's published loss is
+**ℓ1-based with aleatoric confidence weighting and a depth-gradient
+term**, not MSE. § 15.51 corrects this.
+
+Step 5a is **reverted**; CM-FS-24 (Step 4) remains the project
+baseline.
+
+### 15.51 Step 5a-v2 — DPT-output match using DA3 paper's exact loss
+
+User pointed out the methodological gap: Step 5a guessed at a loss
+shape (MSE) instead of using DA3's actual training loss. Reading the
+DA3 paper (`/home/mas/proj/study/mamba3_doc/original_paper/depthAnything3.pdf`,
+§ 3.3, equations 1–3):
+
+```
+L = L_D(D̂, D) + L_M(R̂, M) + L_P(D̂⊙d+t, P) + β·L_C(ĉ, v) + α·L_grad(D̂, D)
+
+L_D(D̂, D ; D_c) = (1/|Ω|) Σ_p∈Ω m_p (D_{c,p} · |D̂_p − D_p| − λ_c · log D_{c,p})
+
+L_grad(D̂, D)    = ‖∇_x D̂ − ∇_x D‖_1 + ‖∇_y D̂ − ∇_y D‖_1
+```
+
+with α = β = 1, all terms ℓ1-based. Key features:
+
+1. **ℓ1**, not ℓ2 (DA3 explicit: "All loss terms are based on the
+   ℓ1 norm").
+2. **Aleatoric confidence weighting**: per-pixel confidence `D_c`
+   multiplies the error and a `−λ_c·log(D_c)` penalty prevents the
+   trivial `D_c = 0` solution.
+3. **Depth-gradient ℓ1**: penalizes mismatched derivatives along x
+   and y → preserves edges, suppresses oversmoothing.
+4. **Reprojection point loss `L_P`** and **camera pose loss `L_C`**
+   are GT-supervised — not applicable to our distillation case
+   (we don't have GT 3D points; we have teacher predictions).
+
+For our distillation against DA3's outputs (teacher's `D̂_tea`
+and `R̂_tea` are the targets, not GT), the equivalent loss is:
+
+```
+L_distill = L_D(D̂_stu, D̂_tea ; D_c_stu)
+          + L_M(R̂_stu, R̂_tea ; R_c_stu)
+          + α · L_grad(D̂_stu, D̂_tea)
+```
+
+Implementation in `src/ssm3d/train/distill.py`:
+- Replaced MSE with the aleatoric-ℓ1 form (eq. 2).
+- Added gradient ℓ1 (eq. 3).
+- New CLI flags: `--lambda-dpt-depth`, `--lambda-dpt-ray`,
+  `--lambda-dpt-grad`, `--lambda-dpt-conf-log`,
+  `--no-aleatoric-dpt`. Defaults match DA3 paper (α=1, β=1,
+  λ_c=1, aleatoric on).
+
+CM-FS-12-DPTM-v2 launched with all weights = 1.0:
+`outputs/runs/distill_cm_fs_12_dptm_v2/`. Results land in § 15.51.1.
+
+If Step 5a-v2 lifts F-score / pose-AUC, we may also try:
+- Phase-C with frozen DPT (don't undo the alignment).
+- Phase-C with the same DA3 loss form on GT (replace SiLog).
+
 #### Step 2 — integrate Mamba-3 SISO kernel
 
 Replace `ssd_forward_chunked` call in

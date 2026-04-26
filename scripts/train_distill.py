@@ -71,6 +71,30 @@ def main() -> None:
              "full-swap training to get the kernel's 30-150x speedup.",
     )
     ap.add_argument(
+        "--lambda-dpt-depth", type=float, default=0.0,
+        help="Step 5a-v2 (PLAN § 15.51): weight on DA3-style aleatoric ℓ1 "
+             "depth loss (DA3 paper § 3.3 eq. 2). Set to 1.0 for full DA3 "
+             "matching, 0 to disable.",
+    )
+    ap.add_argument(
+        "--lambda-dpt-ray", type=float, default=0.0,
+        help="Step 5a-v2: weight on aleatoric ℓ1 ray loss. Critical for pose.",
+    )
+    ap.add_argument(
+        "--lambda-dpt-grad", type=float, default=0.0,
+        help="Step 5a-v2: weight on depth-gradient ℓ1 loss (DA3 eq. 3). "
+             "Preserves edges. DA3 sets α=1.",
+    )
+    ap.add_argument(
+        "--lambda-dpt-conf-log", type=float, default=1.0,
+        help="Step 5a-v2: λ_c in the aleatoric log-confidence penalty.",
+    )
+    ap.add_argument(
+        "--no-aleatoric-dpt", action="store_true",
+        help="Disable confidence weighting; use plain ℓ1 instead of "
+             "aleatoric form.",
+    )
+    ap.add_argument(
         "--chunk-size", type=int, default=None,
         help="CM12: chunked SSD query-axis chunk size (None = full T x T mask). "
              "Needed when distilling at img_size>=504 to fit in 12 GB VRAM.",
@@ -177,6 +201,11 @@ def main() -> None:
         device=args.device,
         layers=layers,
         student_layers=student_layers,
+        lambda_dpt_depth=args.lambda_dpt_depth,
+        lambda_dpt_ray=args.lambda_dpt_ray,
+        lambda_dpt_grad=args.lambda_dpt_grad,
+        lambda_dpt_conf_log=args.lambda_dpt_conf_log,
+        use_aleatoric_dpt=not args.no_aleatoric_dpt,
     )
     data_iter = _build_iter(dataset, seed=args.seed)
     distill(student, teacher, data_iter, cfg, args.out, bridge=None)

@@ -54,6 +54,23 @@ class DistillConfig:
     grad_clip: float = 1.0
     layers: tuple[int, ...] = DISTILL_LAYERS
     student_layers: tuple[int, ...] | None = None
+    # Step 5a-v2 (PLAN § 15.51): DPT-output match using **DA3 paper's exact
+    # loss formulation** (DA3 § 3.3, eq. 2-3). When any λ > 0, both teacher
+    # and student are forwarded through the DA3 DPT head and the student
+    # backbone is trained to make its DPT output match the teacher's:
+    #
+    #   L_D   = (1/|Ω|) Σ m_p (D_c · |D̂_stu - D̂_tea| - λ_c log D_c)
+    #   L_M   = ℓ1 on ray (analogous, can use ray confidence)
+    #   L_grad = ||∇_x D̂_stu - ∇_x D̂_tea||_1 + ||∇_y D̂_stu - ∇_y D̂_tea||_1
+    #
+    # All terms are ℓ1 (DA3 paper: "All loss terms are based on the ℓ1 norm").
+    # The previous Step 5a (MSE-based, no gradient term, no aleatoric
+    # weighting) regressed every metric — see PLAN § 15.50.1.
+    lambda_dpt_depth: float = 0.0
+    lambda_dpt_ray: float = 0.0
+    lambda_dpt_grad: float = 0.0
+    lambda_dpt_conf_log: float = 1.0   # the λ_c in the aleatoric log-penalty
+    use_aleatoric_dpt: bool = True     # confidence-weight the depth/ray L1
     amp_dtype: str = "bf16"
     log_every: int = 50
     ckpt_every: int = 1000
@@ -204,6 +221,12 @@ def distill(
     amp_dtype = _amp_dtype(cfg.amp_dtype)
     patch_start_idx = int(getattr(da3_model.model.backbone, "patch_start_idx", 1))
 
+    # Step 5a-v2: cache the DA3 DPT head and capture teacher outputs via hook.
+    dpt_match_active = (
+        cfg.lambda_dpt_depth > 0 or cfg.lambda_dpt_ray > 0 or cfg.lambda_dpt_grad > 0
+    )
+    da3_dpt = da3_model.model.head if dpt_match_active else None
+
     log = DistillLog()
     for step in range(cfg.steps):
         batch_images = []
@@ -212,8 +235,21 @@ def distill(
             batch_images.append(batch["images"])
         images = torch.stack(batch_images, dim=0).to(device)  # (B, S=1, 3, H, W)
 
+        teacher_dpt_out: dict[str, Tensor] = {}
         with torch.no_grad():
             teacher_feats = _teacher_features(da3_model, images, cfg.layers)
+            if dpt_match_active:
+                # Capture teacher's raw DPT output (depth + ray + confs) via
+                # forward hook on the head, then run DA3's full forward once.
+                def _hook(_m, _inp, output):
+                    for k, v in output.items():
+                        if torch.is_tensor(v):
+                            teacher_dpt_out[k] = v.detach()
+                handle = da3_dpt.register_forward_hook(_hook)
+                try:
+                    _ = da3_model.model(images)
+                finally:
+                    handle.remove()
 
         with torch.autocast(
             device_type=device.type, dtype=amp_dtype, enabled=use_amp
@@ -234,6 +270,81 @@ def distill(
             loss_l2 = loss_l2 / len(cfg.layers)
             loss_cos = loss_cos / len(cfg.layers)
 
+            loss_dpt = torch.zeros((), device=device)
+            if dpt_match_active:
+                # Student's aux features at supervised layers are 384-dim
+                # post-norm, shape (B*S, T, C). DA3's DPT head expects
+                # (B, S, T, 2*embed_dim) input — un-flatten the B*S axis
+                # and bridge 384→768 via cat[f, f] (same trick as eval
+                # scripts when no learned bridge is loaded).
+                B_in, S_in = images.shape[0], images.shape[1]
+                bridged = [
+                    torch.cat([f, f], dim=-1).reshape(B_in, S_in, *f.shape[1:-1], 2 * f.shape[-1])
+                    for f in student_feats
+                ]
+                feats_for_dpt = [(f,) for f in bridged]
+                H_img, W_img = images.shape[-2], images.shape[-1]
+                # DA3's own wrapper calls the head with patch_start_idx=0
+                # because aux features already have cls + register tokens
+                # stripped by `_get_intermediate_layers_not_chunked`. Match
+                # that convention.
+                student_dpt = da3_dpt(
+                    feats_for_dpt, H_img, W_img, patch_start_idx=0,
+                )
+
+                # DA3 § 3.3 eq. 2: aleatoric ℓ1 with confidence weighting.
+                #   L_D = mean_p [ D_c · |D̂_stu - D̂_tea| - λ_c · log(D_c) ]
+                # When use_aleatoric_dpt=False, falls back to plain ℓ1.
+                eps = 1e-6
+                lam_c = cfg.lambda_dpt_conf_log
+
+                def _l1_aleatoric(s: Tensor, t: Tensor, conf: Tensor | None) -> Tensor:
+                    err = (s.float() - t.float()).abs()
+                    if conf is None or not cfg.use_aleatoric_dpt:
+                        return err.mean()
+                    c = conf.float().clamp_min(eps)
+                    return (c * err - lam_c * torch.log(c)).mean()
+
+                # ℓ1 on depth weighted by student's depth_conf.
+                s_depth = student_dpt["depth"]
+                t_depth = teacher_dpt_out["depth"]
+                s_dconf = student_dpt.get("depth_conf")
+                loss_d = (
+                    _l1_aleatoric(s_depth, t_depth, s_dconf)
+                    if cfg.lambda_dpt_depth > 0 and s_depth.shape == t_depth.shape
+                    else torch.zeros((), device=device)
+                )
+
+                # ℓ1 on ray weighted by student's ray_conf.
+                s_ray = student_dpt["ray"]
+                t_ray = teacher_dpt_out["ray"]
+                s_rconf = student_dpt.get("ray_conf")
+                loss_m = (
+                    _l1_aleatoric(s_ray, t_ray, s_rconf)
+                    if cfg.lambda_dpt_ray > 0 and s_ray.shape == t_ray.shape
+                    else torch.zeros((), device=device)
+                )
+
+                # DA3 § 3.3 eq. 3: gradient ℓ1 on depth.
+                #   L_grad = ||∇_x D̂_stu - ∇_x D̂_tea||_1 + ||∇_y ...||_1
+                if cfg.lambda_dpt_grad > 0 and s_depth.shape == t_depth.shape:
+                    s_d = s_depth.float()
+                    t_d = t_depth.float()
+                    sx = s_d[..., :, 1:] - s_d[..., :, :-1]
+                    tx = t_d[..., :, 1:] - t_d[..., :, :-1]
+                    sy = s_d[..., 1:, :] - s_d[..., :-1, :]
+                    ty = t_d[..., 1:, :] - t_d[..., :-1, :]
+                    loss_g = (sx - tx).abs().mean() + (sy - ty).abs().mean()
+                else:
+                    loss_g = torch.zeros((), device=device)
+
+                loss_dpt = (
+                    cfg.lambda_dpt_depth * loss_d
+                    + cfg.lambda_dpt_ray * loss_m
+                    + cfg.lambda_dpt_grad * loss_g
+                )
+                loss = loss + loss_dpt
+
         opt.zero_grad(set_to_none=True)
         loss.backward()
         trainables = [
@@ -249,10 +360,12 @@ def distill(
             log.loss.append(float(loss.item()))
             log.loss_l2.append(float(loss_l2.item()))
             log.loss_cos.append(float(loss_cos.item()))
+            dpt_str = f"  dpt={float(loss_dpt.item()):.4f}" if dpt_match_active else ""
             print(
                 f"[distill] step {step:5d}/{cfg.steps}  "
                 f"loss={loss.item():.4f}  l2={loss_l2.item():.4f}  "
-                f"cos={loss_cos.item():.4f}  lr={opt.param_groups[0]['lr']:.2e}"
+                f"cos={loss_cos.item():.4f}{dpt_str}  "
+                f"lr={opt.param_groups[0]['lr']:.2e}"
             )
 
         if (step + 1) % cfg.ckpt_every == 0 or step == cfg.steps - 1:
