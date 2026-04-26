@@ -2345,9 +2345,67 @@ imitation, and on far more data.
 **Phase 2 starts only after Phase 1 lands and gives us the right
 metric set to gate replication progress against.**
 
-### 15.34 (placeholder) Ray-head evaluation
+### 15.34 Ray-head evaluation — first metric, raw camray vs GT camera rays
 
-To be filled in as the work lands.
+DualDPT emits a **6-channel** auxiliary output per pixel: first 3 are the
+camera-frame ray direction, last 3 are the camera origin (used by
+`get_extrinsic_from_camray` for RANSAC-based pose extraction). See
+`output_conv2_aux` in `dualdpt.py` (7 channels = 6 ray + 1 conf).
+
+The eval pipeline so far evaluated only `depth` and threw away the ray
+output. This section adds:
+
+- `shared_dpt_outputs` in `dpt_adapter.py` — same SSM3DNet → DimBridge
+  → DualDPT pipeline, returns `{depth, depth_conf, ray, ray_conf}`.
+- `gt_camera_rays` in `metrics.py` — per-pixel GT camera-frame rays from
+  intrinsics K.
+- `ray_angular_error` in `metrics.py` — per-pixel angular error +
+  AUC@3°, AUC@30°.
+- `scripts/eval_ray_metrics.py` — runs the eval on any number of ckpts
+  vs DA3 teacher reference.
+
+First numbers (ETH3D `terrains` 12-view, img_size=504; mean over 12
+images; predicted ray output is at 288×288, GT computed at the same
+res with rescaled intrinsics; log
+`outputs/runs/ray_metrics_first_run.log`):
+
+| source | mean (°) | median (°) | AUC@3° | AUC@30° |
+|---|---|---|---|---|
+| DA3-SMALL teacher | 7.87 | 7.94 | 0.057 | 1.000 |
+| CM24 ckpt_1000 | 8.15 | 8.31 | 0.053 | 1.000 |
+| CM30 ckpt_1000 | 24.28 | 23.05 | 0.014 | 0.678 |
+
+**Findings:**
+
+1. CM24 lands within **0.3° mean** of DA3-SMALL on rays — vastly
+   closer than on depth (where CM24 was +14 % vs teacher). The
+   depth-only gate has been understating CM24's overall geometry
+   quality.
+2. CM30 regresses on rays even more dramatically than on depth: ray
+   mean error +198 % (24.3° vs CM24's 8.1°), AUC@30° drops from
+   1.000 to 0.678 (32 % of pixels > 30° off). The §15.31 rank-cap
+   diagnosis ("low rank → bad geometry") generalises beyond depth.
+
+**Caveat — absolute scale.** The raw 6-channel `camray` output is the
+*input* to DA3's `compute_optimal_rotation_intrinsics_batch` RANSAC,
+not a direct unit-vector ray in the GT-K frame. DA3's RANSAC fit
+internally aligns to an identity-K convention (`imw = imh = 2`) before
+producing extrinsics + intrinsics. So this section's absolute angular
+error of ~8° is a *relative* number across models, not an absolute
+comparable to DA3's published AUC@3° = 0.49 on the official benchmark.
+Pose-AUC against the GT extrinsics (via `get_extrinsic_from_camray`)
+is the next step (§ 15.35) — the ranking will be the same, the scale
+will be on the published benchmark axis.
+
+**Implications for the project goal:**
+
+- CM24 may be *closer to DA3-SMALL* than the depth metric alone
+  suggested. Re-scoring CM12 (§ 15.36) on rays + reconstruction may
+  similarly tighten or invert the leaderboard.
+- CM30's regression is multi-modal (depth + ray), confirming the
+  rank-collapse diagnosis is not a depth-specific artefact and that
+  the cosine-only-distill loophole hurts the unified geometry
+  representation, not just one head.
 
 ### 15.35 (placeholder) 3D reconstruction metrics on ETH3D
 

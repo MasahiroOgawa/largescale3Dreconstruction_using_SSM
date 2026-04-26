@@ -58,6 +58,29 @@ def shared_dpt_depth(
     Returns:
         (N, H, W) depth tensor on CPU. NaN-free if the pipeline is healthy.
     """
+    return shared_dpt_outputs(ssm_net, dualdpt, images, layers, bridge)["depth"]
+
+
+def shared_dpt_outputs(
+    ssm_net: SSM3DNet,
+    dualdpt: torch.nn.Module,
+    images: Tensor,
+    layers: Sequence[int] = SHARED_DPT_LAYERS,
+    bridge: Optional[DimBridgeStack] = None,
+) -> dict[str, Tensor]:
+    """Run the full SSM-3D + DualDPT pipeline; return depth + ray + confidences.
+
+    DualDPT emits a dict keyed by head names ('depth', 'ray' for DA3-SMALL).
+    `output_conv2` produces 2 channels → depth (1) + depth_conf (1).
+    `output_conv2_aux` produces 7 channels → ray (6: 3 direction + 3 origin) +
+    ray_conf (1). See `dualdpt.py:230-264`.
+
+    Returns dict with CPU float tensors:
+        depth:      (N, H, W)
+        depth_conf: (N, H, W)
+        ray:        (N, H, W, 6)
+        ray_conf:   (N, H, W)
+    """
     if len(layers) != 4:
         raise ValueError(f"DualDPT expects exactly 4 layers, got {len(layers)}")
     with torch.inference_mode():
@@ -68,12 +91,27 @@ def shared_dpt_depth(
                 f"backbone returned {len(out.aux_features)} aux layers; expected 4"
             )
         bridged = _bridge_feats(out.aux_features, bridge)
-        feats_for_dpt = [(f,) for f in bridged]  # DualDPT does feats[i][0]
+        feats_for_dpt = [(f,) for f in bridged]
         H_img, W_img = images.shape[-2], images.shape[-1]
         result = dualdpt(feats_for_dpt, H_img, W_img, patch_start_idx=0)
-        depth_main_name = getattr(dualdpt, "head_main", "depth")
-        depth = result[depth_main_name]
-        if depth.dim() == 5:
-            depth = depth.squeeze(2)
-        depth = depth[0]
-        return depth.detach().cpu().float()
+        head_main = getattr(dualdpt, "head_main", "depth")
+        head_aux = getattr(dualdpt, "head_aux", "ray")
+
+        def _drop_view_axis(t: Tensor) -> Tensor:
+            return t.squeeze(2) if t.dim() == 5 else t
+
+        out_dict: dict[str, Tensor] = {}
+
+        def _maybe(key: str, drop_view: bool):
+            if key not in result:
+                return None
+            t = result[key]
+            if drop_view:
+                t = _drop_view_axis(t)
+            return t[0].detach().cpu().float()
+
+        out_dict["depth"] = _maybe(head_main, True)
+        out_dict["depth_conf"] = _maybe(f"{head_main}_conf", True)
+        out_dict["ray"] = _maybe(head_aux, False)
+        out_dict["ray_conf"] = _maybe(f"{head_aux}_conf", False)
+        return out_dict

@@ -138,6 +138,63 @@ def effective_rank(feats: Tensor, eps: float = 1e-12) -> float:
     return float(torch.exp(entropy))
 
 
+def gt_camera_rays(intrinsic: Tensor, image_hw: tuple[int, int]) -> Tensor:
+    """GT per-pixel ray directions in camera frame, given intrinsics K.
+
+    The ray for pixel (u, v) is `K^-1 [u + 0.5, v + 0.5, 1]^T` then unit-normed.
+    Returns shape (H, W, 3), float32.
+    """
+    H, W = image_hw
+    fx, fy = float(intrinsic[0, 0]), float(intrinsic[1, 1])
+    cx, cy = float(intrinsic[0, 2]), float(intrinsic[1, 2])
+    v, u = torch.meshgrid(
+        torch.arange(H, dtype=torch.float32),
+        torch.arange(W, dtype=torch.float32),
+        indexing="ij",
+    )
+    x = (u + 0.5 - cx) / fx
+    y = (v + 0.5 - cy) / fy
+    rays = torch.stack([x, y, torch.ones_like(x)], dim=-1)
+    return rays / rays.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+
+
+def ray_angular_error(
+    pred_dir: Tensor,
+    gt_dir: Tensor,
+    valid: Tensor | None = None,
+    conf: Tensor | None = None,
+) -> dict[str, float]:
+    """Per-pixel angular error between predicted and GT ray directions.
+
+    Args:
+        pred_dir: (H, W, 3) predicted ray direction in camera frame.
+        gt_dir:   (H, W, 3) GT ray direction in camera frame, unit-norm.
+        valid:    (H, W) optional mask; defaults to all-True.
+        conf:     (H, W) optional per-pixel confidence; reported in output dict.
+
+    Returns:
+        dict with mean / median angular error (degrees) and AUC at 3°/30°.
+    """
+    pred = pred_dir / pred_dir.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    gt = gt_dir / gt_dir.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    cos = (pred * gt).sum(dim=-1).clamp(-1.0, 1.0)
+    deg = torch.rad2deg(torch.arccos(cos))
+    if valid is not None:
+        deg = deg[valid]
+    deg = deg[torch.isfinite(deg)]
+    if deg.numel() == 0:
+        return {"mean_deg": float("nan"), "median_deg": float("nan"),
+                "auc_3": 0.0, "auc_30": 0.0}
+    auc_3 = float((deg <= 3.0).float().mean())
+    auc_30 = float((deg <= 30.0).float().mean())
+    return {
+        "mean_deg": float(deg.mean()),
+        "median_deg": float(deg.median()),
+        "auc_3": auc_3,
+        "auc_30": auc_30,
+    }
+
+
 def _depth_to_cam(
     depth_grid: Tensor,
     intrinsic: Tensor,

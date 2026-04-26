@@ -10,6 +10,8 @@ from .metrics import (
     feat_cos_mean,
     effective_rank,
     cross_view_nn_agreement,
+    gt_camera_rays,
+    ray_angular_error,
 )
 
 __all__ = [
@@ -22,4 +24,6 @@ __all__ = [
     "feat_cos_mean",
     "effective_rank",
     "cross_view_nn_agreement",
+    "gt_camera_rays",
+    "ray_angular_error",
 ]
