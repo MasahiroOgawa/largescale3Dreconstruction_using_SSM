@@ -3040,6 +3040,190 @@ We need a fresh CM12-equivalent on the full-swap backbone as the new
 baseline before iterating on quality. PLAN § 15.44 (next) will plan
 that re-baseline.
 
-### 15.44 (placeholder) Step 1 — efficiency benchmark on full-swap architecture
+### 15.44 Consolidated Step 0–5 plan (supersedes § 15.40 A–E)
 
-To be filled in as the work lands.
+After § 15.43's architectural correction, the project plan is:
+
+| Step | Action | Status |
+|---|---|---|
+| **0** | Full architectural swap — `alt_start=4`, `cat_token=True` so backbone mirrors DA3-SMALL's per-view + cross-view alternation. | ✅ done § 15.43 |
+| **1** | Efficiency benchmark on the full-swap architecture vs DA3-SMALL (the apples-to-apples comparison we should have done from the start). Backbone-only and full-pipeline. Naive PyTorch SSD vs DA3 self-attention. | next |
+| **2** | Integrate Mamba-3 SISO Triton kernel (`mamba3_siso_combined`) into our `Mamba3SelfAttention.forward`. Map our `(Bp, Cp, Vp, delta, A_log, lam)` to the kernel's `(K, Q, V, ADT, DT, Trap, Q_bias, K_bias, Angles, ...)`. Verify numerical equivalence against PyTorch path on existing unit tests. Re-run Step 1 benchmark. Expected: SSD wall-clock matches or beats attention. | |
+| **3** | Cross-view path runs the same Mamba-3 self-attention block, so Step 2's kernel covers it automatically. Verify by benchmarking cross-view layers (5 / 7 / 9 / 11) at T = 15 K and confirming the kernel handles long sequences. No separate cross-attention kernel needed (DA3's "cross-view" = self-attention on concatenated views, see § 15.43). | |
+| **4** | Re-baseline: CM-FS-12 (full-swap CM12-equivalent). Phase-B distillation against DA3-SMALL features at layers 5/7/9/11, full-swap backbone, `state_dim=64`, 20 000 steps. Then CM-FS-24 = Phase-C with WSD scheduler + `--unfreeze-dpt` + `--augment` (CM24 recipe lifted onto the new backbone). Score on depth + F-score@5cm + pose AUC@30°. Expected: pose AUC@30° rises dramatically (from 0.04 toward teacher's 0.76) because cross-view layers are now present. | |
+| **5** | Quality lift if Step 4 doesn't already match teacher: revisit Phase-B with DPT-output match supervision (§ 15.35). Add HiRoom + 7Scenes datasets (§ 15.39) for breadth. Mobile export (ONNX → CoreML / TFLite, on-device latency). Paper draft. | |
+
+#### Step 1 — efficiency benchmark on full-swap architecture
+
+Re-run `scripts/bench_efficiency.py` with two new comparison axes
+added:
+
+- **partial-swap SSD** (current: `alt_start=-1`, all per-view) — the
+  legacy CM12 → CM30 backbone.
+- **full-swap SSD** (new: `alt_start=4, cat_token=True`) — the proper
+  drop-in for DA3-SMALL.
+- **DA3-SMALL transformer** (with `alt_start=4, cat_token=True`,
+  standard self-attention) — the apples-to-apples baseline.
+
+For each at `(B=1, S=12)` multi-view input: peak memory, latency,
+manual FLOPs at sizes (224, 392, 504, 1022, 1568, 2240).
+
+The full-swap SSD's cross-view layers will scan T = 15 K tokens —
+this is exactly the regime where the asymptotic O(T) advantage of
+SSD over O(T²) attention should manifest, even with naive PyTorch
+SSD (because the FLOPs gap at T = 15 K is large, ~70× lower for SSD
+on those layers). If naive SSD is still wall-clock slower than
+FlashAttention here, the kernel work in Step 2 becomes the load-
+bearing piece.
+
+Acceptance for Step 1: produce the table; no decision criterion —
+this is data collection that informs Steps 2-5.
+
+#### Step 1 results (`outputs/runs/bench_step1_full_swap.log`)
+
+Multi-view input `(B=1, S=12)`, all four backbones at `state_dim=64,
+chunk_size=128, depth=12, patch=14`. All variants are 21–24 M params.
+
+| input | tokens/view | SSD partial | **SSD full-swap** | Attn partial | **Attn full-swap (DA3)** |
+|---|---|---|---|---|---|
+| 224² | 256 | 41 ms / 226 MiB | **139 / 231** | 17 / 149 | **26 / 153** |
+| 392² | 784 | 314 ms / 506 | **1579 / 521** | 66 / 269 | **140 / 284** |
+| 504² | 1296 | 1095 ms / 774 | **6316 / 796** | 135 / 381 | **340 / 404** |
+| 1022² | 5329 | 21464 ms / 2892 | **110715 / 2985** | 1271 / 1275 | **4674 / 1370** |
+
+Apples-to-apples (full-swap SSD vs full-swap DA3-native):
+
+| input | tokens | mem ratio | lat ratio | FLOPs ratio |
+|---|---|---|---|---|
+| 224² | 256 | 1.50× | **5.31×** | 1.01× |
+| 392² | 784 | 1.84× | **11.27×** | 0.89× |
+| 504² | 1296 | 1.97× | **18.60×** | 0.80× |
+| 1022² | 5329 | 2.18× | **23.68×** | **0.45×** |
+
+**Findings:**
+
+1. The asymptotic FLOPs advantage finally appears at 1022² (SSD does
+   7× fewer FLOPs than DA3 native attention). At this size the
+   cross-view layers have T·views = 5 329 × 12 ≈ 64 K tokens for
+   self-attention. Attention is genuinely O(T²) work; SSD is O(T·N).
+2. Wall-clock goes the *opposite* direction at every size: SSD
+   full-swap is 5–24× slower than DA3 native because PyTorch's
+   `scaled_dot_product_attention` uses FlashAttention-class fused
+   kernels, while our SSD is naive PyTorch (chunked masks built
+   as real tensors, no kernel).
+3. Memory follows the same naive-implementation story: SSD uses
+   1.5–2.2× more peak memory at every size despite *theoretical*
+   lower memory.
+4. Full-swap exposes the gap more harshly than partial-swap because
+   cross-view layers run on long sequences (T = 15 K at 504²).
+   Partial-swap (per-view only) operates only at T = 1296 — the
+   regime where naive SSD vs FlashAttention is closest. Full-swap
+   is where the kernel matters.
+
+**Step 2 is now load-bearing.** The 7× FLOPs advantage at 1022² has
+to be unlocked by the Mamba-3 SISO Triton kernel
+(`mamba3_siso_combined`); without it, SSD has no story on consumer
+GPU.
+
+Memory side: even with the kernel, SSD's recurrent-state memory
+(O(T·N) = T tokens × 64 state-dim × 6 heads × 4 bytes/elem ≈ 1.5 KB
+per token) should easily beat attention's per-layer activation
+peaks at large T. The naive PyTorch impl bloats this with chunked-
+mask materialisation; the kernel keeps it tight.
+
+Step 1 baseline established. Step 2 next.
+
+#### Step 2 — integrate Mamba-3 SISO kernel
+
+Replace `ssd_forward_chunked` call in
+`src/ssm3d/mamba3/self_attention.py::Mamba3SelfAttention._one_direction`
+with `mamba3_siso_combined` from
+`mamba_ssm.ops.triton.mamba3.mamba3_siso_combined` (already imported
+via the submodule, § 15.42).
+
+Parameter mapping (sketched; needs verification):
+
+| our name | shape | kernel arg | shape (kernel expects) |
+|---|---|---|---|
+| `Cp` | (B, H, T, N) | `Q` | (B, T, H, N) — transpose |
+| `Bp` | (B, H, T, N) | `K` | (B, T, H, N) |
+| `Vp` | (B, H, T, head_dim) | `V` | (B, T, H, head_dim) |
+| `delta * A_log` | (B, H, T) | `ADT` | (B, T, H) |
+| `delta` | (B, H, T) | `DT` | (B, T, H) |
+| `lam` | (B, H, T) | `Trap` | (B, T, H) |
+| (RoPE) | | `Angles` | (B, T, H, ...) |
+
+Behind a `--use-fused-kernel` runtime flag (default off until parity
+is verified via `tests/unit/test_mamba3_*`).
+
+Acceptance: numerical equivalence test passes (max rel-error < 1e-4
+fp32, < 1e-2 fp16). Re-run Step 1 benchmark.
+
+#### Step 3 — verify cross-view kernel coverage
+
+Cross-view layers feed `(B=1, S*N=15500, C=384)` into the same
+self-attention block. The Mamba-3 SISO kernel handles arbitrary T
+via its chunked scan, so this should "just work" once Step 2 lands.
+Verification:
+
+- Forward pass with `alt_start=4, cat_token=True` at full multi-view
+  resolution (504² × 12 views) using the kernel.
+- Numerical equivalence vs PyTorch path at this T.
+- Memory + latency vs the partial-swap baseline at the same pipeline
+  point.
+
+Acceptance: cross-view forward runs without OOM at (B=1, S=12,
+img_size=504); the 4 cross-view layers (5/7/9/11) take measurable
+but not pathological time (target: < 10× the per-view layer cost
+post-kernel).
+
+#### Step 4 — CM-FS-12 + CM-FS-24 (full-swap re-baseline)
+
+**CM-FS-12 (Phase-B):** Replicates CM12's distillation recipe on the
+full-swap backbone. Same hyperparameters (state_dim=64, img_size=504,
+patch_size=14, chunk_size=128, batch=1, 20 000 steps), same
+`--teacher-layers 5 7 9 11`, same DA3-SMALL teacher. The only
+architectural difference: backbone now has cross-view alternation +
+cat_token output. So the supervision is now genuinely shape-matched
+(student layer N output at cross-view positions has the same
+"conditions on all views" structure as teacher's).
+
+**CM-FS-24 (Phase-C):** CM24 recipe verbatim (`--init
+distill_cm_fs_12/ckpt_20000.pt`, WSD scheduler, warmup 100 / decay
+200, 1000 steps, `--unfreeze-dpt`, `--augment`, lr-attn 1e-5 /
+lr-bridge 3e-5 / lr-dpt 1e-5). Note: with `cat_token=True` the
+backbone outputs 768-dim natively, so DimBridge becomes identity-
+like (or removable). Decision deferred until we measure whether the
+bridge still helps.
+
+Acceptance — score on all four metrics:
+
+| metric | CM24 (partial swap) | CM-FS-24 (full swap) target |
+|---|---|---|
+| `\|rel_err\|` ↓ | 0.0513 | ≤ 0.0521 (no regression) |
+| F-score@5cm (TSDF) ↑ | 0.295 | ≥ 0.350 (+19%) |
+| F-score@5cm (back-proj) ↑ | 0.527 | ≥ 0.620 |
+| **pose AUC@30°** ↑ | **0.0379** | **≥ 0.30** (the big lift) |
+
+The pose-AUC lift is the load-bearing claim: it confirms that the
+missing cross-view structure was the bottleneck, not Mamba-3
+specifics. If pose AUC stays low after the architectural fix, the
+diagnosis was wrong and we revisit.
+
+#### Step 5 — finishing the paper
+
+Triggered after Step 4 lands.
+
+- If CM-FS-24 hits the gate: optimise quality further (DPT-output
+  match per § 15.35, more datasets per § 15.39), mobile export,
+  paper draft. Title-level claim becomes: *"Mamba-3 SSD attention as
+  drop-in replacement for transformer attention in DA3, achieving
+  X% of DA3-SMALL pose / depth / recon quality at Y× lower mobile
+  inference cost."*
+- If CM-FS-24 misses the gate: diagnose what the new architecture
+  isn't recovering. The full-swap architecture is the *minimum*
+  needed for a faithful comparison, but quality may still need
+  loss-side or compute-budget improvements.
+
+Mobile-export specifics (CoreML, TFLite, ONNX-Runtime) are documented
+when Step 5 begins.
