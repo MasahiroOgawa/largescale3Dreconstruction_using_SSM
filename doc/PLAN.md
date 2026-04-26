@@ -2407,9 +2407,105 @@ will be on the published benchmark axis.
   the cosine-only-distill loophole hurts the unified geometry
   representation, not just one head.
 
-### 15.35 (placeholder) 3D reconstruction metrics on ETH3D
+### 15.35 Pose-AUC reveals the rays are catastrophically broken at the backbone
 
-To be filled in as the work lands.
+Following § 15.34's caveat that raw camray channels are not unit-vector
+rays, this section evaluates the **proper** DA3 pose metric: pipe
+predicted camrays through `get_extrinsic_from_camray` to obtain pred
+SE(3), then call DA3's own `compute_pose` (cherry-picked from
+`third_party/depth-anything-3/.../bench/utils.py`) for AUC@3/5/15/30 on
+the same axis DA3 publishes.
+
+`open3d` was added as a dep (`uv add open3d`) so DA3's `bench.utils`
+imports cleanly — needed here, and again for § 15.36 reconstruction.
+
+#### First numbers + the surprise
+
+| source | AUC@3 | AUC@5 | AUC@15 | AUC@30 |
+|---|---|---|---|---|
+| DA3-SMALL teacher (DA3 backbone + DA3 DPT) | 0.0152 | 0.1091 | 0.5465 | **0.7616** |
+| CM24 ckpt_1000 (tuned DPT) | 0.0000 | 0.0000 | 0.0030 | **0.0399** |
+| CM30 ckpt_1000 (tuned DPT) | 0.0000 | 0.0000 | 0.0000 | **0.0121** |
+
+Logs: `outputs/runs/pose_auc_first_run.log`,
+`outputs/runs/pose_auc_dpt_ablation.log`.
+
+DA3-SMALL teacher hits AUC@30 = 0.76 — geometric, sane. CM24 lands at
+0.04 — **19× worse**. § 15.34's per-pixel ray metric showed CM24
+within 0.3° of teacher; pose-AUC reveals that proximity was
+illusory.
+
+#### DPT-side ablation rules out `--unfreeze-dpt`
+
+Initial hypothesis: Phase-C's `--unfreeze-dpt` trains DPT on
+depth-only loss → no ray supervision → tuned DPT drifts away from
+producing valid rays. Tested by feeding CM24's backbone through the
+*original, untuned* DA3-SMALL DPT.
+
+| source | DPT used | AUC@30 |
+|---|---|---|
+| CM12 (Phase-B only, no Phase-C) | original DA3-SMALL | 0.0035 |
+| CM24 backbone | original DA3-SMALL | 0.0354 |
+| CM24 backbone | tuned (CM24 Phase-C) | 0.0379 |
+| CM30 backbone | tuned (CM30 Phase-C) | 0.0025 |
+
+Tuned vs original DPT on CM24's backbone are within 7 % (0.038 vs
+0.035). `--unfreeze-dpt` is **not** the cause. Phase-C actually
+*improves* pose AUC ~10× over Phase-B-only (CM12 → CM24,
+0.0035 → 0.038), opposite the hypothesised direction.
+
+The lid is at the **backbone level.** Our Mamba-3 distillation
+preserves depth-relevant feature directions but does not preserve the
+specific channel layout DA3-SMALL's DPT reads to predict rays.
+Aggregate cosine alignment is high (Phase-B loss settled at ~0.026 in
+CM12), but cosine is per-feature scale-invariant and L2 is
+C-normalised — neither preserves the channel-by-channel
+correspondence the ray head requires.
+
+#### Rethinking the leaderboard
+
+The accumulated CM ladder has ranked recipes on a *single thin slice*
+of geometry (depth on one ETH3D scene). Re-scored against pose AUC:
+
+| CM | depth \|rel_err\| | pose AUC@30 | depth-only verdict | pose-aware verdict |
+|---|---|---|---|---|
+| DA3-SMALL teacher | ~0.045 | 0.762 | reference | reference |
+| CM12 | 0.0676 | 0.0035 | baseline | catastrophic |
+| CM24 (kept) | 0.0513 | 0.0379 | best so far | catastrophic |
+| CM30 (reverted) | 0.0943 | 0.0121 | regression | catastrophic |
+
+Every "kept" recipe is catastrophic on pose. The depth-only gate has
+been hiding this since CM1, because feature distillation against DA3's
+*last-layer* features was always going to be a depth-friendly /
+ray-hostile compression. The user's critique (§ 15.33) — "you have to
+evaluate on all the measures including ray, 3D point cloud" — was
+exactly right and the magnitude is bigger than depth metrics
+suggested.
+
+#### Implications for the project goal
+
+Outperforming DA3-SMALL with Mamba-3 attention is not achievable by
+extending the current depth-distillation ladder. The fixes:
+
+- **Add ray supervision to Phase-B.** The distillation loss should
+  include a per-channel preservation term (or dedicated supervision
+  on the *output of the ray head* rather than the backbone features),
+  so DA3-SMALL's channel layout transfers cleanly. Cheapest test:
+  add a "DPT output match" head to Phase-B that computes ray-head
+  loss against DA3's DPT outputs (depth + ray simultaneously).
+- **Or replicate DA3's full training procedure (Phase 2,
+  § 15.33 / § 15.39+).** Train Mamba-3 from scratch with DA3's joint
+  depth + ray supervision on DA3's full dataset stack. Multi-week
+  effort.
+- **Or relax the "match DA3 features" framing entirely.** Train a
+  geometry head from scratch on top of Mamba-3 features supervised
+  by depth + ray GT directly (skip distillation). This decouples
+  the student's representation from DA3's.
+
+Recommendation: pause new CMs of the existing distill-then-fine-tune
+shape; first try the cheapest fix — adding DPT-output-match
+supervision to Phase-B — and re-evaluate on the broader metric set
+before committing to the bigger pivots.
 
 ### 15.36 (placeholder) Re-score CM12 / CM24 / CM30 on broadened metrics
 

@@ -1,10 +1,15 @@
-"""Per-pixel ray angular error for SSM-3D ckpts vs DA3 teacher.
+"""Ray + pose evaluation for SSM-3D ckpts vs DA3 teacher.
 
-PLAN § 15.34 (eval-expansion task 1). DA3's DualDPT auxiliary head emits a
-per-pixel 6-channel "camray": first 3 channels are the camera-frame ray
-direction, last 3 are the camera origin (for downstream pose extraction).
-This script evaluates the first-3 against GT camera rays derived from
-ETH3D intrinsics.
+PLAN § 15.34 / § 15.35. Two modes:
+
+- `--mode ray`: per-pixel angular error of the raw camray direction
+  channels vs GT camera rays. Diagnostic only — absolute scale not
+  comparable to DA3's published AUC because the raw channels feed
+  RANSAC-based pose extraction.
+- `--mode pose` (default): pipe predicted camrays through
+  `get_extrinsic_from_camray` to obtain pred SE(3), then call DA3's
+  own `compute_pose(pred, gt)` for AUC@3/5/15/30 — the metric DA3
+  publishes on the official benchmark.
 
 Example:
     uv run python scripts/eval_ray_metrics.py \\
@@ -96,6 +101,45 @@ def teacher_ray_metrics(da3, images, intrinsics_dict, image_names, img_size):
     )
 
 
+@torch.inference_mode()
+def teacher_camray(da3, images):
+    """Capture DA3 teacher's raw 6-channel camray + conf via forward hook."""
+    dpt = get_dualdpt(da3)
+    head_aux = getattr(dpt, "head_aux", "ray")
+    captured: dict = {}
+
+    def _hook(_m, _inp, output):
+        captured["ray"] = output[head_aux].detach()
+        captured["ray_conf"] = output[f"{head_aux}_conf"].detach()
+
+    handle = dpt.register_forward_hook(_hook)
+    try:
+        _ = da3.model(images.unsqueeze(0))
+    finally:
+        handle.remove()
+    return captured["ray"], captured["ray_conf"]   # (B, S, h, w, 6) and (B, S, h, w)
+
+
+def gt_se3_w2c(extrinsics_dict, image_names) -> torch.Tensor:
+    import numpy as np
+    arr = np.stack([extrinsics_dict[n] for n in image_names])  # (N, 4, 4)
+    return torch.from_numpy(arr).float()
+
+
+@torch.inference_mode()
+def pose_auc(pred_camray, pred_conf, gt_se3) -> dict[str, float]:
+    """Run DA3's pose-AUC pipeline. pred_camray: (B, S, h, w, 6); gt_se3: (S, 4, 4)."""
+    from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
+    from depth_anything_3.bench.utils import compute_pose
+
+    pred_se3, _f, _pp = get_extrinsic_from_camray(
+        pred_camray, pred_conf, pred_camray.shape[-3], pred_camray.shape[-2],
+    )
+    pred_se3 = pred_se3[0].cpu().float()           # (S, 4, 4)
+    metrics = compute_pose(pred_se3, gt_se3)
+    return {k: float(metrics[k]) for k in ("auc03", "auc05", "auc15", "auc30")}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpts", type=Path, nargs="*", default=[])
@@ -106,6 +150,7 @@ def main() -> None:
     ap.add_argument("--patch-size", type=int, default=14)
     ap.add_argument("--chunk-size", type=int, default=128)
     ap.add_argument("--device", type=str, default="cuda")
+    ap.add_argument("--mode", choices=["ray", "pose", "both"], default="pose")
     args = ap.parse_args()
 
     scene_dir = download_eth3d_terrains(args.data_root, scene="terrains", download_depth=False)
@@ -113,17 +158,29 @@ def main() -> None:
         scene_dir, max_images=args.max_images, image_size=args.img_size, load_gt_depth=False
     )
     images = sample.images.to(args.device)
-    cams = load_eth3d_cams(scene_dir, image_size=args.img_size, image_names=[p.name for p in sample.image_paths])
+    image_names = [p.name for p in sample.image_paths]
+    cams = load_eth3d_cams(scene_dir, image_size=args.img_size, image_names=image_names)
+    gt_se3 = gt_se3_w2c(cams.extrinsics, image_names)
 
     da3 = load_da3(DEFAULT_HF_MODEL, device=args.device)
     shared_dpt_base = get_dualdpt(da3)
 
-    print(f"\n{'source':<48} {'mean_deg':>10} {'median':>10} {'auc_3°':>9} {'auc_30°':>9}")
-    print("-" * 90)
+    if args.mode in ("ray", "both"):
+        print(f"\n=== Per-pixel ray angular error (camera-frame, raw channels) ===")
+        print(f"{'source':<48} {'mean_deg':>10} {'median':>10} {'auc_3°':>9} {'auc_30°':>9}")
+        print("-" * 90)
+        teacher_m = teacher_ray_metrics(da3, images, cams.intrinsics, image_names, args.img_size)
+        print(f"{'DA3-SMALL teacher':<48} {teacher_m['mean_deg']:>10.3f} "
+              f"{teacher_m['median_deg']:>10.3f} {teacher_m['auc_3']:>9.4f} {teacher_m['auc_30']:>9.4f}")
 
-    teacher_m = teacher_ray_metrics(da3, images, cams.intrinsics, [p.name for p in sample.image_paths], args.img_size)
-    print(f"{'DA3-SMALL teacher (cat-duplicate bridge)':<48} {teacher_m['mean_deg']:>10.3f} "
-          f"{teacher_m['median_deg']:>10.3f} {teacher_m['auc_3']:>9.4f} {teacher_m['auc_30']:>9.4f}")
+    if args.mode in ("pose", "both"):
+        print(f"\n=== Pose AUC (DA3 official metric: rotation+translation joint AUC) ===")
+        print(f"{'source':<48} {'AUC@3':>8} {'AUC@5':>8} {'AUC@15':>8} {'AUC@30':>8}")
+        print("-" * 88)
+        ray, conf = teacher_camray(da3, images)
+        m = pose_auc(ray, conf, gt_se3)
+        print(f"{'DA3-SMALL teacher':<48} {m['auc03']:>8.4f} {m['auc05']:>8.4f} "
+              f"{m['auc15']:>8.4f} {m['auc30']:>8.4f}")
 
     for ckpt_path in args.ckpts:
         ssm, bridge, tuned_dpt_state = build_ssm(
@@ -137,12 +194,20 @@ def main() -> None:
         else:
             shared_dpt = shared_dpt_base
         out = shared_dpt_outputs(ssm, shared_dpt, images, bridge=bridge)
-        m = per_image_ray_metrics(
-            out["ray"][..., :3], out["ray_conf"],
-            cams.intrinsics, [p.name for p in sample.image_paths], args.img_size,
-        )
-        print(f"{str(ckpt_path):<48} {m['mean_deg']:>10.3f} {m['median_deg']:>10.3f} "
-              f"{m['auc_3']:>9.4f} {m['auc_30']:>9.4f}")
+
+        if args.mode in ("ray", "both"):
+            m = per_image_ray_metrics(
+                out["ray"][..., :3], out["ray_conf"], cams.intrinsics, image_names, args.img_size,
+            )
+            print(f"{str(ckpt_path):<48} {m['mean_deg']:>10.3f} {m['median_deg']:>10.3f} "
+                  f"{m['auc_3']:>9.4f} {m['auc_30']:>9.4f}")
+
+        if args.mode in ("pose", "both"):
+            ray = out["ray"].unsqueeze(0).to(args.device)        # (1, S, h, w, 6)
+            conf = out["ray_conf"].unsqueeze(0).to(args.device)  # (1, S, h, w)
+            m = pose_auc(ray, conf, gt_se3)
+            print(f"{str(ckpt_path):<48} {m['auc03']:>8.4f} {m['auc05']:>8.4f} "
+                  f"{m['auc15']:>8.4f} {m['auc30']:>8.4f}")
 
 
 if __name__ == "__main__":

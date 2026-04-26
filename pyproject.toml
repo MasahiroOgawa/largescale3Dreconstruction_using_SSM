@@ -30,6 +30,7 @@ dependencies = [
     "evo>=1.36.3",
     "pycolmap>=4.0.3",
     "schedulefree>=1.4.1",
+    "open3d>=0.19.0",
 ]
 
 [project.optional-dependencies]
