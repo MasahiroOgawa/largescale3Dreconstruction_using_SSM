@@ -2255,3 +2255,112 @@ cleaner production recipe and CM31c stacks on top.
 on the winner.** CM31c stands alone as a parallel track if the
 user wants to commit GPU time to the architectural lever in
 parallel with the loss-design experiments.
+
+### 15.33 Strategic pivot — CM31 cancelled; eval expansion + DA3-procedure replication
+
+User directive (2026-04-26):
+
+> "Why do you evaluate DA3 and this repo's update only by depth
+> accuracy? DA3 has depth and ray heads. I think you have to
+> evaluate on all the evaluate measure including ray, 3D point
+> cloud. And also, DA3 has trained using single depth image
+> model, you also have to use it to fine tune DPT head. … Stop
+> CM31. Run [the eval-expansion items 1–5]."
+
+The critique lands. The CM ladder from CM12 → CM30 has ranked
+recipes on a single thin slice of geometry (per-pixel depth on one
+ETH3D scene), while DA3 is a multi-task model whose central
+representation is **(depth, ray)** jointly. CM20 already produced a
+falsifying signal — `cross_view_nn` and `effective_rank` both rose
+while depth regressed — but that signal was scored "negative" by
+the depth gate alone and CM20 was reverted. With ray + 3D
+reconstruction in the metric set, CM20's verdict (and possibly
+CM30's) might flip. Pursuing CM31a/b/c without first widening the
+gate would compound the error.
+
+**Cancelled:** CM31a (loss rebalance), CM31b (projector-less),
+CM31c (two-stream Mamba-3). The architectural questions remain
+worth investigating, but only after we can score them on the
+metrics the project's actual goal requires.
+
+**Replacement work (this section onward):**
+
+#### Phase 1 — Evaluation expansion (sections 15.34 – 15.38)
+
+Per the user's enumeration:
+
+1. **Ray-head metrics.** `DualDPT` already emits
+   `("depth", "ray")`; we ignore the ray channel. Add ray cosine
+   error / per-pixel angular error vs GT camera rays (computable
+   from intrinsics). §15.34.
+2. **3D reconstruction (F-score, Chamfer) on ETH3D.** Back-project
+   `(depth × ray)` to 3D points and compare to GT-depth-derived
+   point cloud. Match DA3 benchmark metric definitions. §15.35.
+3. **Re-score CM12 / CM24 / CM30 on the broadened set.** Before any
+   new CM, re-rank existing kept ckpts. Likely changes the
+   leaderboard. §15.36.
+4. **Hook into DA3's official benchmark
+   (`python -m depth_anything_3.bench.evaluator`).** It expects a
+   model loadable from `model.path=...`; adapt by either packaging
+   our `SSM3DNet + DimBridge + DualDPT` as an HF-loadable bundle,
+   or writing a loader override. Gives us AUC@3°/30° and the
+   official F-score path. §15.37.
+5. **Add HiRoom + 7Scenes datasets** (smallest of DA3's benchmark
+   set, ~0.7 GB and ~3.3 GB). Stops over-fitting recipe choices to
+   ETH3D `terrains`. §15.38.
+
+#### Phase 2 — DA3-procedure replication (longer-term, §15.39+)
+
+The user's "follow the DA3 training procedure" directive needs an
+adjustment of expectations: **DA3 does not ship training code.**
+The repo (`third_party/depth-anything-3/src/depth_anything_3/`)
+has `model/`, `bench/`, `app/`, `services/` but no `train/`. The
+training recipe is in the paper (arxiv 2511.10647) only.
+
+So this phase is a *paper-replication project*:
+
+- Read paper §3 (training) for: dataset list, curriculum, single-
+  image depth pretraining stage, multi-view stage, loss
+  composition, batch / step counts, scheduler.
+- Re-implement the pipeline in `src/ssm3d/train/`. **Swap-in:**
+  Mamba-3 attention only — every other component stays as DA3
+  prescribes.
+- Acquire DA3's public training datasets (paper says public
+  academic datasets; named in README: HiRoom, ETH3D, DTU, 7Scenes,
+  ScanNet++, DL3DV, Tanks and Temples, MegaDepth — combined size
+  TBD, likely 100s of GB).
+- Train at scale. Compute budget TBD; on a single 12 GB GPU this
+  is a multi-week exercise, so this phase needs a separate
+  decision on hardware / cloud.
+
+The "single-image depth pretraining stage" the user pointed to is
+likely DA3's monocular-depth warm-up, where the model learns the
+depth-ray representation on individual images (rays are the
+identity per-pixel ray pattern at the camera frame, depth is the
+single-view ground truth) before the multi-view stage layers on
+cross-view consistency. This is conceptually parallel to our CM12
+distillation but with GT supervision rather than feature
+imitation, and on far more data.
+
+**Phase 2 starts only after Phase 1 lands and gives us the right
+metric set to gate replication progress against.**
+
+### 15.34 (placeholder) Ray-head evaluation
+
+To be filled in as the work lands.
+
+### 15.35 (placeholder) 3D reconstruction metrics on ETH3D
+
+To be filled in as the work lands.
+
+### 15.36 (placeholder) Re-score CM12 / CM24 / CM30 on broadened metrics
+
+To be filled in as the work lands.
+
+### 15.37 (placeholder) DA3 official benchmark integration
+
+To be filled in as the work lands.
+
+### 15.38 (placeholder) HiRoom + 7Scenes datasets
+
+To be filled in as the work lands.
