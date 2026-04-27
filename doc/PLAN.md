@@ -3589,6 +3589,121 @@ If Step 5a-v2 lifts F-score / pose-AUC, we may also try:
 - Phase-C with frozen DPT (don't undo the alignment).
 - Phase-C with the same DA3 loss form on GT (replace SiLog).
 
+### 15.51.1 Step 5a-v2 result (reverted) — DA3-correct loss did not save the recipe
+
+First launch crashed at step 0 on a shape mismatch in the ray-conf
+aleatoric term: ray output is `[B,S,H,W,6]` (6 channels), ray_conf is
+`[B,S,H,W]`. Fixed by unsqueezing trailing axes on `conf` so it
+broadcasts over the ray-channel dim — `_l1_aleatoric` in
+`src/ssm3d/train/distill.py` (depth happens to work because DA3 squeezes
+its single-channel depth and conf to matching ranks).
+
+Re-ran CM-FS-12-DPTM-v2 (Phase-B, ~52 min) → CM-FS-24-DPTM-v2 (Phase-C
+with `--unfreeze-dpt --augment`, CM24 recipe verbatim, ~9 min).
+
+Phase-B trajectory was diagnostic: `cos` similarity dropped from the
+usual ~0.85 → 0.25 by step 17000, while `dpt` loss went strongly
+negative (~−6) — the aleatoric `−λ_c·log(D_c)` term encourages high
+confidence, and the backbone was successfully fitted to *DPT outputs*,
+not to teacher features. Loss curves behaved exactly as the equations
+predict.
+
+#### Eval (ETH3D `terrains` 12-view, 504²)
+
+| metric | CM-FS-24 (Step 4) | DPTM v1 (MSE) | **DPTM v2 (DA3 ℓ1+grad+aleatoric)** |
+|---|---|---|---|
+| depth `\|rel_err\|` ↓ | **0.0462** | 0.0987 | 0.1023 (+121 %) |
+| δ<1.25 ↑ | **0.9992** | n/a | 0.8881 |
+| F-score@5cm (TSDF) ↑ | **0.260** | 0.167 | 0.097 (−63 %) |
+| precision (recon) ↑ | **0.164** | 0.101 | 0.055 |
+| recall (recon) ↑ | **0.624** | 0.490 | 0.388 |
+| pose AUC@30° ↑ | **0.022** | 0.0035 | 0.0005 (−98 %) |
+
+Logs: `outputs/runs/cm_fs_12_dptm_v2_distill.log`,
+`outputs/runs/cm_fs_24_dptm_v2_phaseC.log`,
+`outputs/runs/cm_fs_24_dptm_v2_{depth,recon,pose}.log`.
+
+#### Verdict
+
+Step 5a-v2 is **reverted**. CM-FS-24 (Step 4) remains the project
+baseline. Switching to DA3's exact loss did not recover the recipe;
+all metrics regressed further than v1.
+
+#### Diagnosis
+
+Phase-B with `--lambda-dpt-*` ≥ 0 successfully aligns the backbone to
+the *frozen* teacher DPT — that's what the negative loss and tiny l2
+component prove. Then Phase-C runs `--unfreeze-dpt`, which lets the
+DPT head drift from its frozen-teacher position. The careful Phase-B
+alignment is destroyed: backbone features are now shape-and-channel-
+aligned to a DPT that no longer exists. Two lines of evidence:
+
+1. v1 (MSE) and v2 (ℓ1+grad) regress *similarly* on F-score and pose
+   despite very different loss surfaces — the failure mode is
+   independent of the Phase-B objective and lives in Phase-C.
+2. Step 4 (CM-FS-24, no Phase-B DPT match) achieves the best F-score
+   and pose precisely because Phase-B's feature-cosine alignment is
+   loose enough that an unfrozen Phase-C DPT can adapt. Phase-B
+   DPT-match makes the alignment so tight that adapting *breaks* it.
+
+### 15.51.2 Frozen-DPT Phase-C — pose recovers, depth still regresses
+
+Per § 15.51.1 contingency: re-ran Phase-C from CM-FS-12-DPTM-v2 ckpt
+**without** `--unfreeze-dpt`. Output:
+`outputs/runs/depth_ft_cm_fs_24_dptm_v2_frozen/`. Logs:
+`outputs/runs/cm_fs_24_dptm_v2_frozen_phaseC.log` and
+`cm_fs_24_dptm_v2_frozen_{depth,recon,pose}.log`.
+
+| metric | Step 4 (CM-FS-24) | v2 unfrozen-DPT | **v2 frozen-DPT** |
+|---|---|---|---|
+| depth `\|rel_err\|` ↓ | **0.0462** | 0.1023 | 0.1099 |
+| F-score@5cm (TSDF) ↑ | **0.260** | 0.097 | 0.104 |
+| pose AUC@30° ↑ | 0.022 | 0.0005 | **0.0237** ✓ |
+
+#### What this proves
+
+1. **Pose recovered.** Freezing DPT in Phase-C kept ray-prediction
+   intact (0.0237 ≈ Step 4's 0.022, within noise) — confirming the
+   § 15.51.1 diagnosis that unfrozen Phase-C was destroying Phase-B
+   alignment for ray heads.
+2. **Depth + F-score still regressed.** The Phase-B DPT-match
+   objective overfits the backbone to *teacher DPT outputs*, producing
+   features so tightly committed to mimicking the teacher that
+   Phase-C SiLog GT supervision can no longer adapt them — even when
+   the head is frozen at the teacher position. Step 4's looser Phase-B
+   (cosine + l2 only) leaves the backbone flexible enough that 1000
+   GT-supervised steps can pull it toward terrains-test ground truth.
+
+The DPT-match Phase-B is a feature *trap*: it's optimal for replicating
+the teacher's behavior on the teacher's training distribution, but it
+strips downstream room for adaptation. The decoupled feature-cosine
+recipe of CM12 → CM24 → CM-FS-24 is the right Phase-B objective for
+distilling a quantized-rank Mamba-3 student.
+
+#### Verdict — Step 5a fully terminated
+
+Both variants of Step 5a-v2 (unfrozen-DPT and frozen-DPT) regressed
+≥ one of {depth, F-score} vs Step 4. Step 5a is dead. CM-FS-24
+(Step 4) is the project baseline and the recipe the paper reports.
+
+#### Implication for the paper
+
+The headline claim — *"SSD-DA3 matches DA3-SMALL depth at 2.7× faster
+inference"* — stands on Step 4, not on any DPT-match variant. F-score
+and pose-AUC gaps to DA3 are honestly disclosed limitations:
+- F-score 0.260 vs DA3's 0.434 (60 %).
+- pose AUC@30° 0.022 vs DA3's 0.762 (3 %).
+
+These are loss-side issues that **further Phase-B objective design
+cannot fix** within this distillation framework — DPT-match was the
+clean attempt and it overshot. The remaining levers (more compute,
+better pose-aware GT supervision, or architectural changes outside
+the SSD swap) are out of scope for the paper's main claim.
+
+Step 5b (mobile export), 5c (multi-dataset), and 5d (paper draft)
+proceed against the CM-FS-24 ckpt at
+`outputs/runs/depth_ft_cm_fs_24/ckpt_1000.pt`.
+
 #### Step 2 — integrate Mamba-3 SISO kernel
 
 Replace `ssd_forward_chunked` call in

@@ -303,6 +303,11 @@ def distill(
                     if conf is None or not cfg.use_aleatoric_dpt:
                         return err.mean()
                     c = conf.float().clamp_min(eps)
+                    # DA3 conf is per-pixel scalar (rank-4 [B,S,H,W]); ray
+                    # err is per-pixel vector (rank-5 [B,S,H,W,6]). Align by
+                    # appending singleton axes so c broadcasts over channels.
+                    while c.dim() < err.dim():
+                        c = c.unsqueeze(-1)
                     return (c * err - lam_c * torch.log(c)).mean()
 
                 # ℓ1 on depth weighted by student's depth_conf.
