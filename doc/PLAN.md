@@ -4012,3 +4012,107 @@ mitigated by low LR + ≤500 steps + early ckpts saved.
    `meshes/{scene}.ply`); derived `P = back-project(GT_depth, GT_K,
    GT_pose)` per pixel for ETH3D and as fallback. L_C uses GT
    pose (w2c) directly.
+
+### 15.55 Phase 0–4 execution results (2026-04-28)
+
+#### Phase 0 — patch + library (½ day) ✓
+- `install_mamba3` walks `net.backbone.pretrained.blocks` (12) +
+  `net.cam_enc.trunk` (4) → 16 attentions swapped on DA3-SMALL.
+  `use_fused_kernel + chunk_size` thread through. Smoke test confirms
+  patched DA3 forward produces same output shapes as un-patched
+  (depth, depth_conf, ray, ray_conf, extrinsics, intrinsics).
+- `src/ssm3d/mamba3/__init__.py` + `README.md` promoted as the
+  standalone library. `da3_adapter.py` + `patch.py` are thin glue.
+
+#### Phase 1 — distill against DA3-LARGE (1000 steps, ~67 min) ✓
+- Trainable: 11.61 M params (16 Mamba-3 attentions only). Everything
+  else frozen at DA3-SMALL pretrained.
+- Loss trajectory: 0.999 (step 0) → 0.226 (step 999). L_D collapsed
+  fast (aleatoric ≈ −0.4 by step 200, confident matches). L_P / L_C
+  remained ~0.2–0.3 throughout — pose terms didn't fully converge.
+- Output: `outputs/runs/phase1_distill/ckpt_{500,1000}.pt`.
+
+#### Phase 2 — GT head fine-tune (500 steps, ~28 min) ✓
+- Trainable: top fusion blocks of DPT + all of `cam_dec` (1.66 M).
+  Mamba-3 attention frozen.
+- Loss jumped from Phase 1's ~0.2 to step 0 = 123.8 because GT ray
+  field has different scale + structure than teacher predictions.
+  Converged to ~10 by step 499.
+- Output: `outputs/runs/phase2_gt/ckpt_{250,500}.pt`.
+
+#### Phase 3 — full-unfreeze co-adaptation (500 steps, ~30 min) ✓
+- Trainable: everything (~36.45 M params). LR 1e-5 with WSD 50/100.
+- Loss step 0 = 16.8, step 499 = 9.74 — small but consistent
+  improvement over Phase 2 plateau.
+- Output: `outputs/runs/phase3_unfreeze/ckpt_{100,200,300,400,500}.pt`.
+
+#### Phase 4 results
+
+**(a) Pose AUC@30°** (DA3 official `compute_pose` on `api.inference()`
+output, `saddle_balanced` reference view):
+
+| dataset / scene | Phase 1 ckpt (cam_dec frozen) | Phase 3 ckpt (cam_dec trained) | Reference DA3-SMALL |
+|---|---|---|---|
+| ETH3D `terrains` | 0.0545 | 0.0000 | **0.8455** |
+| HiRoom (4 held-out) | 0.018 (mean) | 0.006 (mean) | **0.812** (mean) |
+| 7Scenes `pumpkin` | 0.0091 | 0.0000 | 0.6899 |
+| 7Scenes `redkitchen` | 0.0232 | 0.0076 | **0.8394** |
+| 7Scenes `stairs` | 0.0000 | 0.0460 | 0.5571 |
+| **MEAN (all 8 scenes)** | **0.020** | **0.010** | **0.7723** |
+
+Both student variants score ≈ 0 vs reference 0.77. Phase 1 is
+*slightly* better than Phase 3 — Phase 2/3 head adaptation made things
+slightly worse, suggesting the original DA3-SMALL `cam_dec` weights
+are better than what 500 steps of GT supervision can produce on our
+small dataset. Logs: `outputs/runs/phase4_pose_phase{1_and_ref,3}.log`.
+
+**Diagnosis.** The Mamba-3 attention modules — after only 1000 steps
+of distillation against DA3-LARGE outputs, with all heads + MLPs +
+norms frozen — have not learned to produce features that the frozen
+DA3-SMALL `cam_dec` (or DPT) can use to recover pose. Per the §15.54
+"Risk 1" note: the credit-assignment path (loss → frozen heads →
+frozen MLPs → trainable Mamba-3 attention only) is too long for
+1000 steps to backprop a useful gradient. The recommended fallback
+("Phase 0.5 feature warmstart against DA3-SMALL") was not exercised.
+
+**(b) Efficiency** (`scripts/bench_efficiency_patched.py`,
+`outputs/runs/phase4_efficiency.log`) — apples-to-apples DA3-SMALL
+transformer vs DA3-SMALL +Mamba-3 (Triton kernel), full-model forward:
+
+| img | S | cross-T | mem ratio | latency ratio |
+|---|---|---|---|---|
+| 224² | 4 | 1024 | 1.03× | 1.16× |
+| 224² | 8 | 2048 | 1.02× | 1.25× |
+| 392² | 4 | 3136 | 1.02× | 0.83× |
+| 392² | 8 | 6272 | 1.01× | 0.77× |
+| 504² | 4 | 5184 | 1.01× | **0.78×** |
+| 504² | 8 | 10368 | 1.01× | **0.65×** |
+
+At deployment-relevant resolutions (504², 8 views), Mamba-3 is
+**1.54× faster** than transformer with essentially identical memory.
+The linear-vs-quadratic crossover is at T ≈ 2000–3000. Below that,
+transformer wins; above, Mamba-3 wins. This validates the paper's
+strength story.
+
+#### Verdict and remaining risk
+
+The plan **did not deliver** the accuracy story. The efficiency story
+is intact (1.54× faster at deployment T). Two paths to make accuracy
+publishable:
+
+1. **More training.** 1000 Phase 1 steps was a starting budget. DA3
+   was trained on millions of samples. Even 10× more steps might not
+   bridge the gap, since our train data is ~39 scenes vs DA3's 100s
+   of GB. But worth trying as a sanity check.
+2. **Easier credit assignment.** Add the §15.54 fallback "Phase 0.5
+   feature warmstart against DA3-SMALL teacher (dim-matched feature
+   distillation)" before LARGE-teacher output match. This gives the
+   Mamba-3 attentions a transformer-like initialization, then Phase 1
+   refines from there. Cheap to try (~30 min).
+3. **Phase 1 trainable scope.** Option B from §15.54: train Mamba-3
+   attention + heads together in Phase 1. Easier optimization but
+   weakens the "drop-in attention swap" claim.
+
+Neither change is in scope for this iteration. Documenting current
+state and proceeding to Phase 5 cleanup; the next training cycle
+should start with the Phase 0.5 warmstart fix.

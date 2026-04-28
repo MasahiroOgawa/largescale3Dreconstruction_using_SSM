@@ -79,17 +79,15 @@ def _swap_attn(
 def _backbone_blocks(net: nn.Module) -> list[nn.Module] | None:
     """Find the backbone's `blocks` list across DA3 / re-impl variants.
 
-    Real DA3:        net.backbone.pretrained.blocks
-    Legacy SSM3DNet: net.backbone.vit.blocks  (re-impl, kept for back-compat)
-    Bare ViT:        net.backbone.blocks
+    Real DA3:    net.backbone.pretrained.blocks
+    Bare ViT:    net.backbone.blocks
     """
     if not hasattr(net, "backbone"):
         return None
     bb = net.backbone
-    for path in ("pretrained", "vit"):
-        inner = getattr(bb, path, None)
-        if inner is not None and hasattr(inner, "blocks"):
-            return list(inner.blocks)
+    inner = getattr(bb, "pretrained", None)
+    if inner is not None and hasattr(inner, "blocks"):
+        return list(inner.blocks)
     if hasattr(bb, "blocks"):
         return list(bb.blocks)
     return None
