@@ -4116,3 +4116,52 @@ publishable:
 Neither change is in scope for this iteration. Documenting current
 state and proceeding to Phase 5 cleanup; the next training cycle
 should start with the Phase 0.5 warmstart fix.
+
+### 15.56 Loss-curve diagnosis → 3×3 super-phase plan (2026-04-28)
+
+User pointed out that **the cross-phase loss discontinuity** in §15.55
+(Phase 1 final = 0.23, Phase 2 step 0 = 124) was an artifact of using
+**different supervision targets in each phase** (Phase 1 = teacher,
+Phase 2/3 = GT). Loss values are not comparable across phases when
+the target source changes.
+
+User decision: redesign training as **three super-phases × three
+sub-phases**, where each super-phase keeps the supervision target
+constant. Loss curves are clean within a super-phase.
+
+| super | teacher / target | rationale |
+|---|---|---|
+| **1** | un-patched **DA3-SMALL** (dim-matched) | Warmstart: Mamba-3 attention learns to mimic transformer attention; teacher ↔ student share the same heads, so credit-assignment path is short. Target is achievable in principle. After super-1, expect AUC@30 ≈ DA3-SMALL reference (~0.77). |
+| **2** | un-patched **DA3-LARGE** | Push student beyond DA3-SMALL toward DA3-LARGE quality. Output-level distillation (dim mismatch on intermediate features). Init from super-1 ckpt. |
+| **3** | **GT** (depth + ray + extr derived from `K`, `w2c`) | Final fine-tune on real ground truth. Init from super-2 ckpt. |
+
+Each super-phase contains **four sub-phases**:
+
+| sub | scope (trainable) | LR | rationale |
+|---|---|---|---|
+| **1** | Mamba-3 attentions only (16 modules) | 3e-4 | Pure attention swap. Heads + MLPs frozen at DA3-SMALL pretrained. |
+| **2** | top fusion blocks of `DualDPT` + entire `cam_dec` | 5e-5 (DPT) / 1e-4 (cam_dec) | Heads adapt to new feature distribution. |
+| **3** | everything | 1e-5 | Full unfreeze for final co-adaptation at low LR. |
+| **4** | (eval, not training) | — | Run DA3 official `compute_pose` on `api.inference()` output across ETH3D `terrains`, HiRoom val, 7Scenes test. |
+
+Total: 9 training runs (each 500 steps, ~15–35 min) + 3 evals + 3
+loss plots. Estimated runtime: ~4 hours.
+
+Implementation:
+- `src/ssm3d/train/train_super.py` — unified training script with
+  `--super {1,2,3} --sub {1,2,3} --init-ckpt <path>` args.
+- `scripts/plot_super_phase_loss.py` — overlay sub-phase 1/2/3 loss
+  trajectories per super-phase.
+- Per-sub-phase output dir convention:
+  `outputs/runs/sp{super}_sub{sub}/`.
+- Per-super-phase loss plot: `outputs/runs/sp{super}_loss.png`.
+
+Within-super continuity: sub-1 → sub-2 → sub-3 init is the previous
+sub-phase's final ckpt. Super-2 sub-1 starts from super-1 sub-3 final.
+Super-3 sub-1 starts from super-2 sub-3 final.
+
+Phase 4 eval (renamed sub-4) runs after each super-phase, against
+DA3 official `compute_pose` (apples-to-apples with paper). Efficiency
+benchmark (`scripts/bench_efficiency_patched.py`) is independent of
+super-phase since it depends only on the architecture (patched DA3),
+not the trained weights — runs once after all super-phases.
