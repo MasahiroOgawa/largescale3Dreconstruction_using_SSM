@@ -33,10 +33,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from download_dinov2 import ensure_dinov2_vits14  # noqa: E402
 
 from ssm3d.bridge import DimBridgeStack
-from ssm3d.data.eth3d import download_eth3d_terrains, load_eth3d_scene
+from ssm3d.data.bench import DATASETS, default_scene, load_bench_cams, load_bench_scene
 from ssm3d.eval.da3_reference import DEFAULT_HF_MODEL, da3_depth, load_da3
 from ssm3d.eval.dpt_adapter import SHARED_DPT_LAYERS, get_dualdpt, shared_dpt_outputs
-from ssm3d.eval.eth3d_gt import load_eth3d_cams
 from ssm3d.eval.metrics import align_scale_median
 from ssm3d.model import SSM3DNet
 from ssm3d.weights import load_dinov2_backbone
@@ -206,20 +205,31 @@ def main() -> None:
                          "(volume fusion + mesh sample); `backproject` is simpler.")
     ap.add_argument("--max-depth", type=float, default=30.0,
                     help="TSDF max-depth truncation in meters.")
+    ap.add_argument("--dataset", choices=DATASETS, default="eth3d",
+                    help="Source dataset; eth3d uses terrains by default, "
+                         "hiroom uses the first val-list scene, 7scenes uses chess.")
+    ap.add_argument("--scene", type=str, default=None,
+                    help="Scene name (defaults vary per dataset).")
+    ap.add_argument("--frame-stride", type=int, default=1,
+                    help="Stride for 7Scenes frame sampling (1000 frames available; "
+                         "use stride > 1 to spread coverage across the sequence).")
     args = ap.parse_args()
 
     from depth_anything_3.bench.utils import evaluate_3d_reconstruction
 
-    scene_dir = download_eth3d_terrains(args.data_root, scene="terrains", download_depth=True)
-    sample = load_eth3d_scene(
-        scene_dir, max_images=args.max_images, image_size=args.img_size, load_gt_depth=True
+    scene = args.scene or default_scene(args.dataset, args.data_root)
+    sample = load_bench_scene(
+        args.dataset, scene, args.data_root, max_images=args.max_images,
+        image_size=args.img_size, load_gt_depth=True, frame_stride=args.frame_stride,
     )
     images = sample.images.to(args.device)
     image_names = [p.name for p in sample.image_paths]
-    cams = load_eth3d_cams(scene_dir, image_size=args.img_size, image_names=image_names)
+    cams = load_bench_cams(args.dataset, scene, args.data_root,
+                           image_size=args.img_size, image_names=image_names)
     Ks = [cams.intrinsics[n] for n in image_names]
     Es = [cams.extrinsics[n] for n in image_names]
     image_hw = (args.img_size, args.img_size)
+    print(f"[eval_recon] dataset={args.dataset} scene={scene} N={len(image_names)}")
 
     gt_depths = [sample.gt_depth[i] for i in range(len(image_names))]
     rgb_per_view = [sample.images[i] for i in range(len(image_names))]

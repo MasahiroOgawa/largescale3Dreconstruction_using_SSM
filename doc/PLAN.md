@@ -3704,6 +3704,104 @@ Step 5b (mobile export), 5c (multi-dataset), and 5d (paper draft)
 proceed against the CM-FS-24 ckpt at
 `outputs/runs/depth_ft_cm_fs_24/ckpt_1000.pt`.
 
+### 15.52 Step 5c result — HiRoom + 7Scenes loaders + CM-FS-24 baseline numbers
+
+DA3-BENCH HiRoom (~0.7 GB) + 7Scenes (~3.3 GB) downloaded to
+`data/da3_bench/`. New loaders mirror `eth3d.py` shape:
+- `src/ssm3d/data/hiroom.py` — `load_hiroom_scene` / `load_hiroom_cams`
+  (reads shared `cam_K.npy`, w2c `.npy` poses, 16-bit PNG depth scaled
+  `pixel/65535*100 → m`).
+- `src/ssm3d/data/sevenscenes.py` — `load_sevenscenes_scene` /
+  `load_sevenscenes_cams` (fixed intrinsics fx=fy=585 cx=320 cy=240,
+  c2w `.txt` poses inverted to w2c, mm depth with 65535=invalid).
+- `src/ssm3d/data/bench.py` — `--dataset {eth3d,hiroom,7scenes}`
+  dispatcher consumed by `eval_recon_metrics.py` and
+  `eval_ray_metrics.py`.
+
+CM-FS-24 ckpt_1000.pt run across all three datasets at
+`img_size=504, max_images=12, alt_start=4, cat_token, use_fused_kernel`.
+7Scenes uses `frame_stride=80` to spread coverage across the 1000-frame
+sequence. Log: `outputs/runs/cm3_eval/multi_dataset.log`.
+
+#### Pose AUC@30 (DA3 official `compute_pose`, no Umeyama alignment)
+
+| dataset | DA3 teacher | CM-FS-24 | retention |
+|---|---|---|---|
+| ETH3D `terrains` | 0.7616 | 0.0232 | 3 % |
+| HiRoom (1 scene) | 0.0051 | 0.0066 | 130 % |
+| 7Scenes `chess` | 0.0040 | 0.0071 | 178 % |
+
+#### F-score@5cm (TSDF, recon-posed mode with GT cams)
+
+| dataset | DA3 teacher | CM-FS-24 | retention |
+|---|---|---|---|
+| ETH3D `terrains` | 0.4351 | 0.2612 | 60 % |
+| HiRoom (1 scene) | 0.6089 | 0.0831 | 14 % |
+| 7Scenes `chess` | 0.5920 | 0.0754 | 13 % |
+
+#### What this confirms
+
+1. **ETH3D numbers reproduce.** Teacher pose 0.7616 / F-score 0.4351
+   and CM-FS-24 pose 0.0232 / F 0.2612 match logged §15.51 numbers
+   within noise (ckpt is the same; eval is deterministic up to RANSAC
+   randomness in `get_extrinsic_from_camray`).
+
+2. **F-score retention collapses on indoor data: 60 % → 13–14 %.**
+   The `acc(m)` column makes the mechanism concrete: CM-FS-24 acc =
+   0.51 m on HiRoom and 0.89 m on 7Scenes, vs teacher's 0.077 m and
+   0.081 m — a 6–11× degradation. The student was distilled on ETH3D
+   outdoor (depth range 4 m – 100 m+) and does not generalise to
+   indoor (depth range ~0.5 m – 5 m). This is a training-data shift
+   problem, not a CM2 / loss-design problem.
+
+3. **Pose AUC@30 on indoor is ≈ 0 for both teacher AND student.**
+   DA3-SMALL teacher itself scores 0.005 on HiRoom and 0.004 on
+   7Scenes via our pipeline. CM-FS-24 actually slightly
+   *outperforms* the teacher on this (broken) metric. This is **not**
+   a model failure — it is an eval-methodology gap: the pose-AUC
+   pipeline computes pair-wise rotation + translation-direction
+   errors with `compute_pose(pred, gt)` after `align_to_first_camera`
+   but no Umeyama scale alignment. On outdoor scenes the geometry is
+   structured enough that the ray-RANSAC pose extraction
+   (`get_extrinsic_from_camray`) recovers a pose; on indoor scenes
+   with small spatial extent and tighter view configurations, the
+   extraction degrades for both models. DA3 paper presumably runs
+   indoor pose-AUC through the official benchmark with additional
+   alignment we don't replicate.
+
+#### Implications for CM2 design
+
+§15.50.1 / §15.51.2 contemplated CM2 (pose-aware GT supervision with
+DA3 paper's L_D + L_M + L_grad + L_P + L_C against GT) as the next
+big swing for closing the pose-AUC gap. The CM3 numbers change the
+diagnosis:
+
+- **Pose-AUC gap is partly eval-methodology, not model.** Before
+  building L_P / L_C against GT poses (~3 days code), we should
+  first integrate DA3's official benchmark for pose so we know
+  what gap we're actually trying to close.
+- **F-score gap on indoor data is a training-data shift.** CM2 won't
+  fix it — only adding indoor scenes to the distillation set will.
+  This pulls forward the §15.33 Phase 2 work (DA3-procedure
+  replication on multi-dataset) and pushes back CM2.
+
+Two options for the user:
+
+- **CM2-eval-fix first:** integrate DA3's official `bench/evaluator`
+  (per §15.33 task 4) so pose-AUC / recon are scored exactly the way
+  the paper reports. Cheap (~1 day) and likely changes the picture.
+  Then re-decide on CM2-full vs Phase 2 multi-dataset training.
+- **Multi-dataset distillation directly:** repurpose the existing
+  CM-FS-12 distillation pipeline to include HiRoom + 7Scenes
+  training scenes (held-out test sets at the same level we hold out
+  ETH3D `terrains`). ~2 days code + 1 hour Phase-B re-distill +
+  Phase-C. Direct fix for the F-score retention drop.
+
+Recommended order: **CM2-eval-fix first** so we know which gap is
+real, then decide. Indoor pose-AUC ≈ 0 for the *teacher* is the
+load-bearing signal that the eval needs verification before we
+commit to ~3 days of CM2-full implementation.
+
 #### Step 2 — integrate Mamba-3 SISO kernel
 
 Replace `ssd_forward_chunked` call in
@@ -3798,3 +3896,119 @@ Triggered after Step 4 lands.
 
 Mobile-export specifics (CoreML, TFLite, ONNX-Runtime) are documented
 when Step 5 begins.
+
+### 15.53 Architectural realignment per user directive (2026-04-28)
+
+User flagged a fundamental thesis-deviation in the PR-state pipeline:
+
+> *"What you have to do is just 'swap the DA3's self/cross attention to
+> our mamba3 based self/cross attention'. So you have to use cam_dec
+> and same evaluation methodology with DA3. … Currently, we have
+> limited disk space so training and test data set is small, but
+> except this attention and dataset size difference, all other things
+> must be the same with DA3."*
+
+The audit confirmed the gap:
+
+| component | DA3 | what we built | thesis-aligned |
+|---|---|---|---|
+| backbone | `DinoVisionTransformer` with alt self/cross via `process_attention(blk, "local"/"global")`, **same `block.attn` for both** | custom `SSM3DBackbone` (re-implements alt_start + cat_token) | use the **real** DA3 backbone with `block.attn` swapped via `install_mamba3` |
+| DPT input | `cat([local_x, x], -1)` → 768 natively | same when `cat_token=True`, but we **also** stack `DimBridge(384→768)` on top | DimBridge is dead with cat_token=True; remove |
+| pose head | `cam_dec` MLP on cls token (qvec + t + fov) | **not in our model** | must be added — DA3 paper's pose-AUC numbers come from this head |
+| camera enc | `cam_enc` (input camera-conditioning) | not present | needed for `recon_posed` mode |
+| DPT head | `DualDPT` from DA3 | DA3's DualDPT directly (correct) | already correct |
+| eval | `Evaluator` + `api.inference` (`saddle_balanced`, Umeyama, full pipeline) | custom `eval_recon_metrics.py` / `eval_ray_metrics.py` | swap to `python -m depth_anything_3.bench.evaluator` |
+| training loss | DA3 § 3.3: L_D + L_M + L_grad + L_P + β·L_C | distill: L2 + cos on features; depth_ft: SiLog + edge | replace with DA3 paper loss |
+
+**Implication for prior CMs.** Every ckpt from CM12 → CM-FS-24 lives
+on the wrong architecture (`SSM3DNet`, single-stream 384-dim, no
+`cam_dec`). The numbers reported in §15.x (depth `|rel_err|` 0.0462
+matching DA3-SMALL, F-score 0.260, pose-AUC 0.022) are characterising
+the wrong model. They do not transfer. Old ckpts archived to
+`outputs/runs/_archived_old_arch/` rather than deleted (cheap to
+keep; useful for the paper's "old-arch ablation" if asked).
+
+#### The Mamba-3 attention library is the research contribution
+
+User clarification:
+
+> *"Implement the mamba-3 based attention as a library. and in this
+> DA3 attention swap implementation, use the library. This library
+> is the core of our novel research."*
+
+Restructure:
+- `src/ssm3d/mamba3/` = standalone library (the research contribution).
+  Clean public API in `__init__.py`. README documenting design
+  (SISO + MIMO, Triton kernel, RoPE, bidirectional, three-term).
+  Drop-in replacement for transformer self/cross attention; usable
+  outside DA3 (mobile ViT, LLaVA, etc.).
+- `src/ssm3d/da3_adapter.py` = thin DA3-shaped wrapper that uses the
+  library. Demonstrates the integration pattern.
+- `src/ssm3d/patch.py` = monkeypatch utility that installs the adapter
+  into a real DA3 model in-place.
+
+#### Why DA3-LARGE teacher (not SMALL)
+
+User directive:
+
+> *"In phase1, why don't you use DA3-large as a teacher? It is better
+> to accomplish as better accuracy and computation efficiency as we
+> can for DA3 compatible size."*
+
+Prior CM20 / CM30 failures with DA3-LARGE teacher were on the wrong
+architecture (custom SSM3DNet 384-dim, projector 1024→384 hack). With
+patched DA3-SMALL student, student outputs (`depth, ray, cam_dec
+extrinsics`) have the **same shape** as DA3-LARGE outputs at the same
+input resolution. **Output-level distillation against DA3-LARGE has
+no dim mismatch.** Intermediate-feature distillation against LARGE
+still mismatches (1024 vs 768) — so we drop feature-distillation in
+favor of output-distillation.
+
+### 15.54 Six-phase realignment plan
+
+| phase | what | trainable | loss | data | ETA |
+|---|---|---|---|---|---|
+| **0** | Fix `install_mamba3` for real DA3 (`backbone.pretrained.blocks` path); promote `mamba3/` as public library; smoke-test patched DA3 forward | — | — | — | ½ day |
+| **1** | Patched-DA3-SMALL student, output-distill against DA3-LARGE teacher | **Mamba-3 attention only** (12 blocks); all heads + MLPs + norms + embed frozen at DA3-SMALL pretrained | DA3 § 3.3: L_D + L_M + L_grad + L_P (`P` from teacher depth+ray+pose) + β·L_C (vs teacher `cam_dec`) | ETH3D non-terrains + HiRoom + 7Scenes train splits | 1.5 d code + ~1 h |
+| **2** | GT-supervised head adaptation | **Top several layers of DPT + all of `cam_dec`**; Mamba-3 attention frozen; everything else frozen | DA3 § 3.3 against **GT** (`P` from GT depth+pose+intrinsics where no explicit GT 3D points; explicit GT mesh/pcd where available — HiRoom `fused_pcd/`, 7Scenes `meshes/`) | same train splits | 1 d code + ~½ h |
+| **3** | **Full-unfreeze co-adaptation** | **Everything**: Mamba-3 attention + heads + MLPs + norms + embed | DA3 § 3.3 against GT, **low LR** (1e-5 across all groups), short schedule (~500 steps), WSD 50/100 warmup/decay; ckpts every 100 for rollback | same train splits | ½ d code + ~½ h |
+| **4** | Eval via DA3's `bench/evaluator` | — | — | ETH3D `terrains`, HiRoom val (4 held-out scenes), 7Scenes test (`pumpkin`+`redkitchen`+`stairs`) | ½ d wiring + ~1 h |
+| **5** | Cleanup: delete `SSM3DNet`, `DimBridge`, custom eval scripts; update imports | — | — | — | ½ d |
+
+**Total**: ~4.5–5.5 days code + ~3 h training/eval.
+
+#### Train/eval splits
+
+- **ETH3D**: `terrains` is held out (eval); all other 10 scenes are
+  training data.
+- **HiRoom**: 29 val scenes; first 25 → training, last 4 → eval.
+- **7Scenes**: 7 sequences. Train: `chess`, `fire`, `heads`, `office`.
+  Eval: `pumpkin`, `redkitchen`, `stairs`.
+
+#### Rationale for Phase 3
+
+Phase 1 forces only the attention to change → attention has to fit
+DA3-SMALL-pretrained heads producing DA3-LARGE-quality outputs (a
+tight constraint that may leave residual error). Phase 2 lets heads
+(incl. `cam_dec`) adapt to the new attention's feature distribution
+but keeps attention frozen. **Phase 3 lets all weights co-adapt** at
+a low LR — final polishing. Risk is overfitting on small data;
+mitigated by low LR + ≤500 steps + early ckpts saved.
+
+#### Risks
+
+1. **Phase 1 credit assignment is the hardest step.** Gradient from
+   DA3 paper loss has to backprop through frozen heads + frozen MLPs
+   to reach the only trainable params (Mamba-3 attention). If
+   convergence is poor, fallback is a brief "Phase 0.5" feature
+   warmstart against DA3-SMALL teacher (dim-matched, easy) before
+   the LARGE-teacher output match.
+2. **Phase 2 "top several layers of DPT"** — DA3's `DualDPT` has
+   fusion + reassemble + output-conv blocks. Start with the last 1–2
+   fusion blocks + the final output convs unfrozen; full `cam_dec`
+   unfrozen (it's tiny: ~5 MLP layers).
+3. **L_P / L_C derivation**: explicit GT `P` (3D points) used where
+   datasets provide it (HiRoom `fused_pcd/{scene}.ply`, 7Scenes
+   `meshes/{scene}.ply`); derived `P = back-project(GT_depth, GT_K,
+   GT_pose)` per pixel for ETH3D and as fallback. L_C uses GT
+   pose (w2c) directly.

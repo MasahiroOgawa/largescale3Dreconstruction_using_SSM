@@ -1,9 +1,18 @@
-"""Monkey-patch helpers for installing Mamba3 self-attention into an existing
-Depth-Anything-3 network without modifying DA3 source.
+"""Monkey-patch helpers for installing Mamba3 self/cross attention into an
+existing Depth-Anything-3 network without modifying DA3 source.
 
-We walk the backbone's Block list and replace each `block.attn` module with a
-matching Mamba3Attention. RoPE references are preserved from the original
-attention. Heads and camera encoder/decoder are left untouched by default.
+DA3 uses the **same `block.attn` module** for both per-view ("local") and
+cross-view ("global") attention — `process_attention(blk, "local"/"global")`
+just rearranges tokens before the call. So swapping `block.attn` covers both
+modes with a single replacement.
+
+Locations of attention in DA3-SMALL:
+  - `net.model.backbone.pretrained.blocks[i].attn`  — 12 backbone blocks
+    (used for both per-view and cross-view via process_attention)
+  - `net.model.cam_enc.trunk[i].attn`              — 4 camera-encoder blocks
+    (input camera-conditioning, only active when extrinsics are passed)
+
+The `cam_dec` head is a pure MLP, no attention to swap.
 """
 
 from __future__ import annotations
@@ -31,7 +40,11 @@ def _infer_dim(attn: nn.Module) -> int:
     raise AttributeError("Cannot infer dim from existing attention module")
 
 
-def _swap_attn(block: nn.Module, *, state_dim: int = 64, bidirectional: bool = True, three_term: bool = True) -> None:
+def _swap_attn(
+    block: nn.Module, *,
+    state_dim: int = 64, bidirectional: bool = True, three_term: bool = True,
+    use_fused_kernel: bool = False, chunk_size: int | None = None,
+) -> None:
     """Replace `block.attn` in-place with a Mamba3Attention of matching (dim, num_heads)."""
     if not hasattr(block, "attn"):
         return
@@ -50,6 +63,8 @@ def _swap_attn(block: nn.Module, *, state_dim: int = 64, bidirectional: bool = T
         state_dim=state_dim,
         bidirectional=bidirectional,
         three_term=three_term,
+        use_fused_kernel=use_fused_kernel,
+        chunk_size=chunk_size,
     )
     new.to(next(old.parameters()).device if any(p.requires_grad for p in old.parameters()) else "cpu")
     # Match dtype of the module being replaced
@@ -61,22 +76,43 @@ def _swap_attn(block: nn.Module, *, state_dim: int = 64, bidirectional: bool = T
     block.attn = new
 
 
+def _backbone_blocks(net: nn.Module) -> list[nn.Module] | None:
+    """Find the backbone's `blocks` list across DA3 / re-impl variants.
+
+    Real DA3:        net.backbone.pretrained.blocks
+    Legacy SSM3DNet: net.backbone.vit.blocks  (re-impl, kept for back-compat)
+    Bare ViT:        net.backbone.blocks
+    """
+    if not hasattr(net, "backbone"):
+        return None
+    bb = net.backbone
+    for path in ("pretrained", "vit"):
+        inner = getattr(bb, path, None)
+        if inner is not None and hasattr(inner, "blocks"):
+            return list(inner.blocks)
+    if hasattr(bb, "blocks"):
+        return list(bb.blocks)
+    return None
+
+
 def install_mamba3(
     net: nn.Module,
-    which: Literal["backbone_only", "all"] = "backbone_only",
+    which: Literal["backbone_only", "all"] = "all",
     state_dim: int = 64,
     bidirectional: bool = True,
     three_term: bool = True,
+    use_fused_kernel: bool = False,
+    chunk_size: int | None = None,
 ) -> int:
-    """Swap self-attention to Mamba-3 across the DA3 network.
+    """Swap self/cross attention to Mamba-3 across the DA3 network.
 
     Args:
-        net: a DA3 net (or anything with a .backbone.blocks list of Blocks).
+        net: typically `da3.model` (a DA3 net), or any net with a backbone
+            blocks list. `cam_enc.trunk[i].attn` is also covered when which="all".
         which:
-            - "backbone_only": swap only the DINOv2 backbone blocks.
-            - "all": additionally swap any other nn.Module named "attn" found
-              anywhere in the net (covers the camera encoder's second attention
-              stack in DA3's utils/ path).
+            - "backbone_only": swap only backbone blocks (12 in DA3-SMALL).
+            - "all" (default): also swap `cam_enc.trunk[i].attn` (4 more blocks
+              in DA3-SMALL — camera-encoder self-attention on input cam tokens).
         state_dim, bidirectional, three_term: forwarded to Mamba3Attention.
 
     Returns:
@@ -84,23 +120,22 @@ def install_mamba3(
     """
     count = 0
 
-    if hasattr(net, "backbone") and hasattr(net.backbone, "blocks"):
-        for block in net.backbone.blocks:
-            _swap_attn(block, state_dim=state_dim, bidirectional=bidirectional, three_term=three_term)
+    kw = dict(state_dim=state_dim, bidirectional=bidirectional, three_term=three_term,
+              use_fused_kernel=use_fused_kernel, chunk_size=chunk_size)
+
+    blocks = _backbone_blocks(net)
+    if blocks is not None:
+        for block in blocks:
+            _swap_attn(block, **kw)
             count += 1
 
     if which == "all":
-        # Walk every submodule and replace any `.attn` that is NOT already Mamba3Attention
-        for module in net.modules():
-            attn = getattr(module, "attn", None)
-            if attn is None or isinstance(attn, Mamba3Attention):
-                continue
-            # skip the ones we already did in backbone (they're Mamba3Attention now)
-            try:
-                _swap_attn(module, state_dim=state_dim, bidirectional=bidirectional, three_term=three_term)
-                count += 1
-            except AttributeError:
-                pass
+        cam_enc = getattr(net, "cam_enc", None)
+        if cam_enc is not None and hasattr(cam_enc, "trunk"):
+            for block in cam_enc.trunk:
+                if hasattr(block, "attn") and not isinstance(block.attn, Mamba3Attention):
+                    _swap_attn(block, **kw)
+                    count += 1
 
     return count
 
