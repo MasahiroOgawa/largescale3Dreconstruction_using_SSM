@@ -17,7 +17,7 @@ CIFAR-10 is the right minimum. MNIST saturates at ~99 % for any reasonable class
 | # | Name (`--variants` key) | Architecture | Notes |
 |---|---|---|---|
 | 1 | `cnn` | Small ResNet — stem + 3 stages × 2 BasicBlocks, widths {64, 128, 256} | Sanity floor; CNNs are extremely well-tuned on CIFAR-10. |
-| 2 | `vit_attn` | ViT-Tiny: depth=6, dim=192, heads=3, MLP×4, 4×4 patch embed, learnable absolute pos-emb, CLS token | `nn.MultiheadAttention` via a thin wrapper (`VanillaAttention`). |
+| 2 | `vit_attn` | ViT-Tiny: depth=6, dim=192, heads=3, MLP×4, 4×4 patch embed, learnable absolute pos-emb, CLS token | Manual timm-style multi-head softmax attention (`VanillaAttention`) with explicit `qkv = nn.Linear(dim, 3*dim)` and `proj = nn.Linear(dim, dim)` submodules — required by `install_mamba3._infer_dim` / `_infer_num_heads`. |
 | 3 | `vit_mamba3` | Same skeleton as #2, then `ssm3d.patch.install_mamba3(net, which="backbone_only")` | Uses the **same swap path** the DA3 depth project uses (`src/ssm3d/patch.py`). |
 
 The wrapper for #2 must expose `qkv: Linear`, `proj: Linear`, and `num_heads` so `install_mamba3._infer_dim` / `_infer_num_heads` succeed when applied to #3.
