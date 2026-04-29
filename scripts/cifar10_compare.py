@@ -19,24 +19,23 @@ import sys
 import time
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import LambdaLR
+from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench_efficiency_patched import count_params, measure  # noqa: E402
+from plot_cifar10_compare import make_all_figures  # noqa: E402
 
 from ssm3d.patch import install_mamba3  # noqa: E402
 
 CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR10_STD = (0.2470, 0.2435, 0.2616)
+CIFAR10_TRAIN_N = 50_000
 
 VARIANTS = ("cnn", "vit_attn", "vit_mamba3")
 
@@ -250,17 +249,90 @@ def make_scheduler(optimizer, total_steps: int, warmup_steps: int) -> LambdaLR:
     return LambdaLR(optimizer, lr_lambda)
 
 
+class WarmupCosineStrategy:
+    """Per-step linear warmup → cosine decay (LambdaLR wrapper)."""
+
+    def __init__(self, optimizer, total_steps: int, warmup_steps: int):
+        self.optimizer = optimizer
+        self.scheduler = make_scheduler(optimizer, total_steps, warmup_steps)
+
+    def step_per_step(self) -> None:
+        self.scheduler.step()
+
+    def step_per_epoch(self, train_loss: float) -> None:
+        pass
+
+    @property
+    def last_lr(self) -> float:
+        return self.scheduler.get_last_lr()[0]
+
+
+class WarmupPlateauStrategy:
+    """Per-step linear warmup, then per-epoch ReduceLROnPlateau on EMA(train_loss).
+
+    After warmup completes, end-of-epoch we update an EMA of train loss and feed
+    it to ReduceLROnPlateau, which halves the LR (factor) when no improvement
+    > threshold is seen for `patience` consecutive epochs.
+    """
+
+    def __init__(self, optimizer, peak_lr: float, warmup_steps: int,
+                 factor: float, patience: int, threshold: float, min_lr: float,
+                 ema_alpha: float):
+        self.optimizer = optimizer
+        self.peak_lr = peak_lr
+        self.warmup_steps = warmup_steps
+        self.ema_alpha = ema_alpha
+        self.step_count = 0
+        self.loss_ema: float | None = None
+        self.plateau = ReduceLROnPlateau(
+            optimizer, mode="min", factor=factor, patience=patience,
+            threshold=threshold, min_lr=min_lr,
+        )
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = 0.0
+
+    def step_per_step(self) -> None:
+        self.step_count += 1
+        if self.step_count <= self.warmup_steps:
+            lr = self.peak_lr * self.step_count / max(1, self.warmup_steps)
+            for pg in self.optimizer.param_groups:
+                pg["lr"] = lr
+
+    def step_per_epoch(self, train_loss: float) -> None:
+        if self.loss_ema is None:
+            self.loss_ema = train_loss
+        else:
+            self.loss_ema = self.ema_alpha * train_loss + (1.0 - self.ema_alpha) * self.loss_ema
+        if self.step_count > self.warmup_steps:
+            self.plateau.step(self.loss_ema)
+
+    @property
+    def last_lr(self) -> float:
+        return self.optimizer.param_groups[0]["lr"]
+
+
+def build_lr_strategy(args, optimizer, total_steps: int, warmup_steps: int):
+    if args.lr_schedule == "plateau":
+        return WarmupPlateauStrategy(
+            optimizer, args.lr, warmup_steps,
+            factor=args.plateau_factor, patience=args.plateau_patience,
+            threshold=args.plateau_threshold, min_lr=args.plateau_min_lr,
+            ema_alpha=args.plateau_loss_ema_alpha,
+        )
+    return WarmupCosineStrategy(optimizer, total_steps, warmup_steps)
+
+
 def autocast_ctx(device: torch.device):
     if device.type == "cuda":
         return torch.amp.autocast("cuda", dtype=torch.bfloat16)
     return contextlib.nullcontext()
 
 
-def train_one_epoch(model, loader, optimizer, scheduler, device):
+def train_one_epoch(model, loader, optimizer, lr_strategy, device, grad_clip: float = 0.0):
     model.train()
     total_loss, total_correct, total_n = 0.0, 0, 0
     t0 = time.perf_counter()
-    last_lr = optimizer.param_groups[0]["lr"]
+    last_lr = lr_strategy.last_lr
     for x, y in loader:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
@@ -269,9 +341,11 @@ def train_one_epoch(model, loader, optimizer, scheduler, device):
             logits = model(x)
             loss = F.cross_entropy(logits, y)
         loss.backward()
+        if grad_clip > 0.0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
         optimizer.step()
-        scheduler.step()
-        last_lr = scheduler.get_last_lr()[0]
+        lr_strategy.step_per_step()
+        last_lr = lr_strategy.last_lr
         bs = y.size(0)
         total_loss += loss.item() * bs
         total_correct += (logits.argmax(-1) == y).sum().item()
@@ -317,14 +391,15 @@ def run_variant(variant: str, args, device: torch.device, train_dl, test_dl) -> 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
     steps_per_epoch = len(train_dl)
     total_steps = steps_per_epoch * args.epochs
-    warmup_steps = steps_per_epoch * min(5, args.epochs)
-    scheduler = make_scheduler(optimizer, total_steps, warmup_steps)
+    warmup_steps = steps_per_epoch * min(args.warmup_epochs, args.epochs)
+    lr_strategy = build_lr_strategy(args, optimizer, total_steps, warmup_steps)
 
     epochs_log: list[dict] = []
     best_acc, best_state = -1.0, None
     for ep in range(1, args.epochs + 1):
-        tr = train_one_epoch(model, train_dl, optimizer, scheduler, device)
+        tr = train_one_epoch(model, train_dl, optimizer, lr_strategy, device, args.grad_clip)
         ev = evaluate(model, test_dl, device)
+        lr_strategy.step_per_epoch(tr["loss"])
         row = {
             "epoch": ep,
             "train_loss": tr["loss"], "train_acc": tr["acc"],
@@ -371,35 +446,23 @@ def run_variant(variant: str, args, device: torch.device, train_dl, test_dl) -> 
 
 
 def write_results_json(out: Path, results: dict, args) -> None:
-    payload = {
-        "config": {
-            "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
-            "weight_decay": 0.05, "seed": args.seed, "device": args.device,
-        },
-        "variants": results,
+    spe = CIFAR10_TRAIN_N // args.batch_size
+    cfg = {
+        "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
+        "weight_decay": 0.05, "seed": args.seed, "device": args.device,
+        "warmup_epochs": args.warmup_epochs, "grad_clip": args.grad_clip,
+        "lr_schedule": args.lr_schedule, "steps_per_epoch": spe,
     }
+    if args.lr_schedule == "plateau":
+        cfg.update({
+            "plateau_factor": args.plateau_factor,
+            "plateau_patience": args.plateau_patience,
+            "plateau_threshold": args.plateau_threshold,
+            "plateau_min_lr": args.plateau_min_lr,
+            "plateau_loss_ema_alpha": args.plateau_loss_ema_alpha,
+        })
+    payload = {"config": cfg, "variants": results}
     (out / "results.json").write_text(json.dumps(payload, indent=2))
-
-
-def write_curves_png(out: Path, results: dict) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    for variant, r in results.items():
-        epochs = [row["epoch"] for row in r["epochs"]]
-        axes[0].plot(epochs, [row["train_acc"] for row in r["epochs"]], label=variant)
-        axes[1].plot(epochs, [row["test_acc"] for row in r["epochs"]], label=variant)
-        axes[2].plot(epochs, [row["train_loss"] for row in r["epochs"]], label=variant)
-    for ax, title, ylabel in zip(
-        axes, ["Train accuracy", "Test accuracy", "Train loss"],
-        ["accuracy", "accuracy", "loss"],
-    ):
-        ax.set_title(title)
-        ax.set_xlabel("epoch")
-        ax.set_ylabel(ylabel)
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-    fig.tight_layout()
-    fig.savefig(out / "curves.png", dpi=120)
-    plt.close(fig)
 
 
 def _fmt_mib(v: float) -> str:
@@ -450,7 +513,8 @@ def write_summary_md(out: Path, results: dict, args) -> None:
     lines = [
         "# CIFAR-10 compare — summary",
         "",
-        f"Recipe: AdamW lr={args.lr}, wd=0.05, 5-ep warmup → cosine, "
+        f"Recipe: AdamW lr={args.lr}, wd=0.05, {args.warmup_epochs}-ep warmup → {args.lr_schedule}, "
+        f"grad_clip={args.grad_clip if args.grad_clip > 0 else 'off'}, "
         f"batch={args.batch_size}, epochs={args.epochs}, seed={args.seed}, device={args.device}.",
         "",
         "## Head-to-head",
@@ -519,6 +583,22 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--data-dir", type=Path, default=Path("data/cifar10"))
+    ap.add_argument("--warmup-epochs", type=int, default=5,
+                    help="Linear-warmup length in epochs before cosine decay (default 5; §9.7 uses 10)")
+    ap.add_argument("--grad-clip", type=float, default=0.0,
+                    help="Max grad norm for clip_grad_norm_; 0 disables (default 0; §9.7 uses 1.0)")
+    ap.add_argument("--lr-schedule", choices=["cosine", "plateau"], default="cosine",
+                    help="Post-warmup LR decay: cosine (default) or ReduceLROnPlateau on EMA(train_loss)")
+    ap.add_argument("--plateau-factor", type=float, default=0.5,
+                    help="Multiplier applied to LR when plateau detected (default 0.5)")
+    ap.add_argument("--plateau-patience", type=int, default=5,
+                    help="Epochs of no-improvement (> threshold) before LR is reduced (default 5)")
+    ap.add_argument("--plateau-threshold", type=float, default=1e-3,
+                    help="Min loss improvement to count as 'still going down' (default 1e-3)")
+    ap.add_argument("--plateau-min-lr", type=float, default=1e-6,
+                    help="Floor for plateau LR reductions (default 1e-6)")
+    ap.add_argument("--plateau-loss-ema-alpha", type=float, default=0.3,
+                    help="EMA alpha for train-loss smoothing fed to plateau scheduler (default 0.3)")
     args = ap.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -538,9 +618,11 @@ def main() -> None:
         results[variant] = run_variant(variant, args, device, train_dl, test_dl)
 
     write_results_json(args.out, results, args)
-    write_curves_png(args.out, results)
     write_efficiency_table_md(args.out, results)
     write_summary_md(args.out, results, args)
+    fig_paths = make_all_figures(args.out / "results.json", args.out)
+    for p in fig_paths:
+        print(f"  figure → {p}")
     print(f"\n[done] artifacts → {args.out}")
 
     gate = evaluate_gate(results)

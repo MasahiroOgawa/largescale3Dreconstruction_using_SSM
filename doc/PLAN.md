@@ -2,7 +2,7 @@
 
 > **See also:** [`doc/PLAN_mamba3_DA3.md`](PLAN_mamba3_DA3.md) — the prior DA3 ↔ Mamba-3 distillation plan (CM01–CM22, super-phase / sub-phase, etc.). All section numbers cited as `§15.x` from earlier commits live there.
 
-> **Status (2026-04-29):** script `scripts/cifar10_compare.py` implemented and smoke-tested (commit `a723abf`); see [§9](#9-implementation-status). **Next action: full 50-ep CUDA run** of all three variants — see [§9.4](#94-next-action).
+> **Status (2026-04-29):** §9.7 Mamba-friendly recipe rerun finished — `vit_mamba3` test acc **70.04 %**, +25.45 pp over §9.6's 44.59 % (no collapse), but still **−12.46 pp** behind the softmax baseline. Recipe was a real confound, mixing-quality gap is also real. See [§9.8](#98-results--mamba-friendly-recipe-rerun-97). **Next: §9.9 plateau-scheduler 3-variant rerun** using `ReduceLROnPlateau` on EMA(train_loss) — see [§9.9](#99-next-action--plateau-scheduler-rerun-all-3-variants).
 
 ## §1. Context — why this side-track
 
@@ -176,3 +176,118 @@ After the run completes, read `outputs/cifar10_compare/summary.md` for the head-
 
 - **PASS** (mamba3 within 2 pp of softmax, peak mem ≤ 1.1×): the depth-task 1.27× gap is a recipe / distillation issue. Resume `PLAN_mamba3_DA3.md` super-phase / feature-distill work (`§15.56`–`§15.57`).
 - **FAIL** (mamba3 > 2 pp behind softmax): real Mamba-3 mixing-quality limitation at this scale; reconsider the swap before further investment. Possible follow-ups (only if FAIL): multi-seed re-run with `--seed {0,1,2}` to bound variance, then CIFAR-100 to confirm at slightly harder difficulty.
+
+### §9.6. Results — full 50-ep run
+
+Single seed=42, AdamW lr=1e-3 wd=0.05, 5-ep linear warmup → cosine, batch=128, RTX 4080 Laptop. Total wall-clock 23.5 min (cnn 5.2 min + vit_attn 4.8 min + vit_mamba3 12.5 min). All artifacts under `outputs/cifar10_compare/`.
+
+**Head-to-head:**
+
+| Variant | Params (M) | Train Acc | **Test Acc** | s/epoch | Latency (ms, B=128) | Peak (MiB) |
+|---|---:|---:|---:|---:|---:|---:|
+| `cnn` (small ResNet) | 2.78 | 99.94 | **93.69** | 6.2 | 7.68 | 221.4 |
+| `vit_attn` (ViT-Tiny + softmax) | 2.69 | 99.23 | **82.50** | 5.8 | 6.73 | 126.9 |
+| `vit_mamba3` (ViT-Tiny + Mamba-3 SSD) | 2.71 | 41.10 | **44.59** | 15.0 | 13.73 | 153.5 |
+
+Both `cnn` and `vit_attn` are well in line with the published references in §4: ResNet-20 ~91.7 %, ViT-Tiny from-scratch 85–88 %. Recipe is sound for softmax models.
+
+**vit_mamba3 trajectory — instability, not stagnation:**
+
+| Phase | Epochs | Test acc behavior |
+|---|---|---|
+| Slow warmup | 1–5 | 10.00 → 37.90 (climbing, LR ramps 0 → 1e-3) |
+| Brief peak | 6 | **44.59** (best ckpt — saved here) |
+| **Collapse** | 7–11 | 22.13 → 16.38 → 10.00 → 13.49 → 14.53 (back to ~random) |
+| Slow recovery | 12–35 | 20.34 → 34.12 (re-learning from collapsed state) |
+| Steady-state | 36–50 | 34.44 → 40.51 (final) |
+
+The collapse begins exactly at epoch 7 — one epoch after LR finishes its 5-ep warmup and reaches the peak 1e-3. This is the canonical signature of **LR-too-high for an SSD/Mamba block**: SSD's recurrent state dynamics are stiffer than softmax attention, so a peak LR that is fine for ViT (1e-3) drives the SSD parameters out of the stable region. The model never fully recovers from the collapse within 50 epochs, but it is still descending at epoch 50, suggesting a longer schedule + lower LR would converge — which is consistent with how Mamba-2/3 papers train (typically lr ≤ 5e-4 with longer warmup and grad-clip).
+
+**Acceptance gate (§5):** acc gap −37.91 pp (threshold ≥ −2.00 pp) → FAIL; mem ratio 1.21× (threshold ≤ 1.10×) → FAIL.
+
+But §9.5's interpretation of FAIL ("*real Mamba-3 mixing-quality limitation*") presumes the recipe wasn't itself the confound. The collapse trajectory shows the recipe **is** the confound. So the run does not yet answer §1's question; it answered a different one ("does this exact recipe transfer?" — no).
+
+### §9.7. Next action — Mamba-friendly recipe rerun
+
+Re-run **only** `vit_mamba3` (cnn and vit_attn results stand) with the standard SSD-friendly recipe knobs:
+
+| Knob | Old | New | Reason |
+|---|---|---|---|
+| Peak LR | 1e-3 | **3e-4** | SSD recurrence is stiffer; literature consensus for Mamba-2/3 from-scratch training. |
+| Warmup epochs | 5 | **10** | Smoother ramp gives the recurrence time to stabilize before the LR peak. |
+| Grad clip | none | **1.0** | Bounds the spike that triggers the ep-7 collapse. |
+| Epochs | 50 | **80** | Lower LR ⇒ slower convergence; matches typical Mamba schedules at this size. |
+| Everything else | unchanged | unchanged | Same data, aug, batch, optimizer, seed=42, same script. |
+
+Implementation: add a `--lr-schedule mamba` flag (or simply `--peak-lr`, `--warmup-epochs`, `--grad-clip`) to `scripts/cifar10_compare.py`; do not touch `src/ssm3d/`. Output to `outputs/cifar10_compare_mamba_recipe/` so the original §9.6 numbers stay pristine.
+
+**New acceptance gate** (same threshold, recipe-fair):
+
+- **PASS-recipe** = `test_acc(vit_mamba3 @ Mamba-friendly recipe) ≥ 80.5 %` (i.e., within 2 pp of `vit_attn`'s 82.50). → recipe was the issue; depth-task 1.27 × gap is also recipe; resume `PLAN_mamba3_DA3.md`.
+- **FAIL-recipe** = `< 80.5 %` even with Mamba-friendly recipe. → genuine mixing-quality gap; §9.5's FAIL interpretation now applies; reconsider the swap.
+
+Estimated wall-clock: 80 ep × 15 s/ep ≈ 20 min on the same GPU.
+
+### §9.8. Results — Mamba-friendly recipe rerun (§9.7)
+
+Single seed=42, AdamW lr=3e-4 wd=0.05, 10-ep linear warmup → cosine, grad_clip=1.0, batch=128, 80 epochs, RTX 4080 Laptop. Wall-clock 20.6 min for the single variant. Artifacts under `outputs/cifar10_compare_mamba_recipe/`.
+
+| Variant | Test Acc | Δ vs §9.6 same variant | Δ vs §9.6 vit_attn |
+|---|---:|---:|---:|
+| `vit_mamba3` @ §9.7 recipe | **70.04 %** (best, ep 74) | **+25.45 pp** | **−12.46 pp** |
+
+**Trajectory — clean monotonic descent, no collapse.** Test acc climbs 10.00 → 70.04 across ep 1–74, then plateaus 69.9–70.0 at ep 74–80; train acc plateaus at 75.5. **Confirms the §9.6 ep-7 collapse was a real LR-too-high artifact.** Train loss bottoms at ~0.68 at ep 80 — still slowly descending; modest gains (≤ 1 pp) likely available with more epochs.
+
+**Acceptance gate (§9.7 PASS-recipe ≥ 80.5 %):** **FAIL-recipe** by **−10.46 pp**.
+
+**Interpretation:** the recipe was a real confound (+25 pp recovered just by fixing it), so §9.6's FAIL was not informative about Mamba-3's actual capability. But a **−12.46 pp gap survives proper SSD hyperparameters** — that's no longer attributable to recipe. This is a credible signal of a genuine mixing-quality / inductive-bias gap between SSD recurrence and softmax attention at T=65 from scratch, which likely accounts for a chunk of the depth-task 1.27× gap.
+
+**Caveats before triggering §9.5's FAIL branch:**
+
+- Single seed (multi-seed would bound variance to ±~1 pp at this scale).
+- Only 3 SSD-friendly knobs adjusted; the post-warmup decay schedule is still cosine — could also try plateau (loss-driven) scheduling.
+- T=65 is Mamba's weak regime; depth=6 is shallow.
+
+These caveats motivate one more variant (§9.9) before closing the door.
+
+### §9.9. Next action — plateau-scheduler rerun (all 3 variants)
+
+Re-run **all 3 variants** with `ReduceLROnPlateau` on EMA(train_loss) replacing the cosine decay phase. Implemented in `scripts/cifar10_compare.py` via `--lr-schedule plateau`; see `WarmupPlateauStrategy`.
+
+| Knob | Cosine (§9.7) | Plateau (§9.9) | Reason |
+|---|---|---|---|
+| Post-warmup schedule | half-cosine to 0 | `ReduceLROnPlateau` | Adapts LR to actual loss progress instead of a fixed shape. |
+| LR-reduction factor | n/a | **0.5** | Halve LR on plateau (PyTorch default). |
+| Patience (epochs no-improvement) | n/a | **5** | Long enough to ride out noise, short enough to react before stalling. |
+| Improvement threshold | n/a | **1e-3** | Loss must drop by > 0.001 to count as "going down". |
+| Min LR floor | 0 (cosine ends here) | **1e-6** | Avoids dropping into numerical-noise territory. |
+| Loss EMA α | n/a | **0.3** | Smooths per-epoch train loss before feeding plateau. |
+| Peak LR / warmup / clip / epochs | 3e-4 / 10 / 1.0 / 80 | unchanged | Apples-to-apples vs §9.7 except for the decay phase. |
+| Variants | 1 (`vit_mamba3` only) | **all 3** | Self-contained 3-line / 3-bar comparison; ignore §9.6's misleading vit_mamba3. |
+
+Output to `outputs/cifar10_compare_plateau/`. The script auto-emits the three figures via `scripts/plot_cifar10_compare.py`:
+
+- `lr_curves.png` — 3 lines, post-warmup divergence shows when each variant hit a plateau
+- `loss_vs_steps.png` — train + test loss vs steps, 3 lines
+- `efficiency_comparison.png` — 4-panel bar chart (params / latency / peak mem / s-per-epoch)
+
+**Run command:**
+
+```bash
+uv run python scripts/cifar10_compare.py \
+    --device cuda --epochs 80 --batch-size 128 --lr 3e-4 \
+    --warmup-epochs 10 --grad-clip 1.0 \
+    --lr-schedule plateau \
+    --plateau-factor 0.5 --plateau-patience 5 \
+    --plateau-threshold 1e-3 --plateau-min-lr 1e-6 \
+    --plateau-loss-ema-alpha 0.3 \
+    --variants cnn vit_attn vit_mamba3 \
+    --out outputs/cifar10_compare_plateau --seed 42
+```
+
+Estimated wall-clock: cnn 8 min + vit_attn 8 min + vit_mamba3 20 min ≈ **36 min total**.
+
+**Branch decisions (revised, replacing §9.5 verdict):**
+
+- **PASS-plateau** = `test_acc(vit_mamba3) ≥ test_acc(vit_attn) − 2 pp` under plateau scheduling. → both schedule and recipe were confounds; resume `PLAN_mamba3_DA3.md`.
+- **FAIL-plateau** = gap remains > 2 pp under both cosine and plateau. → mixing-quality gap is robust to schedule choice; trigger §9.5 FAIL branch (reconsider swap), with §9.7 + §9.9 cosine + plateau as the supporting evidence.
