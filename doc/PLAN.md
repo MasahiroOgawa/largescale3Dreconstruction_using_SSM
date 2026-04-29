@@ -2,6 +2,8 @@
 
 > **See also:** [`doc/PLAN_mamba3_DA3.md`](PLAN_mamba3_DA3.md) — the prior DA3 ↔ Mamba-3 distillation plan (CM01–CM22, super-phase / sub-phase, etc.). All section numbers cited as `§15.x` from earlier commits live there.
 
+> **Status (2026-04-29):** script `scripts/cifar10_compare.py` implemented and smoke-tested (commit `a723abf`); see [§9](#9-implementation-status). **Next action: full 50-ep CUDA run** of all three variants — see [§9.4](#94-next-action).
+
 ## §1. Context — why this side-track
 
 The depth pipeline (`PLAN_mamba3_DA3.md §15.13`) currently shows a **1.27×** gap between the Mamba-3-patched DA3-SMALL backbone and the un-patched DA3-SMALL transformer on ETH3D `terrains` (`|relative_depth_error|` 0.0531 vs 0.0417). Before continuing to invest training cycles in the Mamba-3 swap, we want a **clean, isolated sanity check** that answers:
@@ -120,3 +122,57 @@ uv run python scripts/cifar10_compare.py \
 - **Steiner et al. 2021** — *"How to train your ViT"* (data, augmentation, regularization on small ViTs).
 - **He et al. 2015** — ResNet (CIFAR-10 baselines).
 - **paperswithcode CIFAR-10** — <https://paperswithcode.com/sota/image-classification-on-cifar-10>.
+
+## §9. Implementation status
+
+### §9.1. Script
+
+`scripts/cifar10_compare.py` — single self-contained file, ~430 lines, landed in commit `a723abf` (2026-04-29). Reuses `measure(...)` and `count_params(...)` from `scripts/bench_efficiency_patched.py`; no edits under `src/ssm3d/`.
+
+### §9.2. Param-budget verification (matched ≈ 2.7 M)
+
+| Variant | Measured params | vs target |
+|---|---:|---|
+| `cnn` (SmallResNet) | 2,777,674 (2.78 M) | +0.08 M |
+| `vit_attn` (ViT-Tiny@d6 + softmax) | 2,693,578 (2.69 M) | −0.01 M |
+| `vit_mamba3` (same skeleton, 6/6 attn → Mamba3) | 2,707,474 (2.71 M) | +0.01 M |
+
+`install_mamba3(model, which="backbone_only")` swaps **all 6/6** transformer blocks on the bare ViT classifier — the `_backbone_blocks` fallback to `net.backbone.blocks` works as designed. Mamba-3 SSD adds ~14 k params over softmax at this size; well within "matched".
+
+### §9.3. Smoke-test results (wiring verified)
+
+**CPU smoke** — `cnn`, `vit_attn`, 1 epoch, seed 42:
+
+| Variant | Train acc | Test acc | Wall (s/epoch) | Latency @ B=128 |
+|---|---:|---:|---:|---:|
+| `cnn` | 47.67 % | 51.67 % | 306.7 | 220.0 ms |
+| `vit_attn` | 33.24 % | 45.11 % | 161.2 | 127.0 ms |
+
+Both variants train without error, all four artifacts (`results.json`, `curves.png`, `efficiency_table.md`, `summary.md`) are written, and the gate path correctly reports "_not evaluable_" when `vit_mamba3` is absent.
+
+**CUDA sanity** — `vit_mamba3`, 2 epochs, RTX 4080 Laptop:
+
+| Epoch | Train acc | Test acc | Wall (s) |
+|---:|---:|---:|---:|
+| 1 | 10.75 % | 16.31 % | 18.4 |
+| 2 | 23.91 % | 29.93 % | 17.5 |
+
+Efficiency at B=128, T=65: latency 13.2 ms, peak 153.5 MiB. No NaNs; learning is in progress. Per-epoch wall-clock projects to **~15 min/variant** for the full 50-ep run, **~45 min total** on this GPU.
+
+### §9.4. Next action
+
+Run the full 50-ep experiment, all three variants, single seed (per `§3` and `§7`):
+
+```bash
+uv run python scripts/cifar10_compare.py \
+    --device cuda --epochs 50 --batch-size 128 --lr 1e-3 \
+    --variants cnn vit_attn vit_mamba3 \
+    --out outputs/cifar10_compare --seed 42
+```
+
+After the run completes, read `outputs/cifar10_compare/summary.md` for the head-to-head table and the §5 PASS/FAIL acceptance verdict. The smoke-test outputs at `outputs/cifar10_compare_smoke/` and `outputs/cifar10_compare_cuda_smoke/` can be deleted — they're no longer needed once the full run lands.
+
+### §9.5. Branch decisions after the full run
+
+- **PASS** (mamba3 within 2 pp of softmax, peak mem ≤ 1.1×): the depth-task 1.27× gap is a recipe / distillation issue. Resume `PLAN_mamba3_DA3.md` super-phase / feature-distill work (`§15.56`–`§15.57`).
+- **FAIL** (mamba3 > 2 pp behind softmax): real Mamba-3 mixing-quality limitation at this scale; reconsider the swap before further investment. Possible follow-ups (only if FAIL): multi-seed re-run with `--seed {0,1,2}` to bound variance, then CIFAR-100 to confirm at slightly harder difficulty.
