@@ -21,7 +21,7 @@ training, so the comparison isolates the backbone.
 - Current best: **CM22@1000**
   (`|relative_depth_error|` = **0.0531**, δ<1.25 = **0.9972**) on ETH3D
   `terrains`, median-aligned. DA3-SMALL reference on the same views is
-  **0.0417**, so the gap is **1.27×**. See `doc/PLAN.md §15.13` for the
+  **0.0417**, so the gap is **1.27×**. See `doc/PLAN_mamba3_DA3.md §15.13` for the
   full recipe and `outputs/eval_cm22_1000/summary.md` for head-to-head
   numbers.
 - The DA3 submodule is treated as read-only upstream. Swaps happen at
@@ -60,7 +60,7 @@ uv run python scripts/run_demo.py
 ```
 
 Produces patch-feature PCA visualisations, SSM-3D depth predictions, and
-a collapse-smoke-check report (see `doc/PLAN.md §3`). Artifacts land in
+a collapse-smoke-check report (see `doc/PLAN_mamba3_DA3.md §3`). Artifacts land in
 `outputs/demo/`.
 
 ### Train (Phase B distil → Phase C depth FT, CM22 recipe)
@@ -81,7 +81,7 @@ uv run python scripts/train_phase_c.py \
 ```
 
 The exact CM22 recipe (and why each hyperparameter is set this way) is
-in `doc/PLAN.md §15.13`.
+in `doc/PLAN_mamba3_DA3.md §15.13`.
 
 ### Evaluate (SSM-3D vs DA3-SMALL, head-to-head on ETH3D)
 
@@ -113,7 +113,10 @@ acceptance-gate table, and architecture diagrams. See
 
 ### Internal docs
 
-- `doc/PLAN.md` — experiment log, acceptance gates, candidate-modification
+- `doc/PLAN.md` — current side-track plan (CIFAR-10 sanity check:
+  Mamba-3 vs softmax attention vs CNN, from scratch).
+- `doc/PLAN_mamba3_DA3.md` — experiment log for the DA3 ↔ Mamba-3
+  distillation pipeline: acceptance gates, candidate-modification
   (CM) index, and reverted / kept decisions.
 - `doc/evaluation.md` — metric definitions, median-alignment convention,
   and the head-to-head snapshot at CM22@1000.
