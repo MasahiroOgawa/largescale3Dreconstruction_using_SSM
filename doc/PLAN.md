@@ -4165,3 +4165,167 @@ DA3 official `compute_pose` (apples-to-apples with paper). Efficiency
 benchmark (`scripts/bench_efficiency_patched.py`) is independent of
 super-phase since it depends only on the architecture (patched DA3),
 not the trained weights — runs once after all super-phases.
+
+### 15.57 Super-1 results, feature-distillation pivot, and 10× schedule countermeasure (2026-04-28)
+
+DA3-SMALL pose-AUC reference (apples-to-apples eval): **mean 0.7723**
+across the 8 held-out scenes (ETH3D `terrains` + HiRoom 4 + 7Scenes 3).
+Every variant below is graded against that single number.
+
+#### Step A — Super-phase 1 trial (output-distill only)
+
+First execution of the §15.56 plan: SMALL-teacher target, sub-1 (attn
+only) → sub-2 (top DPT + cam_dec) → sub-3 (full unfreeze), 500 steps
+each. **Result: very bad** (≈ same level as §15.55 Phase 1, ~0.02 mean
+AUC30). The §15.55 "Risk 1" credit-assignment problem persisted: even
+with a dim-matched SMALL teacher, output-only loss through frozen
+heads + frozen MLPs is not enough signal to align Mamba-3 attention
+with transformer attention in 500 steps. Logs were overwritten by
+Step B's rerun in the same `sp1_sub*/` paths.
+
+#### Step B — Feature distillation pivot
+
+Hypothesis: shorten the credit-assignment path by adding direct
+supervision *inside* the backbone, where student and teacher are
+dim-matched.
+
+Implementation (uncommitted diff to `src/ssm3d/train/train_super.py`):
+
+- `FEAT_LAYERS = (5, 7, 9, 11)` — four intermediate ViT blocks
+  (mid + late, where prior diagnostics §15.25 located the rank
+  bottleneck).
+- `_feature_distill_loss`: per-layer ℓ2/C + (1 − cos) on patch
+  features, averaged over layers.
+- `export_feat_layers=…` plumbed through `_teacher_forward` /
+  `_student_forward` so both call `model(..., export_feat_layers=...)`
+  and pull matching tensors from `out.aux["feat_layer_{i}"]`.
+- `lambda_feat = 1.0`. **Auto-disabled when teacher dim differs**
+  (super-2 with LARGE teacher: 1024 ≠ 384, would need a projector;
+  intentionally out of scope).
+- Active path: super-1 only.
+
+Reran full super-1 (sub-1 + sub-2 + sub-3, 500 steps each).
+
+Loss trajectory (`sp1_sub1/log.txt`): L_feat 0.81 → 0.27 over 500
+steps; L_D / L_M go negative as expected (aleatoric tightens). Sub-2
+and sub-3 plateau near the same place — the additional unfreezing
+doesn't move the needle on L_feat or L_P.
+
+**Eval — pose AUC@30°** (`super1_runner.log`, sub-3 ckpt at 500):
+
+| dataset / scene | AUC30 |
+|---|---|
+| ETH3D `terrains` | 0.0217 |
+| HiRoom 04 / 14 / 08 / 07 | 0.0116 / 0.0141 / 0.0056 / 0.0187 |
+| 7Scenes pumpkin / redkitchen / stairs | 0.0045 / 0.0192 / 0.0079 |
+| **MEAN** | **0.0129** |
+
+vs reference 0.7723. **Worse than the no-feat-distill baseline** (Step
+A / §15.55 Phase 1 ~0.020). Feature distillation by itself did not
+help — the L_feat term is descending but pose / point losses haven't
+moved meaningfully.
+
+#### Step C — Investigation and 10× schedule countermeasure
+
+Diagnosis. At step 499 the loss was still drifting down (L_feat from
+0.81 → 0.27 has not asymptoted; L_D / L_M still going negative). 500
+steps is undertrained, not over-fit. Hypothesis: the recipe is right,
+the schedule is too short — give it 10× more steps and skip sub-2 /
+sub-3 (the prior super-1 already showed sub-2/3 don't help when sub-1
+hasn't converged).
+
+Run: `outputs/runs/sp1_sub1_long/`, **5000 steps**, sub-1 scope only
+(Mamba-3 attention only), same feature-distillation recipe, ckpts
+every 1000.
+
+Loss trajectory (`sp1_sub1_long/log.txt`):
+
+| step | loss | L_D | L_M | L_P | L_C | L_feat | lr |
+|---|---|---|---|---|---|---|---|
+| 0 | 1.67 | 0.32 | 0.15 | 0.26 | 0.13 | 0.81 | 6.0e-6 |
+| 25 | −1.10 | −0.99 | −0.93 | 0.11 | 0.08 | 0.63 | 1.6e-4 |
+| 500 | 0.15 | 0.62 | −0.96 | 0.16 | 0.06 | 0.25 | 3.0e-4 |
+| 1500 | −3.04 | −0.76 | −2.57 | 0.05 | 0.02 | 0.21 | 3.0e-4 |
+| 3500 | −3.56 | −1.78 | −2.10 | 0.05 | 0.07 | 0.21 | 3.0e-4 |
+| 4999 | −5.25 | −2.62 | −3.09 | 0.03 | 0.21 | 0.22 | 3.0e-5 |
+
+L_feat is essentially flat after step ~1500 (0.21 ± 0.03) — the
+feature-distillation objective has saturated. L_D / L_M continue
+descending (aleatoric variance keeps shrinking on teacher targets).
+**L_P / L_C have collapsed to near-zero on the *teacher* target** —
+the student matches teacher predictions well in self-consistent
+loss space — but this does not transfer to GT-anchored pose AUC.
+
+**Eval — pose AUC@30°** (`sp1_long_eval.log`, ckpt 5000):
+
+| dataset / scene | AUC30 |
+|---|---|
+| ETH3D `terrains` | 0.0177 |
+| HiRoom 04 / 14 / 08 / 07 | 0.0833 / 0.0247 / 0.0096 / 0.0157 |
+| 7Scenes pumpkin / redkitchen / stairs | 0.0172 / 0.0232 / 0.0349 |
+| **MEAN** | **0.0283** |
+
+vs reference 0.7723. Marginal lift over Step B (0.0129 → 0.0283); HiRoom-04 alone moved
+from 0.012 → 0.083. Still **~27× below DA3-SMALL reference**. The 10×
+schedule is not the missing ingredient.
+
+#### Verdict and remaining hypotheses
+
+| attempt | recipe | mean AUC30 | vs ref 0.7723 |
+|---|---|---|---|
+| §15.55 Phase 1 | LARGE-teacher output-distill, 1000 steps | 0.020 | ~0 |
+| Step A: super-1 (§15.56) | SMALL-teacher output-distill, 500×3 | bad | ~0 |
+| Step B: + feat distill | + L_feat on layers 5/7/9/11, 500×3 | 0.0129 | ~0 |
+| Step C: 10× sub-1 | same + 5000 steps on sub-1 only | 0.0283 | ~0 |
+
+Three independent variants, all near-zero pose AUC. The pattern is
+not noise: the patched DA3-SMALL student with attention-only training
+cannot recover pose against the DA3-SMALL reference, regardless of
+teacher (SMALL/LARGE), supervision (output / output+feature), or
+schedule (500 / 1000 / 5000 steps).
+
+What the loss curves say: training loss converges. L_feat saturates
+at ~0.22 after ~1500 steps (lower bound on how close Mamba-3 features
+can get to transformer features under this objective); L_D / L_M go
+strongly negative (aleatoric collapse, expected). Optimization is
+fine; the optimum it converges to does not produce useful pose.
+
+Likely root causes (to be diagnosed before next CM):
+
+1. **L_feat ≈ 0.22 is a feature-quality floor, not zero.** The
+   Mamba-3 attention class — at 384 / 6 heads / state_dim 64 — may
+   not be expressive enough to match transformer features layer-by-
+   layer at 4 simultaneously-supervised depths. CM26 (state_dim
+   64→128) was reverted as "rank-ceiling falsified" §15.23 *on the
+   old SSM3DNet architecture*; that probe should be re-run on
+   patched DA3.
+2. **`cam_dec` was never trained against GT pose in any of A/B/C.**
+   It's frozen at DA3-SMALL pretrained weights, which were trained
+   to read transformer cls-tokens, not Mamba-3 cls-tokens. Even if
+   features were perfect, the pose-prediction MLP may need a
+   refresh. §15.55 Phase 2 *did* train cam_dec but used GT (which
+   broke teacher-target continuity); a clean test is "freeze
+   everything else, train cam_dec only against GT pose, see if AUC
+   moves" — orthogonal to the attention quality question.
+3. **Cls-token / cat-token interaction.** DA3 uses
+   `cat([local_x, x], -1)` to feed DPT, and the cls-token informs
+   `cam_dec`. The Mamba-3 attention swap may be subtly mis-handling
+   the cls-token (e.g., positional encoding or aggregation order).
+   A unit test comparing `(patched_DA3 forward).cls_token` to
+   `(unpatched_DA3 forward).cls_token` on identical input would
+   flag this in minutes.
+
+Next-CM candidates (not yet executed):
+
+- **CM-A: cam_dec-only GT fine-tune** on Step C ckpt (cheap; tests
+  hypothesis 2 in isolation). ~100 steps, ~10 min.
+- **CM-B: capacity bump** — re-run Step C with state_dim 128 and/or
+  num_heads 12 (tests hypothesis 1). ~1 h.
+- **CM-C: cls-token correctness probe** — diff patched vs
+  unpatched DA3 cls-tokens on a fixed batch (tests hypothesis 3).
+  No training. ~10 min.
+
+Recommendation: **run CM-C first** (cheapest, highest information
+density). If cls-tokens are wrong, A and B are wasted. Then CM-A
+(isolates head). Then CM-B (largest cost, runs only if A and C
+both clean).

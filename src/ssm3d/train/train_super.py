@@ -73,6 +73,7 @@ class SuperPhaseConfig:
     seed: int = 0
     n_dpt_top_fusion_unfrozen: int = 2
     weights: DA3LossWeights = field(default_factory=DA3LossWeights)
+    lambda_feat: float = 1.0  # feature-distillation weight; auto-disabled when teacher dim differs
 
 
 def _amp_dtype(name: str) -> torch.dtype:
@@ -97,27 +98,55 @@ def _capture_dpt_hook(model: nn.Module, captured: dict):
     return model.head.register_forward_hook(hook)
 
 
+FEAT_LAYERS = (5, 7, 9, 11)
+
+
 @torch.inference_mode()
-def _teacher_forward(teacher, images: Tensor) -> dict:
+def _teacher_forward(teacher, images: Tensor, export_layers: Optional[tuple[int, ...]] = None) -> dict:
     captured: dict = {}
     h = _capture_dpt_hook(teacher.model, captured)
     try:
-        out = teacher.model(images.unsqueeze(0))
+        if export_layers:
+            out = teacher.model(images.unsqueeze(0), export_feat_layers=list(export_layers))
+        else:
+            out = teacher.model(images.unsqueeze(0))
     finally:
         h.remove()
     captured["extrinsics"] = out.extrinsics
+    if export_layers and hasattr(out, "aux"):
+        captured["feats"] = [out.aux[f"feat_layer_{i}"] for i in export_layers]
     return captured
 
 
-def _student_forward(student, images: Tensor) -> dict:
+def _student_forward(student, images: Tensor, export_layers: Optional[tuple[int, ...]] = None) -> dict:
     captured: dict = {}
     h = _capture_dpt_hook(student.model, captured)
     try:
-        out = student.model(images.unsqueeze(0))
+        if export_layers:
+            out = student.model(images.unsqueeze(0), export_feat_layers=list(export_layers))
+        else:
+            out = student.model(images.unsqueeze(0))
     finally:
         h.remove()
     captured["extrinsics"] = out.extrinsics
+    if export_layers and hasattr(out, "aux"):
+        captured["feats"] = [out.aux[f"feat_layer_{i}"] for i in export_layers]
     return captured
+
+
+def _feature_distill_loss(student_feats: list[Tensor], teacher_feats: list[Tensor]) -> Tensor:
+    """Per-layer ℓ2/C + (1 − cos) on patch features. Both inputs (B,S,Hp,Wp,C)."""
+    total = student_feats[0].new_zeros(())
+    for f_s, f_t in zip(student_feats, teacher_feats):
+        s = f_s.float()
+        t = f_t.float().detach()
+        c = s.shape[-1]
+        l2 = (s - t).pow(2).mean() / max(c, 1)
+        s_n = torch.nn.functional.normalize(s, dim=-1)
+        t_n = torch.nn.functional.normalize(t, dim=-1)
+        cos_loss = 1.0 - (s_n * t_n).sum(dim=-1).mean()
+        total = total + l2 + cos_loss
+    return total / max(len(student_feats), 1)
 
 
 def set_trainables(student, scope: str, n_top_fusion: int) -> tuple[list[nn.Parameter], list[dict], dict]:
@@ -193,17 +222,16 @@ def set_trainables(student, scope: str, n_top_fusion: int) -> tuple[list[nn.Para
     return flat, groups, info
 
 
-def build_target(batch, teacher, image_size: int, device) -> tuple[dict, dict]:
-    """Compose the target dict and (optional) GT-derived inputs for L_P/L_C.
+def build_target(batch, teacher, image_size: int, device,
+                 export_feat_layers: Optional[tuple[int, ...]] = None) -> tuple[dict, dict, list[Tensor] | None]:
+    """Compose the target dict, GT-derived inputs, and teacher's aux features.
 
-    Returns (target_dict, gt_kwargs). gt_kwargs is passed to da3_paper_loss
-    only when teacher is None (GT mode).
+    Returns (target_dict, gt_kwargs, teacher_feats).
     """
     images = batch.images.to(device)
 
     if teacher is not None:
-        # Teacher mode: target = teacher predictions
-        t_out = _teacher_forward(teacher, images)
+        t_out = _teacher_forward(teacher, images, export_layers=export_feat_layers)
         target = {
             "depth": t_out["depth"],
             "ray": t_out["ray"],
@@ -211,9 +239,8 @@ def build_target(batch, teacher, image_size: int, device) -> tuple[dict, dict]:
             "ray_conf": t_out.get("ray_conf"),
             "extrinsics": t_out["extrinsics"],
         }
-        return target, {}
+        return target, {}, t_out.get("feats")
 
-    # GT mode
     gt_depth = batch.gt_depth.unsqueeze(0).to(device)
     gt_K = batch.gt_K.unsqueeze(0).to(device)
     gt_w2c = batch.gt_w2c.unsqueeze(0).to(device)
@@ -228,7 +255,7 @@ def build_target(batch, teacher, image_size: int, device) -> tuple[dict, dict]:
     return target, {
         "gt_depth": gt_depth, "gt_intrinsics": gt_K,
         "gt_w2c": gt_w2c, "gt_valid": gt_valid,
-    }
+    }, None
 
 
 def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
@@ -282,14 +309,29 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
         seed=cfg.seed, require_gt=require_gt,
     )
 
+    # Feature distillation enabled only for super-phase 1 (DA3-SMALL teacher,
+    # dim-matched). LARGE teacher (super 2) has 1024-dim features that don't
+    # match the student's 384-dim — dimensions can't align without a projector.
+    feat_distill = cfg.super_phase == 1 and cfg.lambda_feat > 0
+    export_layers = FEAT_LAYERS if feat_distill else None
+    if feat_distill:
+        print(f"[train_super] feature distillation ENABLED at layers {FEAT_LAYERS}", flush=True)
+
     log_lines: list[str] = []
     for step in range(cfg.steps):
         batch = next(data)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-            target, gt_kwargs = build_target(batch, teacher, cfg.image_size, device)
-            s_out = _student_forward(student, batch.images.to(device))
+            target, gt_kwargs, t_feats = build_target(
+                batch, teacher, cfg.image_size, device, export_feat_layers=export_layers,
+            )
+            s_out = _student_forward(student, batch.images.to(device), export_layers=export_layers)
             loss_out = da3_paper_loss(student=s_out, target=target, weights=cfg.weights, **gt_kwargs)
             loss = loss_out.total
+
+            l_feat = loss.new_zeros(())
+            if feat_distill and t_feats is not None and "feats" in s_out:
+                l_feat = _feature_distill_loss(s_out["feats"], t_feats)
+                loss = loss + cfg.lambda_feat * l_feat
 
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -304,6 +346,7 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
                 f"loss={loss.item():.4f}  L_D={loss_out.l_depth.item():.4f}  "
                 f"L_M={loss_out.l_ray.item():.4f}  L_grad={loss_out.l_grad.item():.4f}  "
                 f"L_P={loss_out.l_point.item():.4f}  L_C={loss_out.l_cam.item():.4f}  "
+                f"L_feat={l_feat.item():.4f}  "
                 f"lr={opt.param_groups[0]['lr']:.2e}  [{batch.dataset}/{batch.scene}]"
             )
             print(line, flush=True)
