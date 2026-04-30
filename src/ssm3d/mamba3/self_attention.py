@@ -130,7 +130,7 @@ class Mamba3SelfAttention(nn.Module):
         row_renorm: bool = True,
         post_norm: bool = True,
         chunk_size: Optional[int] = None,
-        use_fused_kernel: bool = False,
+        use_fused_kernel: bool = True,
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -211,32 +211,34 @@ class Mamba3SelfAttention(nn.Module):
 
         Bsz, H, T, headdim_v = Vp.shape
         state_dim = Bp.shape[-1]
+        out_dtype = Vp.dtype
 
-        # Layout: (B, H, T, D) → (B, T, H, D)
-        Q = Cp.transpose(1, 2).contiguous()
-        K = Bp.transpose(1, 2).contiguous()
-        V = Vp.transpose(1, 2).contiguous()
+        # The Triton kernel uses fp32 accumulators in `tl.dot`, so its inputs
+        # must be fp32 even when the surrounding model runs under bf16 autocast.
+        # Upcast here, downcast the result before returning.
+        Q = Cp.transpose(1, 2).contiguous().float()
+        K = Bp.transpose(1, 2).contiguous().float()
+        V = Vp.transpose(1, 2).contiguous().float()
 
-        ADT = delta * A_log
-        DT = delta
-        Trap = lam
+        ADT = (delta * A_log).float()
+        DT = delta.float()
+        Trap = lam.float()
 
-        Q_bias = torch.zeros(H, state_dim, dtype=Q.dtype, device=Q.device)
-        K_bias = torch.zeros(H, state_dim, dtype=K.dtype, device=K.device)
-        # Pass headdim_angles = state_dim // 2 (rotary's natural half-pair size)
-        # but with all-zero angles → identity rotation. Avoids forcing the
-        # kernel to a degenerate `headdim_angles=0` case.
+        Q_bias = torch.zeros(H, state_dim, dtype=torch.float32, device=Q.device)
+        K_bias = torch.zeros(H, state_dim, dtype=torch.float32, device=K.device)
+        # headdim_angles = state_dim // 2 (rotary's natural half-pair size),
+        # with all-zero angles ⇒ identity rotation (we apply 2D RoPE in `forward`
+        # before this). Avoids the kernel's degenerate `headdim_angles=0` case.
         headdim_angles = state_dim // 2
         Angles = torch.zeros(
-            Bsz, T, H, headdim_angles, dtype=Q.dtype, device=Q.device,
+            Bsz, T, H, headdim_angles, dtype=torch.float32, device=Q.device,
         )
 
         out = mamba3_siso_combined(
             Q, K, V, ADT, DT, Trap, Q_bias, K_bias, Angles,
             chunk_size=self.chunk_size if self.chunk_size is not None else 64,
         )
-        # (B, T, H, head_dim) → (B, H, T, head_dim)
-        return out.transpose(1, 2).contiguous()
+        return out.transpose(1, 2).contiguous().to(out_dtype)
 
     def forward(
         self,

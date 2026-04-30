@@ -38,7 +38,7 @@ class Mamba3Attention(nn.Module):
         bidirectional: bool = True,
         three_term: bool = True,
         chunk_size: Optional[int] = None,
-        use_fused_kernel: bool = False,
+        use_fused_kernel: bool = True,
     ) -> None:
         super().__init__()
         self.inner = Mamba3SelfAttention(

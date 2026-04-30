@@ -41,6 +41,12 @@ def _steps_per_epoch(cfg: dict) -> int:
     return int(cfg.get("steps_per_epoch") or CIFAR10_TRAIN_N // cfg["batch_size"])
 
 
+def _seq_length(cfg: dict, img_size: int = 32) -> int:
+    """ViT token count for CIFAR-10: (32/patch)^2 + 1 (CLS). Falls back to T=65 (patch=4)."""
+    patch = int(cfg.get("patch_size", 4))
+    return (img_size // patch) ** 2 + 1
+
+
 def _recipe_subtitle(cfg: dict) -> str:
     sched = cfg.get("lr_schedule", "cosine")
     grad_clip = cfg.get("grad_clip", 0.0)
@@ -112,11 +118,12 @@ def make_loss_vs_steps(results_path: Path, out_path: Path) -> None:
 
 def make_efficiency_comparison(results_path: Path, out_path: Path) -> None:
     data = json.loads(results_path.read_text())
-    variants = data["variants"]
+    cfg, variants = data["config"], data["variants"]
     names = _present_variants(variants)
     if not names:
         return
 
+    bs, seq = cfg["batch_size"], _seq_length(cfg)
     labels = [VARIANT_LABEL[n] for n in names]
     colors = [VARIANT_COLOR[n] for n in names]
     params = [variants[n]["params"] / 1e6 for n in names]
@@ -127,8 +134,8 @@ def make_efficiency_comparison(results_path: Path, out_path: Path) -> None:
     fig, axes = plt.subplots(1, 4, figsize=(15, 4.4))
     panels = [
         (params, "Parameters (M)", "M params"),
-        (latency, "Inference latency (ms)\nB=128, T=65", "ms"),
-        (peakmem, "Peak GPU memory (MiB)\nB=128, T=65", "MiB"),
+        (latency, f"Inference latency (ms)\nB={bs}, T={seq}", "ms"),
+        (peakmem, f"Peak GPU memory (MiB)\nB={bs}, T={seq}", "MiB"),
         (sec_ep, "Train wall-clock (s/epoch)", "s/epoch"),
     ]
     for ax, (vals, title, unit) in zip(axes, panels):
@@ -141,7 +148,7 @@ def make_efficiency_comparison(results_path: Path, out_path: Path) -> None:
             ax.text(bar.get_x() + bar.get_width() / 2, v, f"{v:.2f}",
                     ha="center", va="bottom", fontsize=10)
 
-    fig.suptitle(f"Efficiency — {results_path.parent.name} (B=128, T=65)", fontsize=11)
+    fig.suptitle(f"Efficiency — {results_path.parent.name} (B={bs}, T={seq})", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)

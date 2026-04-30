@@ -43,7 +43,7 @@ def _infer_dim(attn: nn.Module) -> int:
 def _swap_attn(
     block: nn.Module, *,
     state_dim: int = 64, bidirectional: bool = True, three_term: bool = True,
-    use_fused_kernel: bool = False, chunk_size: int | None = None,
+    use_fused_kernel: bool = True, chunk_size: int | None = None,
 ) -> None:
     """Replace `block.attn` in-place with a Mamba3Attention of matching (dim, num_heads)."""
     if not hasattr(block, "attn"):
@@ -99,7 +99,7 @@ def install_mamba3(
     state_dim: int = 64,
     bidirectional: bool = True,
     three_term: bool = True,
-    use_fused_kernel: bool = False,
+    use_fused_kernel: bool = True,
     chunk_size: int | None = None,
 ) -> int:
     """Swap self/cross attention to Mamba-3 across the DA3 network.

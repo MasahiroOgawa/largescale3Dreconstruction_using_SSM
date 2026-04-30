@@ -193,17 +193,19 @@ class Classifier(nn.Module):
         return self.head(self.backbone(x))
 
 
-def build_model(variant: str, num_classes: int = 10) -> nn.Module:
+def build_model(variant: str, patch_size: int = 4, mamba_chunk_size: int | None = None,
+                num_classes: int = 10) -> nn.Module:
     if variant == "cnn":
         return Classifier(SmallResNet(), num_classes)
     if variant == "vit_attn":
-        return Classifier(ViTTiny(), num_classes)
+        return Classifier(ViTTiny(patch=patch_size), num_classes)
     if variant == "vit_mamba3":
-        model = Classifier(ViTTiny(), num_classes)
-        n_swapped = install_mamba3(model, which="backbone_only")
+        model = Classifier(ViTTiny(patch=patch_size), num_classes)
+        n_swapped = install_mamba3(model, which="backbone_only", chunk_size=mamba_chunk_size)
         if n_swapped == 0:
             raise RuntimeError("install_mamba3 swapped 0 modules; backbone.blocks not found")
-        print(f"  [vit_mamba3] swapped {n_swapped} attention modules → Mamba3Attention")
+        chunk_str = "naive O(T²)" if mamba_chunk_size is None else f"chunked, chunk={mamba_chunk_size}"
+        print(f"  [vit_mamba3] swapped {n_swapped} attention modules → Mamba3Attention ({chunk_str})")
         return model
     raise ValueError(f"unknown variant: {variant}")
 
@@ -384,7 +386,8 @@ def evaluate(model, loader, device):
 def run_variant(variant: str, args, device: torch.device, train_dl, test_dl) -> dict:
     print(f"\n=== variant: {variant} ===")
     set_seed(args.seed)
-    model = build_model(variant).to(device)
+    model = build_model(variant, patch_size=args.patch_size,
+                        mamba_chunk_size=args.mamba_chunk_size).to(device)
     n_params = count_params(model)
     print(f"  params: {n_params/1e6:.2f} M ({n_params:,})")
 
@@ -452,6 +455,8 @@ def write_results_json(out: Path, results: dict, args) -> None:
         "weight_decay": 0.05, "seed": args.seed, "device": args.device,
         "warmup_epochs": args.warmup_epochs, "grad_clip": args.grad_clip,
         "lr_schedule": args.lr_schedule, "steps_per_epoch": spe,
+        "patch_size": args.patch_size,
+        "mamba_chunk_size": args.mamba_chunk_size,
     }
     if args.lr_schedule == "plateau":
         cfg.update({
@@ -583,6 +588,12 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--data-dir", type=Path, default=Path("data/cifar10"))
+    ap.add_argument("--patch-size", type=int, default=4,
+                    help="ViT patch side length (px). 32x32 image: patch=4→T=65 (default), "
+                         "patch=2→T=257, patch=1→T=1025. Ignored for cnn variant.")
+    ap.add_argument("--mamba-chunk-size", type=int, default=None,
+                    help="vit_mamba3 SSD mask chunk size. None=naive O(T²) (default; "
+                         "fine for small T but OOMs at T≥1k). Set to 64 or 128 for long sequences.")
     ap.add_argument("--warmup-epochs", type=int, default=5,
                     help="Linear-warmup length in epochs before cosine decay (default 5; §9.7 uses 10)")
     ap.add_argument("--grad-clip", type=float, default=0.0,
