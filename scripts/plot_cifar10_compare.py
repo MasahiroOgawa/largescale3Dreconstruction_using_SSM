@@ -28,6 +28,12 @@ VARIANT_LABEL = {
     "vit_attn": "ViT-Tiny + softmax",
     "vit_mamba3": "ViT-Tiny + Mamba-3 SSD",
 }
+# Shorter labels for narrow bar-chart panels (avoids tick-label overlap).
+VARIANT_LABEL_SHORT = {
+    "cnn": "CNN",
+    "vit_attn": "ViT + softmax",
+    "vit_mamba3": "ViT + Mamba-3",
+}
 VARIANT_COLOR = {
     "cnn": "#1f77b4",
     "vit_attn": "#ff7f0e",
@@ -124,7 +130,7 @@ def make_efficiency_comparison(results_path: Path, out_path: Path) -> None:
         return
 
     bs, seq = cfg["batch_size"], _seq_length(cfg)
-    labels = [VARIANT_LABEL[n] for n in names]
+    labels = [VARIANT_LABEL_SHORT[n] for n in names]
     colors = [VARIANT_COLOR[n] for n in names]
     params = [variants[n]["params"] / 1e6 for n in names]
     latency = [variants[n]["efficiency"]["latency_ms"] for n in names]
@@ -144,6 +150,9 @@ def make_efficiency_comparison(results_path: Path, out_path: Path) -> None:
         ax.set_ylabel(unit)
         ax.grid(True, axis="y", alpha=0.3)
         ax.set_ylim(0, max(vals) * 1.18)
+        ax.tick_params(axis="x", labelrotation=20)
+        for tick in ax.get_xticklabels():
+            tick.set_horizontalalignment("right")
         for bar, v in zip(bars, vals):
             ax.text(bar.get_x() + bar.get_width() / 2, v, f"{v:.2f}",
                     ha="center", va="bottom", fontsize=10)
