@@ -13,7 +13,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from ssm3d.data import (
+from mamba3_attn.data import (
     download_coco_mini,
     download_eth3d_terrains,
     download_nerf_lego,

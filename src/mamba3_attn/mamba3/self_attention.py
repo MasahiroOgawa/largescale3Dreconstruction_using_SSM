@@ -166,7 +166,9 @@ class Mamba3SelfAttention(nn.Module):
         A_log: Tensor,
         lam: Tensor,
     ) -> Tensor:
-        if self.use_fused_kernel:
+        # The Triton kernel requires CUDA; fall back to the PyTorch path on
+        # CPU so unit tests and ad-hoc CPU runs still work.
+        if self.use_fused_kernel and Bp.is_cuda:
             return self._one_direction_kernel(Bp, Cp, Vp, delta, A_log, lam)
         if self.chunk_size is not None and self.chunk_size < Bp.shape[-2]:
             return ssd_forward_chunked(

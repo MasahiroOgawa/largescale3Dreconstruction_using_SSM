@@ -1,4 +1,4 @@
-# `ssm3d.mamba3` — Mamba-3 SSD attention library
+# `mamba3_attn.mamba3` — Mamba-3 SSD attention library
 
 The core research contribution of this project: a Mamba-3 Structured
 State-space Duality (SSD) attention module that can be **dropped into
@@ -39,7 +39,7 @@ The library implements:
 ## Usage — standalone
 
 ```python
-from ssm3d.mamba3 import Mamba3SelfAttention
+from mamba3_attn.mamba3 import Mamba3SelfAttention
 
 # Drop-in replacement: same (B, T, C) → (B, T, C) signature.
 attn = Mamba3SelfAttention(
@@ -51,11 +51,11 @@ y = attn(x)  # x: (B, T, 384)
 
 ## Usage — Depth-Anything-3 swap
 
-The integration is in `ssm3d.patch` and `ssm3d.da3_adapter`:
+The integration is in `mamba3_attn.patch` and `mamba3_attn.da3_adapter`:
 
 ```python
 from depth_anything_3.api import DepthAnything3
-from ssm3d.patch import install_mamba3
+from mamba3_attn.patch import install_mamba3
 
 api = DepthAnything3.from_pretrained("depth-anything/DA3-SMALL")
 n_swapped = install_mamba3(api.model, which="all", state_dim=64)
@@ -74,7 +74,7 @@ proj_drop=...)` constructor signature and `(x, pos=..., attn_mask=...)`
 forward signature (DA3 / DINOv2 / timm convention):
 
 ```python
-from ssm3d.da3_adapter import Mamba3Attention
+from mamba3_attn.da3_adapter import Mamba3Attention
 for block in model.backbone.blocks:
     block.attn = Mamba3Attention(
         dim=block.attn.qkv.in_features,

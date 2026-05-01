@@ -17,14 +17,14 @@ References:
 
 Public API:
 
->>> from ssm3d.mamba3 import Mamba3SelfAttention, Mamba3CrossAttention
+>>> from mamba3_attn.mamba3 import Mamba3SelfAttention, Mamba3CrossAttention
 >>> attn = Mamba3SelfAttention(dim=384, num_heads=6, state_dim=64,
 ...                             bidirectional=True, three_term=True)
 >>> y = attn(x)  # x: (B, T, dim) → y: (B, T, dim)
 
 Integration patterns:
-- **DA3 swap** — see `ssm3d.patch.install_mamba3` for in-place attention
-  replacement in a real Depth-Anything-3 model. The `ssm3d.da3_adapter`
+- **DA3 swap** — see `mamba3_attn.patch.install_mamba3` for in-place attention
+  replacement in a real Depth-Anything-3 model. The `mamba3_attn.da3_adapter`
   module provides a DA3-shaped wrapper.
 - **Generic ViT swap** — instantiate `Mamba3SelfAttention(dim, num_heads)`
   with the same signature as `nn.MultiheadAttention` and replace

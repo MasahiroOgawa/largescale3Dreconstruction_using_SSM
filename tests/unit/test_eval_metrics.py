@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from ssm3d.eval.metrics import (
+from mamba3_attn.eval.metrics import (
     abs_relative_depth_error,
     align_scale_median,
     cross_view_nn_agreement,

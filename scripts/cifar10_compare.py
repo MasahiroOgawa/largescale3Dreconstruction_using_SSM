@@ -6,7 +6,7 @@ share the same recipe (AdamW, lr 1e-3, wd 0.05, 5-ep warmup → cosine, batch 12
 budget (~2.7 M).
 
 The two ViT variants share the same skeleton; `vit_mamba3` is built by calling
-`ssm3d.patch.install_mamba3(net, which="backbone_only")` after construction —
+`mamba3_attn.patch.install_mamba3(net, which="backbone_only")` after construction —
 the same swap path used by the DA3 depth pipeline.
 """
 from __future__ import annotations
@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench_efficiency_patched import count_params, measure  # noqa: E402
 from plot_cifar10_compare import make_all_figures  # noqa: E402
 
-from ssm3d.patch import install_mamba3  # noqa: E402
+from mamba3_attn.patch import install_mamba3  # noqa: E402
 
 CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR10_STD = (0.2470, 0.2435, 0.2616)
@@ -103,7 +103,7 @@ class VanillaAttention(nn.Module):
     """Timm-style multi-head softmax attention.
 
     Exposes `qkv: nn.Linear(dim, 3*dim)`, `proj: nn.Linear(dim, dim)`,
-    and `num_heads` so `ssm3d.patch.install_mamba3` can swap it in-place.
+    and `num_heads` so `mamba3_attn.patch.install_mamba3` can swap it in-place.
     """
 
     def __init__(self, dim: int, num_heads: int, attn_drop: float = 0.0, proj_drop: float = 0.0):

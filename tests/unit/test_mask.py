@@ -1,10 +1,10 @@
-"""Unit tests for ssm3d.mamba3.mask"""
+"""Unit tests for mamba3_attn.mamba3.mask"""
 
 from __future__ import annotations
 
 import torch
 
-from ssm3d.mamba3.mask import build_two_term_mask, build_three_term_mask, build_cross_mask
+from mamba3_attn.mamba3.mask import build_two_term_mask, build_three_term_mask, build_cross_mask
 
 
 def _random_inputs(batch=2, heads=3, T=8, seed=0):

@@ -2,7 +2,7 @@
 
 Returns per-image intrinsics (3, 3) and extrinsics (4, 4, world-to-camera),
 adjusted to the center-square-crop + resize applied by
-`ssm3d.data.eth3d.load_eth3d_scene`. That lets downstream code build pixel-level
+`mamba3_attn.data.eth3d.load_eth3d_scene`. That lets downstream code build pixel-level
 warps that match the loaded RGB/depth tensors without re-scaling.
 """
 

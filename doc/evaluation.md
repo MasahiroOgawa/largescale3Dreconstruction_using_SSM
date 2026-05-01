@@ -2,8 +2,8 @@
 
 This document explains the metrics that appear in
 `outputs/eval_*/summary.md` and in the head-to-head bar plots produced by
-`scripts/eval_ssm3d_vs_da3.py`. Source code:
-[`src/ssm3d/eval/metrics.py`](../src/ssm3d/eval/metrics.py).
+`scripts/eval_mamba3_attn_vs_da3.py`. Source code:
+[`src/mamba3_attn/eval/metrics.py`](../src/mamba3_attn/eval/metrics.py).
 
 Two families:
 
@@ -25,7 +25,7 @@ pred := pred * (median(gt_valid) / median(pred_valid))
 ```
 
 This is the MiDaS / DA3 convention. Implementation:
-[`align_scale_median`](../src/ssm3d/eval/metrics.py). Without it, a
+[`align_scale_median`](../src/mamba3_attn/eval/metrics.py). Without it, a
 perfectly shaped prediction at the wrong scale would score near-zero on
 every metric.
 
@@ -123,7 +123,7 @@ feat_cos_mean(feats)  where feats: (N, C)
   expect values near 0. Values **> 0.7** mean literal collapse (all
   tokens look alike → no spatial information).
 - Implementation:
-  [`feat_cos_mean`](../src/ssm3d/eval/metrics.py).
+  [`feat_cos_mean`](../src/mamba3_attn/eval/metrics.py).
 
 ### `effective_rank` ↑
 
@@ -164,7 +164,7 @@ effective_rank(feats):                    # feats: (T, C) per image
 ```
 
 Implementation:
-[`effective_rank`](../src/ssm3d/eval/metrics.py).
+[`effective_rank`](../src/mamba3_attn/eval/metrics.py).
 
 #### Properties
 
@@ -222,7 +222,7 @@ Pipeline (per image pair A, B):
 - Score in `[0, 1]`; higher = features track the underlying 3D structure
   across viewpoints.
 - Implementation:
-  [`cross_view_nn_agreement`](../src/ssm3d/eval/metrics.py).
+  [`cross_view_nn_agreement`](../src/mamba3_attn/eval/metrics.py).
 
 ---
 

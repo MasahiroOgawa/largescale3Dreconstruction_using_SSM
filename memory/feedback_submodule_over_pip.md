@@ -7,7 +7,7 @@ type: feedback
 When adding a dependency where transparency or local inspection matters
 (e.g., kernel implementations, model architectures we may swap or fork),
 prefer **git submodule under `third_party/<name>/`** with sys.path
-injection (see `src/ssm3d/__init__.py` for the DA3 pattern), rather than
+injection (see `src/mamba3_attn/__init__.py` for the DA3 pattern), rather than
 `uv add <pkg>` from PyPI.
 
 **Why:**

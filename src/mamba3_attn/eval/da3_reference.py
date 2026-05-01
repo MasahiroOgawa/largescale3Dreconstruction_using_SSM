@@ -17,8 +17,8 @@ import numpy as np
 import torch
 from torch import Tensor
 
-# Import order: ssm3d first to register DA3 sys.path.
-import ssm3d  # noqa: F401
+# Import order: mamba3_attn first to register DA3 sys.path.
+import mamba3_attn  # noqa: F401
 
 DEFAULT_HF_MODEL = "depth-anything/DA3-SMALL"
 

@@ -1,12 +1,12 @@
-"""Unit tests for ssm3d.da3_adapter.Mamba3Attention"""
+"""Unit tests for mamba3_attn.da3_adapter.Mamba3Attention"""
 
 from __future__ import annotations
 
 import torch
 from torch import nn
 
-from ssm3d.da3_adapter import Mamba3Attention
-from ssm3d.mamba3.rope2d import RoPE2D
+from mamba3_attn.da3_adapter import Mamba3Attention
+from mamba3_attn.mamba3.rope2d import RoPE2D
 
 
 def test_accepts_full_da3_kwargs():

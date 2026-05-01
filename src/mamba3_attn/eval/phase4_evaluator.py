@@ -19,7 +19,7 @@ Metrics per scene:
   (pred cams Umeyama-aligned to GT, then pred depth fused)
 
 Usage:
-    uv run python -m ssm3d.eval.phase4_evaluator \\
+    uv run python -m mamba3_attn.eval.phase4_evaluator \\
         --ckpt outputs/runs/phase3_unfreeze/ckpt_500.pt
 """
 

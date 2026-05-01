@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import torch
 
-from ssm3d.mamba3.mask import (
+from mamba3_attn.mamba3.mask import (
     build_three_term_mask,
     build_three_term_mask_rows,
     build_two_term_mask,
     build_two_term_mask_rows,
 )
-from ssm3d.mamba3.self_attention import (
+from mamba3_attn.mamba3.self_attention import (
     Mamba3SelfAttention,
     ssd_forward,
     ssd_forward_chunked,
@@ -102,11 +102,13 @@ def test_module_chunked_matches_full():
         dim=dim, num_heads=heads, state_dim=8,
         bidirectional=True, three_term=True,
         out_proj=False, post_norm=False, chunk_size=None,
+        use_fused_kernel=False,
     )
     attn_chunk = Mamba3SelfAttention(
         dim=dim, num_heads=heads, state_dim=8,
         bidirectional=True, three_term=True,
         out_proj=False, post_norm=False, chunk_size=12,
+        use_fused_kernel=False,
     )
     attn_chunk.load_state_dict(attn_full.state_dict())
     attn_full.eval(); attn_chunk.eval()

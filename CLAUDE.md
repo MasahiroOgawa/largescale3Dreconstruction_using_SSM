@@ -14,8 +14,8 @@ These rules are repo-local. They override any global `~/.claude/CLAUDE.md` behav
 
 ## Depth-Anything-3 integration
 
-- DA3 is a git submodule at `third_party/depth-anything-3`. Treat it as read-only upstream code — **never edit files inside that directory**. Swap attention modules at runtime via `ssm3d.patch.install_mamba3(...)`.
-- If DA3 upstream changes and the patch breaks, fix `src/ssm3d/patch.py` or `src/ssm3d/da3_adapter.py` — never the submodule.
+- DA3 is a git submodule at `third_party/depth-anything-3`. Treat it as read-only upstream code — **never edit files inside that directory**. Swap attention modules at runtime via `mamba3_attn.patch.install_mamba3(...)`.
+- If DA3 upstream changes and the patch breaks, fix `src/mamba3_attn/patch.py` or `src/mamba3_attn/da3_adapter.py` — never the submodule.
 
 ## Memory
 

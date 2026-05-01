@@ -15,7 +15,7 @@ discontinuity within a super-phase) and a fixed scope progression.
 Sub 1 → 2 → 3 within a super-phase forms a chain of init → ckpt.
 
 Usage:
-    uv run python -m ssm3d.train.train_super \\
+    uv run python -m mamba3_attn.train.train_super \\
         --super 1 --sub 1 \\
         --steps 500 \\
         --out-dir outputs/runs/sp1_sub1 \\

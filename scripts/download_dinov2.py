@@ -13,7 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from ssm3d.data._util import download
+from mamba3_attn.data._util import download
 
 URL = "https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14/dinov2_vits14_pretrain.pth"
 DEFAULT_DEST = Path("data/weights/dinov2_vits14_pretrain.pth")

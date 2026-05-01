@@ -58,7 +58,7 @@ Drop `--depth 2` from the default. Use the full `depth=12` for ViT-Small. Curren
 
 DA3 ships with a DINOv2-small checkpoint compatible with `patch_size=16`. The attention sub-modules are incompatible with our Mamba-3 swap, but everything else loads cleanly.
 
-- Add `ssm3d.weights.load_dinov2_backbone(backbone, checkpoint_path)` that:
+- Add `mamba3_attn.weights.load_dinov2_backbone(backbone, checkpoint_path)` that:
   - loads the state dict,
   - filters keys containing `.attn.` (our Mamba-3 blocks don't match them),
   - calls `backbone.vit.load_state_dict(filtered, strict=False)` and asserts the `missing_keys` set is **only** `.attn.*` parameters.
@@ -69,7 +69,7 @@ DA3 ships with a DINOv2-small checkpoint compatible with `patch_size=16`. The at
 
 Keep the existing branch (GT-depth L1) for when ETH3D depth is downloaded. For the default no-GT path, swap the variance-collapse loss for one of these, in order of preference:
 
-1. **Add ETH3D depth GT**: download `terrains_rig_depth.7z` (~0.6 GB, within the 2 GB budget). `src/ssm3d/data/eth3d.py` already has the scaffolding. Then `overfit_run` uses the existing `_scale_invariant_l1`.
+1. **Add ETH3D depth GT**: download `terrains_rig_depth.7z` (~0.6 GB, within the 2 GB budget). `src/mamba3_attn/data/eth3d.py` already has the scaffolding. Then `overfit_run` uses the existing `_scale_invariant_l1`.
 2. **Photometric reprojection** between two views using predicted depth and pose (ETH3D provides poses). Non-trivial (~80 lines), but the right self-supervised signal.
 3. **Anti-collapse regularizer fallback** if neither above is wired yet:
    - primary: `smoothness(pred) + 0.1 * variance_across_views(pred)`
@@ -77,7 +77,7 @@ Keep the existing branch (GT-depth L1) for when ETH3D depth is downloaded. For t
 
 ### Fix 4 — Upsample feature-PCA to image resolution before saving
 
-`src/ssm3d/viz/feature_pca.py::feature_pca_image` currently returns the raw 14×14 array. Add an `upsample_to: tuple[int, int] | None = None` arg; when set, resize via `PIL.Image.NEAREST` *after* min-max normalization (so PCA math stays at patch resolution but the saved PNG is 224×224).
+`src/mamba3_attn/viz/feature_pca.py::feature_pca_image` currently returns the raw 14×14 array. Add an `upsample_to: tuple[int, int] | None = None` arg; when set, resize via `PIL.Image.NEAREST` *after* min-max normalization (so PCA math stays at patch resolution but the saved PNG is 224×224).
 
 - `run_demo.py` and the integration test pass `upsample_to=(img_size, img_size)`.
 
@@ -273,7 +273,7 @@ queries; the $V$ projection is literally a value projection. Initialise:
 
 This is an explicit cast from softmax attention to SSD attention;
 accuracy is approximate but the representation is "DINOv2-like" from
-step 0 instead of random. Add `ssm3d.weights.warm_start_mamba3_from_qkv`.
+step 0 instead of random. Add `mamba3_attn.weights.warm_start_mamba3_from_qkv`.
 
 Acceptance: `feat_cos_mean` < 0.30, and `feature_pca_view0.png` clearly
 tracks the scene layout.
@@ -299,7 +299,7 @@ tracks the scene layout.
 
 Change `save_feature_pca`'s upsample from `NEAREST` to `BILINEAR`. PCA
 output is continuous; `NEAREST` artificially block-quantizes it. This
-is a one-line fix in `src/ssm3d/viz/feature_pca.py`.
+is a one-line fix in `src/mamba3_attn/viz/feature_pca.py`.
 
 ## 10. Revised acceptance criteria (after §9 fixes)
 
@@ -409,26 +409,26 @@ changes landed in commits following the first eval (2026-04-20).
 
 Implemented in:
 
-- `src/ssm3d/mamba3/self_attention.py`
+- `src/mamba3_attn/mamba3/self_attention.py`
   - **Post-SSD LayerNorm** (R3) added via `post_norm=True`.
   - **Zero-init per-head reverse gate** (R2): `rev_gate = nn.Parameter(zeros)`.
     Bidirectional add becomes `y = y + tanh(rev_gate) * y_rev`; at init the
     layer is forward-only.
   - **Row-renormalization** (R4): `row_renorm=True` divides weighted-mask rows
     by `sum(|...|)` before the V multiply, restoring softmax-like contract.
-- `src/ssm3d/bridge.py` — `DimBridge(384→768)` (R5) with
+- `src/mamba3_attn/bridge.py` — `DimBridge(384→768)` (R5) with
   identity-over-identity init so at-init it reproduces `cat([f, f], -1)`,
   and trains in Phase C.
-- `src/ssm3d/weights.py` — `load_da3_backbone(vit, da3_model)` (R6)
+- `src/mamba3_attn/weights.py` — `load_da3_backbone(vit, da3_model)` (R6)
   pulls non-`.attn.*` keys from DA3 into the student.
 
 Tests: `tests/unit/test_self_attention.py`, `test_bridge.py` — 62 green.
 
 ### Phase B — feature distillation from DA3 teacher (R1)
 
-- `src/ssm3d/data/eth3d_multi.py` — multi-scene loader over 10 ETH3D
+- `src/mamba3_attn/data/eth3d_multi.py` — multi-scene loader over 10 ETH3D
   non-terrains scenes. `terrains` is hard-rejected (`_assert_no_heldout`).
-- `src/ssm3d/train/distill.py` — teacher frozen DA3-SMALL; student is
+- `src/mamba3_attn/train/distill.py` — teacher frozen DA3-SMALL; student is
   SSM-3D with Phase A fixes + `load_da3_backbone`. Trains only `.attn.*`
   params on intermediate layers `(5, 7, 9, 11)`. Loss per layer:
   `λ_l2 · ||f_s − f_t||² / C + λ_cos · (1 − cos)`. AdamW, bf16 autocast,
@@ -437,22 +437,22 @@ Tests: `tests/unit/test_self_attention.py`, `test_bridge.py` — 62 green.
 
 ### Phase C — depth fine-tune on ETH3D GT (headline metric)
 
-- `src/ssm3d/train/depth_ft.py` — DA3 DualDPT frozen. Trainables: SSM-3D
+- `src/mamba3_attn/train/depth_ft.py` — DA3 DualDPT frozen. Trainables: SSM-3D
   `.attn.*` + `DimBridge`. Loss = SILog (scale-invariant log-RMSE, Eigen
   2014) + `λ_edge · edge_aware_smoothness`. 2000 steps.
 - `scripts/train_depth.py` — CLI, loads Phase-B student + bridge.
 
 ### Phase D — memory wins at inference (R7)
 
-- `src/ssm3d/mamba3/mask.py` — `build_two_term_mask_rows` and
+- `src/mamba3_attn/mamba3/mask.py` — `build_two_term_mask_rows` and
   `build_three_term_mask_rows`: compute only rows `[q0, q1)` of the mask,
   O(chunk · T) per chunk.
-- `src/ssm3d/mamba3/self_attention.py` — `ssd_forward_chunked(...)`
+- `src/mamba3_attn/mamba3/self_attention.py` — `ssd_forward_chunked(...)`
   drives the chunked path; `Mamba3SelfAttention` gained a `chunk_size`
   constructor kwarg that flows through `_one_direction`.
-- `src/ssm3d/da3_adapter.py`, `src/ssm3d/model.py` — `chunk_size`
+- `src/mamba3_attn/da3_adapter.py`, `src/mamba3_attn/model.py` — `chunk_size`
   plumbed through `Mamba3Attention`, `SSM3DBackbone`, `SSM3DNet`.
-- `scripts/eval_ssm3d_vs_da3.py` — new flags:
+- `scripts/eval_mamba3_attn_vs_da3.py` — new flags:
   - `--chunk-size INT` for the memory path.
   - `--dtype {fp32,bf16,fp16}` for autocast (present but dtype application
     is a follow-up; flag already accepted so runs don't change CLI).
@@ -527,7 +527,7 @@ the next CM stacks on the previous-kept baseline.
 | # | countermeasure | code surface | compute |
 |---|---|---|---|
 | 1 | `DimBridge` random-orthogonal init (break [I;I] symmetry) | `bridge.py`, `depth_ft.py` | Phase-C |
-| 2 | Eval SSM-3D at `img_size=504` matching DA3 | `eval_ssm3d_vs_da3.py` | eval only |
+| 2 | Eval mamba3_attn at `img_size=504` matching DA3 | `eval_mamba3_attn_vs_da3.py` | eval only |
 | 3 | Extend Phase-C (steps↑, batch↑, full 2000→10000, bs 2→4) | config | Phase-C long |
 | 4 | Global-summary stream (pool-then-broadcast into second 384-d half) | new `global_stream.py`, adapter, depth_ft | Phase-C |
 | 5 | Unfreeze top 2 DualDPT fusion blocks in Phase-C | `depth_ft.py` | Phase-C |
@@ -565,7 +565,7 @@ Phase-C constructs the bridge with `init_mode="orthogonal"` via a new
 `--bridge-init` flag on `train_depth.py`. No re-distillation needed.
 
 **CM2 — Match eval resolution.** Pass `--img-size 504 --chunk-size 256`
-to `eval_ssm3d_vs_da3.py`. Patch grid becomes 36×36 = 1296 tokens; the
+to `eval_mamba3_attn_vs_da3.py`. Patch grid becomes 36×36 = 1296 tokens; the
 chunked SSD path (Phase-D §12) keeps peak memory bounded. DA3 side stays
 at `process_res=504`. This is an eval-only check — training stays at 224
 unless CM2 wins.
@@ -575,7 +575,7 @@ current best, run Phase-C with `--steps 10000 --batch-size 4 --lr-attn
 1e-4 --lr-bridge 3e-4`. Same data (ETH3D train scenes, no terrains).
 
 **CM4 — Global-summary stream.** New module
-`src/ssm3d/global_stream.py::GlobalStream` takes a list of per-layer
+`src/mamba3_attn/global_stream.py::GlobalStream` takes a list of per-layer
 patch features `(B,S,T,C)` and emits a list of (broadcasted) global
 summaries `(B,S,T,C)` where each token's value is
 `mean_pool(patches) @ W` + a small broadcast bias. Adapter change:
@@ -905,7 +905,7 @@ representation diversity is capacity-limited, not data-limited.
 This closes the §15.2 Tier 3 state_dim lever.
 
 Retained: CM2 + CM9 + CM10 (no change). `--state-dim` flag kept on
-`train_distill.py`, `train_depth.py`, `eval_ssm3d_vs_da3.py` as an
+`train_distill.py`, `train_depth.py`, `eval_mamba3_attn_vs_da3.py` as an
 opt-in diagnostic for future architecture sweeps.
 
 Outstanding from §15.2: **CM8 only** (larger distillation corpus;
@@ -1364,7 +1364,7 @@ Motivation: CM24 closes the gap to DA3-SMALL |relative_depth_error| to
 1.27 × but effective_rank still sits around 69 while DA3 sits at 145.
 Gu & Dao 2024 §3.7 bounds the rank of the SSD mixing matrix
 `L ⊙ (C · Bᵀ)` per head by `state_dim`. Our code fixes `state_dim = 64`
-(see `src/ssm3d/mamba3/projections.py:55`), so the per-head ceiling is
+(see `src/mamba3_attn/mamba3/projections.py:55`), so the per-head ceiling is
 64; with six heads, the aggregate ceiling is H·N = 384 — but observed
 effective_rank is far below that, suggesting each head is actually
 rank-limited rather than the concat.
@@ -1418,7 +1418,7 @@ H=16 head_dim=24 which loses RoPE-pair alignment; hence the cap at
 12.
 
 Warm-start problem: `warm_start_mamba3_from_qkv` (see
-`src/ssm3d/weights.py`) copies DINOv2's qkv weight-matrix slices into
+`src/mamba3_attn/weights.py`) copies DINOv2's qkv weight-matrix slices into
 Mamba-3's B/C/V projections, but DINOv2 has `num_heads=6` so the
 per-head shape is `(6, 64)` not `(12, 32)`. CM27 has to disable the
 warm-start for the qkv-sliced paths and rely on Phase-B distillation
@@ -1455,7 +1455,7 @@ multiplier. MIMO promotes these to `(B, H, r, T)` with r parallel
 over a sequence of length T the total accumulated rank is bounded by
 `r · state_dim` per head.
 
-Implementation diff-plan (all in `src/ssm3d/mamba3/`):
+Implementation diff-plan (all in `src/mamba3_attn/mamba3/`):
 
 1. `projections.py::AttentionProjections.__init__`: add `mimo_rank`
    argument (default 1, i.e. SISO-per-head = today's code path);
@@ -1634,7 +1634,7 @@ Five probes, cheapest first:
 
 5. **(E) Rank-preserving Phase-C objective.** Add a small term
    `−λ · log(effective_rank(features))` to the Phase-C loss
-   (`src/ssm3d/train/depth_ft.py`). Tiny λ (1e-3 to 1e-2). Trains
+   (`src/mamba3_attn/train/depth_ft.py`). Tiny λ (1e-3 to 1e-2). Trains
    the same 1000 steps as CM24. ~1 h. Tests whether the depth-ft
    objective is actively suppressing rank.
 
@@ -2322,7 +2322,7 @@ So this phase is a *paper-replication project*:
 - Read paper §3 (training) for: dataset list, curriculum, single-
   image depth pretraining stage, multi-view stage, loss
   composition, batch / step counts, scheduler.
-- Re-implement the pipeline in `src/ssm3d/train/`. **Swap-in:**
+- Re-implement the pipeline in `src/mamba3_attn/train/`. **Swap-in:**
   Mamba-3 attention only — every other component stays as DA3
   prescribes.
 - Acquire DA3's public training datasets (paper says public
@@ -2744,11 +2744,11 @@ download):**
        --local-dir data/da3_bench --repo-type dataset
    cd data/da3_bench && unzip hiroom.zip
    ```
-2. Add `src/ssm3d/data/hiroom.py` with `load_hiroom_scene` returning
+2. Add `src/mamba3_attn/data/hiroom.py` with `load_hiroom_scene` returning
    the same `ETH3DSample`-shaped dataclass our existing scripts use:
    `images`, `image_paths`, `gt_depth`, plus a parallel
    `load_hiroom_cams` returning `intrinsics` / `extrinsics` dicts.
-3. Add `src/ssm3d/data/sevenscenes.py` analogously.
+3. Add `src/mamba3_attn/data/sevenscenes.py` analogously.
 4. Add `--scene` flag to `eval_recon_metrics.py` /
    `eval_ray_metrics.py` to dispatch to the right loader.
 5. Run the full re-score (CM12 / CM24 / CM30) on HiRoom + 7Scenes;
@@ -2902,7 +2902,7 @@ efficiency claims rely on `selective_scan_cuda` /
 Three options to recover the value-prop:
 
 A. **Integrate Mamba-2/3 official CUDA kernels.** Replace
-   `ssd_forward_chunked` in `src/ssm3d/mamba3/self_attention.py`
+   `ssd_forward_chunked` in `src/mamba3_attn/mamba3/self_attention.py`
    with `mamba_chunk_scan_combined` from `mamba-ssm` (PyPI:
    `mamba-ssm`, depends on `causal-conv1d`). Mamba's published
    speed claims (≥ FlashAttention speed at long T) are entirely
@@ -3005,14 +3005,14 @@ logic handle the rest.
 
 **Code changes (this commit):**
 
-- `src/ssm3d/model.py::SSM3DBackbone.__init__`: added `alt_start`
+- `src/mamba3_attn/model.py::SSM3DBackbone.__init__`: added `alt_start`
   (default `-1`, legacy partial-swap) and `cat_token` (default
   `False`). Pass through to `vit_small`.
-- `src/ssm3d/model.py::SSM3DNet.__init__`: same flags forwarded; the
+- `src/mamba3_attn/model.py::SSM3DNet.__init__`: same flags forwarded; the
   `SimpleDepthHead`'s input channel count auto-doubles when
   `cat_token=True` (since the [local ‖ current] concat produces
   768-dim main features).
-- `tests/integration/test_forward_pass.py::test_ssm3dnet_full_swap_forward`
+- `tests/integration/test_forward_pass.py::test_mamba3_attn_full_swap_forward`
   added — verifies `alt_start=2, cat_token=True` produces
   doubled-channel features on multi-view input.
 
@@ -3412,7 +3412,7 @@ per-pixel depth.
   `SSM3DNet`/`SSM3DBackbone` construction.
 - `scripts/train_depth.py` — same flags, threaded through to the
   Phase-C model construction. The depth loss path is unchanged.
-- `src/ssm3d/train/distill.py` and `depth_ft.py` configs update.
+- `src/mamba3_attn/train/distill.py` and `depth_ft.py` configs update.
 
 **Cost.** ~3 h Phase-B + ~1 h Phase-C + ~10 min eval. With the
 kernel making forward 2.7× faster than DA3 native, training may
@@ -3574,7 +3574,7 @@ L_distill = L_D(D̂_stu, D̂_tea ; D_c_stu)
           + α · L_grad(D̂_stu, D̂_tea)
 ```
 
-Implementation in `src/ssm3d/train/distill.py`:
+Implementation in `src/mamba3_attn/train/distill.py`:
 - Replaced MSE with the aleatoric-ℓ1 form (eq. 2).
 - Added gradient ℓ1 (eq. 3).
 - New CLI flags: `--lambda-dpt-depth`, `--lambda-dpt-ray`,
@@ -3595,7 +3595,7 @@ First launch crashed at step 0 on a shape mismatch in the ray-conf
 aleatoric term: ray output is `[B,S,H,W,6]` (6 channels), ray_conf is
 `[B,S,H,W]`. Fixed by unsqueezing trailing axes on `conf` so it
 broadcasts over the ray-channel dim — `_l1_aleatoric` in
-`src/ssm3d/train/distill.py` (depth happens to work because DA3 squeezes
+`src/mamba3_attn/train/distill.py` (depth happens to work because DA3 squeezes
 its single-channel depth and conf to matching ranks).
 
 Re-ran CM-FS-12-DPTM-v2 (Phase-B, ~52 min) → CM-FS-24-DPTM-v2 (Phase-C
@@ -3708,13 +3708,13 @@ proceed against the CM-FS-24 ckpt at
 
 DA3-BENCH HiRoom (~0.7 GB) + 7Scenes (~3.3 GB) downloaded to
 `data/da3_bench/`. New loaders mirror `eth3d.py` shape:
-- `src/ssm3d/data/hiroom.py` — `load_hiroom_scene` / `load_hiroom_cams`
+- `src/mamba3_attn/data/hiroom.py` — `load_hiroom_scene` / `load_hiroom_cams`
   (reads shared `cam_K.npy`, w2c `.npy` poses, 16-bit PNG depth scaled
   `pixel/65535*100 → m`).
-- `src/ssm3d/data/sevenscenes.py` — `load_sevenscenes_scene` /
+- `src/mamba3_attn/data/sevenscenes.py` — `load_sevenscenes_scene` /
   `load_sevenscenes_cams` (fixed intrinsics fx=fy=585 cx=320 cy=240,
   c2w `.txt` poses inverted to w2c, mm depth with 65535=invalid).
-- `src/ssm3d/data/bench.py` — `--dataset {eth3d,hiroom,7scenes}`
+- `src/mamba3_attn/data/bench.py` — `--dataset {eth3d,hiroom,7scenes}`
   dispatcher consumed by `eval_recon_metrics.py` and
   `eval_ray_metrics.py`.
 
@@ -3805,7 +3805,7 @@ commit to ~3 days of CM2-full implementation.
 #### Step 2 — integrate Mamba-3 SISO kernel
 
 Replace `ssd_forward_chunked` call in
-`src/ssm3d/mamba3/self_attention.py::Mamba3SelfAttention._one_direction`
+`src/mamba3_attn/mamba3/self_attention.py::Mamba3SelfAttention._one_direction`
 with `mamba3_siso_combined` from
 `mamba_ssm.ops.triton.mamba3.mamba3_siso_combined` (already imported
 via the submodule, § 15.42).
@@ -3937,14 +3937,14 @@ User clarification:
 > is the core of our novel research."*
 
 Restructure:
-- `src/ssm3d/mamba3/` = standalone library (the research contribution).
+- `src/mamba3_attn/mamba3/` = standalone library (the research contribution).
   Clean public API in `__init__.py`. README documenting design
   (SISO + MIMO, Triton kernel, RoPE, bidirectional, three-term).
   Drop-in replacement for transformer self/cross attention; usable
   outside DA3 (mobile ViT, LLaVA, etc.).
-- `src/ssm3d/da3_adapter.py` = thin DA3-shaped wrapper that uses the
+- `src/mamba3_attn/da3_adapter.py` = thin DA3-shaped wrapper that uses the
   library. Demonstrates the integration pattern.
-- `src/ssm3d/patch.py` = monkeypatch utility that installs the adapter
+- `src/mamba3_attn/patch.py` = monkeypatch utility that installs the adapter
   into a real DA3 model in-place.
 
 #### Why DA3-LARGE teacher (not SMALL)
@@ -4021,7 +4021,7 @@ mitigated by low LR + ≤500 steps + early ckpts saved.
   `use_fused_kernel + chunk_size` thread through. Smoke test confirms
   patched DA3 forward produces same output shapes as un-patched
   (depth, depth_conf, ray, ray_conf, extrinsics, intrinsics).
-- `src/ssm3d/mamba3/__init__.py` + `README.md` promoted as the
+- `src/mamba3_attn/mamba3/__init__.py` + `README.md` promoted as the
   standalone library. `da3_adapter.py` + `patch.py` are thin glue.
 
 #### Phase 1 — distill against DA3-LARGE (1000 steps, ~67 min) ✓
@@ -4148,7 +4148,7 @@ Total: 9 training runs (each 500 steps, ~15–35 min) + 3 evals + 3
 loss plots. Estimated runtime: ~4 hours.
 
 Implementation:
-- `src/ssm3d/train/train_super.py` — unified training script with
+- `src/mamba3_attn/train/train_super.py` — unified training script with
   `--super {1,2,3} --sub {1,2,3} --init-ckpt <path>` args.
 - `scripts/plot_super_phase_loss.py` — overlay sub-phase 1/2/3 loss
   trajectories per super-phase.
@@ -4189,7 +4189,7 @@ Hypothesis: shorten the credit-assignment path by adding direct
 supervision *inside* the backbone, where student and teacher are
 dim-matched.
 
-Implementation (uncommitted diff to `src/ssm3d/train/train_super.py`):
+Implementation (uncommitted diff to `src/mamba3_attn/train/train_super.py`):
 
 - `FEAT_LAYERS = (5, 7, 9, 11)` — four intermediate ViT blocks
   (mid + late, where prior diagnostics §15.25 located the rank

@@ -1,4 +1,4 @@
-"""Unit tests for ssm3d.mamba3.self_attention.Mamba3SelfAttention"""
+"""Unit tests for mamba3_attn.mamba3.self_attention.Mamba3SelfAttention"""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import time
 
 import torch
 
-from ssm3d.mamba3.self_attention import Mamba3SelfAttention, ssd_forward
-from ssm3d.mamba3.mask import build_two_term_mask
-from ssm3d.mamba3.rope2d import RoPE2D
+from mamba3_attn.mamba3.self_attention import Mamba3SelfAttention, ssd_forward
+from mamba3_attn.mamba3.mask import build_two_term_mask
+from mamba3_attn.mamba3.rope2d import RoPE2D
 
 
 def test_output_shape_matches_input():

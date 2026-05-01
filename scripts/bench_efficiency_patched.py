@@ -27,8 +27,8 @@ from contextlib import contextmanager
 
 import torch
 
-from ssm3d.eval.da3_reference import DEFAULT_HF_MODEL, load_da3
-from ssm3d.patch import install_mamba3
+from mamba3_attn.eval.da3_reference import DEFAULT_HF_MODEL, load_da3
+from mamba3_attn.patch import install_mamba3
 
 
 @contextmanager

@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from torch import Tensor
 
-from ssm3d.viz.feature_pca import feature_pca_image
+from mamba3_attn.viz.feature_pca import feature_pca_image
 
 
 def _percentile_clip(arr: np.ndarray, lo_pct: float = 2.0, hi_pct: float = 98.0) -> tuple[float, float]:

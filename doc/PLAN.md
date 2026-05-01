@@ -20,7 +20,7 @@ CIFAR-10 is the right minimum. MNIST saturates at ~99 % for any reasonable class
 |---|---|---|---|
 | 1 | `cnn` | Small ResNet — stem + 3 stages × 2 BasicBlocks, widths {64, 128, 256} | Sanity floor; CNNs are extremely well-tuned on CIFAR-10. |
 | 2 | `vit_attn` | ViT-Tiny: depth=6, dim=192, heads=3, MLP×4, 4×4 patch embed, learnable absolute pos-emb, CLS token | Manual timm-style multi-head softmax attention (`VanillaAttention`) with explicit `qkv = nn.Linear(dim, 3*dim)` and `proj = nn.Linear(dim, dim)` submodules — required by `install_mamba3._infer_dim` / `_infer_num_heads`. |
-| 3 | `vit_mamba3` | Same skeleton as #2, then `ssm3d.patch.install_mamba3(net, which="backbone_only")` | Uses the **same swap path** the DA3 depth project uses (`src/ssm3d/patch.py`). |
+| 3 | `vit_mamba3` | Same skeleton as #2, then `mamba3_attn.patch.install_mamba3(net, which="backbone_only")` | Uses the **same swap path** the DA3 depth project uses (`src/mamba3_attn/patch.py`). |
 
 The wrapper for #2 must expose `qkv: Linear`, `proj: Linear`, and `num_heads` so `install_mamba3._infer_dim` / `_infer_num_heads` succeed when applied to #3.
 
@@ -113,11 +113,11 @@ uv run python scripts/cifar10_compare.py \
 - Multiple seeds (single seed v1; multi-seed only if the gap is small).
 - Mixup / Cutmix (adds confound; vanilla aug only for the v1 comparison).
 - FLOPs counting (wall-clock + peak memory is enough for a sanity check).
-- Modifying `src/ssm3d/` (no project-code changes — pure additive script).
+- Modifying `src/mamba3_attn/` (no project-code changes — pure additive script).
 
 ## §8. References
 
-- **Mamba-3 / Mamba-2 SSD** — Dao & Gu, *"Transformers are SSMs"* (ICML 2024). Drop-in replacement for softmax attention via `ssm3d.patch.install_mamba3`.
+- **Mamba-3 / Mamba-2 SSD** — Dao & Gu, *"Transformers are SSMs"* (ICML 2024). Drop-in replacement for softmax attention via `mamba3_attn.patch.install_mamba3`.
 - **ViT** — Dosovitskiy et al. 2020.
 - **Steiner et al. 2021** — *"How to train your ViT"* (data, augmentation, regularization on small ViTs).
 - **He et al. 2015** — ResNet (CIFAR-10 baselines).
@@ -127,7 +127,7 @@ uv run python scripts/cifar10_compare.py \
 
 ### §9.1. Script
 
-`scripts/cifar10_compare.py` — single self-contained file, ~430 lines, landed in commit `a723abf` (2026-04-29). Reuses `measure(...)` and `count_params(...)` from `scripts/bench_efficiency_patched.py`; no edits under `src/ssm3d/`.
+`scripts/cifar10_compare.py` — single self-contained file, ~430 lines, landed in commit `a723abf` (2026-04-29). Reuses `measure(...)` and `count_params(...)` from `scripts/bench_efficiency_patched.py`; no edits under `src/mamba3_attn/`.
 
 ### §9.2. Param-budget verification (matched ≈ 2.7 M)
 
@@ -219,7 +219,7 @@ Re-run **only** `vit_mamba3` (cnn and vit_attn results stand) with the standard 
 | Epochs | 50 | **80** | Lower LR ⇒ slower convergence; matches typical Mamba schedules at this size. |
 | Everything else | unchanged | unchanged | Same data, aug, batch, optimizer, seed=42, same script. |
 
-Implementation: add a `--lr-schedule mamba` flag (or simply `--peak-lr`, `--warmup-epochs`, `--grad-clip`) to `scripts/cifar10_compare.py`; do not touch `src/ssm3d/`. Output to `outputs/cifar10_compare_mamba_recipe/` so the original §9.6 numbers stay pristine.
+Implementation: add a `--lr-schedule mamba` flag (or simply `--peak-lr`, `--warmup-epochs`, `--grad-clip`) to `scripts/cifar10_compare.py`; do not touch `src/mamba3_attn/`. Output to `outputs/cifar10_compare_mamba_recipe/` so the original §9.6 numbers stay pristine.
 
 **New acceptance gate** (same threshold, recipe-fair):
 

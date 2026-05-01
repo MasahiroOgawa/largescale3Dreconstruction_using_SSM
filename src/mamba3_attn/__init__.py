@@ -1,4 +1,4 @@
-"""ssm3d — Mamba-3 attention swapped into Depth-Anything-3 for large-scale 3D reconstruction."""
+"""mamba3_attn — Mamba-3 attention swapped into Depth-Anything-3 for large-scale 3D reconstruction."""
 
 from __future__ import annotations
 

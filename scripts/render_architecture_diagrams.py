@@ -2,7 +2,7 @@
 
 Produces three figures:
   - arch_da3.png    : DA3 pipeline (softmax attention inside each ViT block).
-  - arch_ssm3d.png  : SSM-3D pipeline (Mamba-3 SSD attention inside each ViT block).
+  - arch_mamba3_attn.png  : SSM-3D pipeline (Mamba-3 SSD attention inside each ViT block).
   - arch_diff.png   : side-by-side with the changed sub-module highlighted.
 
 The attention module is drawn *inside* the 12× ViT Block container because
@@ -160,7 +160,7 @@ def _render_da3(path: Path) -> Path:
     return path
 
 
-def _render_ssm3d(path: Path) -> Path:
+def _render_mamba3_attn(path: Path) -> Path:
     fig, ax = plt.subplots(figsize=(7, 11))
     _pipeline(
         ax, "SSM-3D (this repo)",
@@ -224,7 +224,7 @@ def render_all(out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     return [
         _render_da3(out_dir / "arch_da3.png"),
-        _render_ssm3d(out_dir / "arch_ssm3d.png"),
+        _render_mamba3_attn(out_dir / "arch_mamba3_attn.png"),
         _render_diff(out_dir / "arch_diff.png"),
     ]
 

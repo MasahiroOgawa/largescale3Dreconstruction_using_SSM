@@ -1,10 +1,10 @@
-"""Unit tests for ssm3d.mamba3.projections"""
+"""Unit tests for mamba3_attn.mamba3.projections"""
 
 from __future__ import annotations
 
 import torch
 
-from ssm3d.mamba3.projections import AttentionProjections, BCNorm
+from mamba3_attn.mamba3.projections import AttentionProjections, BCNorm
 
 
 def test_projections_shapes():

@@ -1,4 +1,4 @@
-"""Visualization modules for the ssm3d demo."""
+"""Visualization modules for the mamba3_attn demo."""
 
 from .feature_pca import feature_pca_image, save_feature_pca
 from .depth import save_depth_colormap

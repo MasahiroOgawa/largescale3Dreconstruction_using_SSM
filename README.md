@@ -11,7 +11,7 @@ training, so the comparison isolates the backbone.
 
 - Architecture: DINOv2-ViT-S/14 backbone (~22 M params, matched to
   DA3-SMALL) with its attention layers patched at import time via
-  `ssm3d.patch.install_mamba3`. See
+  `mamba3_attn.patch.install_mamba3`. See
   `outputs/eval_cm22_1000/arch_{da3,ssm3d,diff}.png` for the block-level
   diagrams.
 - Training is two-phase: **Phase B** distils backbone features from a
@@ -25,7 +25,7 @@ training, so the comparison isolates the backbone.
   full recipe and `outputs/eval_cm22_1000/summary.md` for head-to-head
   numbers.
 - The DA3 submodule is treated as read-only upstream. Swaps happen at
-  runtime via the patch module; see `src/ssm3d/patch.py`.
+  runtime via the patch module; see `src/mamba3_attn/patch.py`.
 
 ## 2. How to set up
 
@@ -86,7 +86,7 @@ in `doc/PLAN_mamba3_DA3.md §15.13`.
 ### Evaluate (SSM-3D vs DA3-SMALL, head-to-head on ETH3D)
 
 ```bash
-uv run python scripts/eval_ssm3d_vs_da3.py \
+uv run python scripts/eval_mamba3_attn_vs_da3.py \
     --ckpt outputs/runs/depth_ft_cm22/ckpt_1000.pt \
     --out  outputs/eval_cm22_1000
 ```

@@ -1,10 +1,10 @@
-"""Unit tests for ssm3d.mamba3.rope2d.RoPE2D"""
+"""Unit tests for mamba3_attn.mamba3.rope2d.RoPE2D"""
 
 from __future__ import annotations
 
 import torch
 
-from ssm3d.mamba3.rope2d import RoPE2D
+from mamba3_attn.mamba3.rope2d import RoPE2D
 
 
 def _positions(height: int, width: int) -> torch.Tensor:

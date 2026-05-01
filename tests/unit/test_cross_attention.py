@@ -1,10 +1,10 @@
-"""Unit tests for ssm3d.mamba3.cross_attention.Mamba3CrossAttention"""
+"""Unit tests for mamba3_attn.mamba3.cross_attention.Mamba3CrossAttention"""
 
 from __future__ import annotations
 
 import torch
 
-from ssm3d.mamba3.cross_attention import Mamba3CrossAttention
+from mamba3_attn.mamba3.cross_attention import Mamba3CrossAttention
 
 
 def test_variant_b_shape():
