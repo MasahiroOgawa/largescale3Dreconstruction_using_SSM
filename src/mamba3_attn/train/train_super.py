@@ -169,6 +169,15 @@ def set_trainables(student, scope: str, n_top_fusion: int) -> tuple[list[nn.Para
                     attn_params.append(p)
         info["attn"] = sum(p.numel() for p in attn_params)
 
+    # cam_dec only — for T3 (PLAN §15.58 / CM-A): freeze everything except
+    # net.cam_dec.* to test hypothesis 2 (cam_dec mismatch) in isolation.
+    if scope == "cam_dec_only":
+        if hasattr(student.model, "cam_dec") and student.model.cam_dec is not None:
+            for p in student.model.cam_dec.parameters():
+                p.requires_grad_(True)
+                cam_params.append(p)
+            info["cam_dec"] = sum(p.numel() for p in cam_params)
+
     # Top fusion blocks of DPT + cam_dec (head adapt)
     if scope in ("head", "all"):
         head = student.model.head
@@ -215,6 +224,9 @@ def set_trainables(student, scope: str, n_top_fusion: int) -> tuple[list[nn.Para
             groups.append({"params": cam_params, "lr": 1e-4, "tag": "cam_dec"})
     elif scope == "all":
         groups = [{"params": flat, "lr": 1e-5, "tag": "all"}]
+    elif scope == "cam_dec_only":
+        if cam_params:
+            groups.append({"params": cam_params, "lr": 1e-4, "tag": "cam_dec"})
     else:
         raise ValueError(f"Unknown scope {scope!r}")
     for g in groups:
@@ -264,7 +276,7 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
     device = torch.device(cfg.device)
 
     super_label = {1: "SMALL", 2: "LARGE", 3: "GT"}[cfg.super_phase]
-    sub_label = {1: "attn", 2: "head", 3: "all"}[cfg.sub_phase]
+    sub_label = {1: "attn", 2: "head", 3: "all", 4: "cam_dec_only"}[cfg.sub_phase]
     label = f"{cfg.super_phase}-{cfg.sub_phase} ({super_label} teacher / {sub_label} scope)"
     print(f"[train_super] {label}", flush=True)
 
@@ -362,7 +374,8 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--super", type=int, choices=[1, 2, 3], required=True, dest="super_phase")
-    ap.add_argument("--sub", type=int, choices=[1, 2, 3], required=True, dest="sub_phase")
+    ap.add_argument("--sub", type=int, choices=[1, 2, 3, 4], required=True, dest="sub_phase",
+                    help="1=attn, 2=head, 3=all, 4=cam_dec_only (T3 / CM-A)")
     ap.add_argument("--init-ckpt", type=str, default=None)
     ap.add_argument("--steps", type=int, default=500)
     ap.add_argument("--out-dir", type=Path, required=True)

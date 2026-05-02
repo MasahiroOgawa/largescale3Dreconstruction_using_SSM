@@ -4329,3 +4329,289 @@ Recommendation: **run CM-C first** (cheapest, highest information
 density). If cls-tokens are wrong, A and B are wasted. Then CM-A
 (isolates head). Then CM-B (largest cost, runs only if A and C
 both clean).
+
+### 15.58 T1–T4 diagnostic test ladder (2026-05-02)
+
+CIFAR-10 `PLAN_cifar10.md §9.10` confirmed Mamba-3 attention reaches
+parity (or better) with softmax at matched scale **from scratch**, so
+the §15.57 hypothesis 1 ("Mamba-3 isn't expressive enough") is
+weakened. The remaining failure modes for the depth/pose accuracy gap
+are: **(1) cls-token bug** in the swap, **(2) cam_dec mismatch**
+(frozen at transformer-trained weights), **(3) retrofit infeasibility**
+(short-schedule distillation into a frozen pipeline cannot reach
+DA3-SMALL accuracy). The efficiency story is intact — Mamba-3 is
+1.54× faster at deployment T (`§15.55 Phase 4b`).
+
+This section defines a four-test ladder that distinguishes the three
+hypotheses, ordered cheap → expensive.
+
+#### Truth table — predicted outcomes per hypothesis
+
+| Probe | Cls-token bug | cam_dec mismatch | Retrofit infeasibility |
+|---|---|---|---|
+| **T1** cls-token forward sanity (NaN / shape / index) | **FAIL** | pass | pass |
+| **T2** layer-wise patched-vs-xfmr cls-token diff at Step-C ckpt | unstructured / spike | smooth divergence | smooth divergence |
+| **T3** train cam_dec only against GT, 100 steps | barely moves | **AUC jumps ≫ 0** | barely moves |
+| **T4** unfreeze attn + heads + cam_dec from Step-C ckpt, GT, 500 steps | barely moves | helps somewhat | **big jump** if just slow; flat if truly infeasible |
+
+Each row's outcome pattern across the three columns is unique, so
+T1–T4 collectively localize the culprit.
+
+#### T1 — Cls-token forward sanity (free, ~5 min, no training)
+
+Probe script: `scripts/probe_clstoken.py`.
+
+Run a fixed batch (1 image, 4 views, seed 42) through three model
+variants:
+- `da3_small` un-patched
+- `da3_small` patched at random init (no ckpt)
+- `da3_small` patched with `outputs/runs/sp1_sub1_long/ckpt_5000.pt`
+  (the best Mamba-3 attention obtained so far)
+
+For each block (`backbone.pretrained.blocks[0..11]` + `cam_enc.trunk[0..3]`),
+record the cls-token after the attention residual via forward hook.
+
+Assertions:
+- No NaN / Inf anywhere in the patched forward.
+- Cls-token shape `(B*V, 1, D)` preserved across all blocks (not
+  dropped, collapsed, or merged).
+- Cls-token index in the sequence is consistent (token-0 vs last token)
+  between patched and un-patched paths.
+
+**Failure signature → cls-token bug**: any NaN/Inf, cosine-similarity
+drop to ~0 at one specific layer with neighbors fine, or a
+step-function magnitude jump at one block.
+
+#### T2 — Layer-wise cls-token quality at Step-C (free, runs alongside T1)
+
+Same probe; for each block compute relative L2 error and cosine
+similarity:
+```
+rel_l2(i) = ‖cls_step_c[i] - cls_xfmr[i]‖₂ / ‖cls_xfmr[i]‖₂
+cos(i)     = cos(cls_step_c[i], cls_xfmr[i])
+```
+Output: a heatmap saved to `outputs/probes/cls_token_diff.png` plus
+`outputs/probes/cls_token_diff.json` for downstream reference.
+
+The §15.57 reported `L_feat ≈ 0.22` saturating after 1500 steps on the
+feat-distill layers (5/7/9/11). T2 quantifies what that 0.22 means in
+cls-token cosine space:
+- cos > 0.9 at layers 5/7/9/11 → features are close; downstream
+  (`cam_dec`, DPT) is the consumer that fails.
+- cos ≪ 0.9 → cls-tokens have lost information content; recipe
+  problem regardless of how the loss looks.
+
+#### T3 — `cam_dec`-only GT fine-tune (cheap, ~10 min)
+
+Equivalent to §15.57 CM-A. Adds a `cam_dec_only` trainable scope to
+`src/mamba3_attn/train/train_super.py` that freezes everything except
+`net.cam_dec.*`, then trains 100 steps against GT pose loss
+(L_C-equivalent), initialized from `sp1_sub1_long/ckpt_5000.pt`.
+
+Output dir: `outputs/runs/cm_a_camdec_only/`.
+
+Pose AUC@30 eval afterward (DA3 official `compute_pose`, 8 held-out
+scenes mean):
+- ≥ 0.3 → cam_dec mismatch is a major contributor (h2 confirmed
+  partially); CM-B becomes worth running.
+- 0.05–0.3 → cam_dec partially responsible; combine with T2.
+- < 0.05 → cam_dec retraining alone doesn't help; either features are
+  wrong (T2 confirms) or retrofit is the bottleneck.
+
+#### T4 — Joint unfreeze from Step-C ckpt (medium, ~30 min)
+
+Run super-1 sub-3 (everything trainable, low LR) for 500 steps from
+`sp1_sub1_long/ckpt_5000.pt`. This is the longest-schedule sub-1 init
+combined with full unfreeze, which has **not yet been run** (§15.55
+Phase 3 used GT supervision and broke loss continuity; §15.57 Step C
+stopped at sub-1 only).
+
+Output dir: `outputs/runs/sp1_sub3_from_long/`.
+
+Pose AUC@30 eval afterward:
+- ≥ 0.3 → frozen-heads was the bottleneck; retrofit feasible with
+  co-adaptation (h3 weakened).
+- < 0.1 even with everything trainable → retrofit-from-this-init is
+  infeasible at this schedule (h3 confirmed). Implication: either
+  much longer schedule needed, or reconsider the swap path.
+
+#### Run order
+
+1. T1 + T2 in one probe (~5 min, free).
+2. T3 (~10 min training + ~10 min eval).
+3. T4 (~30 min training + ~10 min eval).
+
+Total wall-clock: ~70 min, mostly idle GPU between probes. After T4
+the failure mode should be identifiable up to ≤ 1 remaining hypothesis.
+
+#### Results
+
+##### T1 — Forward sanity: **PASS**
+
+`scripts/probe_clstoken.py --ckpt outputs/runs/sp1_sub1_long/ckpt_5000.pt`,
+ETH3D `courtyard` 4 views @ 504², seed 42. Artifacts:
+`outputs/probes/cls_token_diff.{json,png}`.
+
+- No NaN / Inf in any captured block output.
+- Shapes match `(B*S, P+1, C)` un-patched DA3-SMALL across all 12 blocks.
+- No single-block cosine dip ≥ 0.3 below neighbors.
+
+**Conclusion**: hypothesis 1 (cls-token structural bug) is **ruled out**.
+
+##### T2 — Per-block cls/cam-token cosine vs xfmr (Step-C ckpt)
+
+| block | cos(step_c, xfmr) | rel L2 | note |
+|---:|---:|---:|---|
+| 0 | +0.07 | 2.25 | i < alt_start=4 → cls-token before cam override; not consumed downstream |
+| 1 | −0.11 | 2.34 | same |
+| 2 | −0.10 | 1.69 | same |
+| 3 | +0.06 | 1.72 | same |
+| 4 | **+0.70** | 0.79 | first block after cam-token override |
+| 5 | +0.71 | 1.00 | feat-distill layer |
+| 6 | +0.51 | 1.05 | |
+| 7 | +0.73 | 0.84 | feat-distill layer |
+| 8 | +0.53 | 0.99 | |
+| 9 | +0.79 | 0.83 | feat-distill layer |
+| 10 | +0.77 | 0.66 | |
+| 11 | **+0.89** | 0.61 | feat-distill layer (cam_dec reads this) |
+
+The blocks 0–3 divergence is **irrelevant** — DA3 overwrites `x[:, :, 0]`
+with the learned cam-token at `i = alt_start = 4` (`vision_transformer.py
+:323–331`), wiping any divergence accumulated in earlier blocks. From
+block 4 onward, the cam-token's trajectory is what matters.
+
+At block 11 (the cam-token consumed by `cam_dec`), Mamba-3's cam-token
+agrees with the transformer's at cosine **0.89**. Close but not equal.
+Verdict: `features_partial` — features are within striking distance of
+the transformer's, not catastrophically off.
+
+**Implications for the remaining hypotheses**:
+
+- **Hypothesis 2 (cam_dec mismatch)**: still live. `cam_dec` was trained
+  to read transformer cam-tokens; reading a 0.89-cosine substitute isn't
+  guaranteed to work. T3 directly tests this by retraining `cam_dec`.
+- **Hypothesis 3 (retrofit infeasibility)**: still live, contingent on
+  T3. If T3 doesn't recover pose despite cam-tokens at cos 0.89, the
+  cls-token cosine isn't sufficient and downstream layers also need
+  adaptation (or the swap is infeasible at this schedule).
+
+##### T3 — `cam_dec`-only GT fine-tune (100 steps): **did NOT help**
+
+`outputs/runs/cm_a_camdec_only/`. Trainable params: 1.19M (just `cam_dec`).
+Init: `sp1_sub1_long/ckpt_5000.pt`. Loss trajectory: L_C 1.35 → 0.22 in
+the first 25 steps then bounces 0.22 ↔ 1.10 across scenes (per-scene
+difficulty noise dominates the short schedule).
+
+| dataset / scene | T3 AUC30 | Step-C AUC30 (§15.57) | Δ |
+|---|---:|---:|---:|
+| eth3d `terrains` | 0.0126 | 0.0177 | −0.0051 |
+| hiroom 04 | 0.0394 | 0.0833 | −0.0439 |
+| hiroom 14 | 0.0177 | 0.0247 | −0.0070 |
+| hiroom 08 | 0.0091 | 0.0096 | −0.0005 |
+| hiroom 07 | 0.0081 | 0.0157 | −0.0076 |
+| 7scenes `pumpkin` | 0.0000 | 0.0172 | −0.0172 |
+| 7scenes `redkitchen` | 0.0146 | 0.0232 | −0.0086 |
+| 7scenes `stairs` | 0.0000 | 0.0349 | −0.0349 |
+| **MEAN** | **0.0127** | **0.0283** | **−0.0156** |
+
+100 steps of cam_dec retraining made AUC slightly **worse**, not better.
+This is the "barely moves" / "negative" outcome — strongly inconsistent
+with hypothesis 2 (which predicts a clear jump if cam_dec was the
+bottleneck).
+
+**Conclusion**: hypothesis 2 (cam_dec mismatch as the dominant cause) is
+**largely ruled out**. Remaining hypothesis: 3 (retrofit infeasibility) —
+the frozen-heads + Mamba-3-attention combination cannot reach DA3-SMALL
+accuracy at the 5000-step schedule, regardless of cam_dec adaptation.
+
+Caveat: 100 steps is a short budget; pose loss may need longer to refine
+cam_dec. But the slight backward movement (rather than no movement) is
+itself informative — it suggests cam_dec is locally over-fit to the
+exact transformer cls/cam-token distribution, and small distribution
+shifts in the input destabilize it. T4 with everything trainable jointly
+will tell us whether co-adaptation can recover from that local optimum.
+
+##### T4 — Joint unfreeze from Step-C ckpt, 500 steps: **did NOT recover**
+
+`outputs/runs/sp1_sub3_from_long/`. Trainable params: 36.45M (full
+unfreeze: attn 11.61M + dpt 0.44M + cam_dec 1.19M + other 23.21M).
+Init: `sp1_sub1_long/ckpt_5000.pt`. WSD schedule: 50 warmup / 100 decay
+across 500 steps, peak LR 1e-5. Loss starts at −5.46 (already at the
+sub-1-long terminal level) and oscillates around −5.5 ± 0.5 across 500
+steps with no clear monotonic improvement; L_feat stays bounded between
+0.19 and 0.36 (the saturation floor §15.57 noted, now joined by mild
+upward drift as MLPs/norms move off their transformer-tuned values).
+
+| dataset / scene | T4 AUC30 | Step-C AUC30 (§15.57) | Δ |
+|---|---:|---:|---:|
+| eth3d `terrains` | 0.0369 | 0.0177 | +0.0192 |
+| hiroom 04 | 0.0783 | 0.0833 | −0.0050 |
+| hiroom 14 | 0.0449 | 0.0247 | +0.0202 |
+| hiroom 08 | 0.0045 | 0.0096 | −0.0051 |
+| hiroom 07 | 0.0263 | 0.0157 | +0.0106 |
+| 7scenes `pumpkin` | 0.0045 | 0.0172 | −0.0127 |
+| 7scenes `redkitchen` | 0.0187 | 0.0232 | −0.0045 |
+| 7scenes `stairs` | 0.0079 | 0.0349 | −0.0270 |
+| **MEAN** | **0.0278** | **0.0283** | **−0.0005** |
+
+Per-scene movement is mixed (4 up, 4 down); the **mean is essentially
+unchanged**. Vs reference DA3-SMALL 0.7723 the gap is still 27.8×.
+
+This is the "barely moves" outcome at the joint-unfreeze level — the
+strongest test we can run cheaply. Hypothesis 3 (retrofit infeasibility
+at this schedule) is **confirmed**.
+
+#### §15.58 Synthesis verdict — across T1–T4
+
+| Hypothesis | Predicted | Observed | Status |
+|---|---|---|---|
+| H1: cls-token bug | T1 fails (NaN/shape/spike) | T1 PASS, no spike | **ruled out** |
+| H2: cam_dec mismatch | T3 AUC jumps ≥0.3 | T3 AUC drops −0.016 | **ruled out** |
+| H3: retrofit infeasibility | T4 AUC barely moves with everything trainable | T4 ΔAUC = −0.0005 | **confirmed** at this schedule |
+
+**Bottom line.** The swap is structurally correct (T1 PASS), the
+trained Mamba-3 cls/cam-tokens reach cosine 0.71–0.89 with the
+transformer's at the feat-distill layers (T2), and yet **neither
+cam_dec retraining (T3) nor full-pipeline co-adaptation from a
+long-init (T4) can move pose AUC**. At 5000 + 100 + 500 = 5600 total
+training steps on ~39 ETH3D + ~25 HiRoom + 4 7Scenes scenes, the
+patched DA3-SMALL student cannot match DA3-SMALL pose accuracy.
+
+This is consistent with §15.55 Phase 4's diagnosis ("credit-assignment
+path is too long for 1000 steps to backprop a useful gradient") but
+extends it: even with the credit-assignment path opened up (everything
+trainable), at the data and step budget we have, recovery does not
+happen.
+
+**What this means for the paper / project**:
+
+1. **Efficiency story is intact and publishable**: at 504² × 8 views
+   (T = 10 368), patched DA3 is 1.54× faster than transformer DA3 with
+   ≤ 1.01× memory (`§15.55 Phase 4b`). CIFAR-10 (`PLAN_cifar10.md
+   §9.10`) confirms accuracy parity is reachable from scratch at
+   matched scale, so the architecture itself is sound.
+2. **Accuracy story via short-distillation is broken**, regardless of
+   recipe (cosine vs plateau, 500 vs 5000 steps, attn-only vs full
+   unfreeze, GT vs teacher target). T1–T4 collectively localize the
+   blocker to "training budget × data scale", not architecture or
+   plumbing.
+3. **Paths forward** (in increasing cost):
+   - **Pure efficiency contribution**: paper presents Mamba-3 attention
+     as a drop-in efficiency improvement (1.54× at T ≈ 10k tokens),
+     trained-DA3 weights kept; accuracy story comes from CIFAR-10's
+     architectural-parity result.
+   - **Train from scratch on DA3 data**: replicate the CIFAR-10
+     setup at full scale — weeks of compute on ETH3D + HiRoom + 7Scenes
+     + (whatever public data we can pull). Risk: DA3 was trained on
+     hundreds of GB; we don't have that.
+   - **10× longer schedule on existing data**: 50 000 steps of full
+     unfreeze. If §15.57 Step C's 10× lift was 0.020 → 0.028 (1.4×),
+     extrapolating gives 0.04 at 50 k steps — still ~20× below
+     reference. Unlikely to close the gap.
+
+Recommendation: pivot to efficiency-only paper framing (Path 1),
+treating CIFAR-10 §9.10 as the architectural-parity argument and
+§15.55 Phase 4b as the efficiency argument. The depth/pose retrofit
+attempt is documented as a negative result with the test ladder
+T1–T4 as supporting evidence.
+

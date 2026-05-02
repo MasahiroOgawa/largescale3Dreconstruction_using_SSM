@@ -29,4 +29,17 @@ if _MAMBA_SSM_SRC.exists() and str(_MAMBA_SSM_SRC) not in sys.path:
         sys.modules["causal_conv1d_cuda"] = types.ModuleType("causal_conv1d_cuda")
     sys.path.insert(0, str(_MAMBA_SSM_SRC))
 
+# Legacy ckpts (pre-f0a3092) were pickled under the old module path `ssm3d.*`.
+# Alias the old names onto the current package so torch.load(weights_only=False)
+# can resolve classes like `SuperPhaseConfig` stored in `cfg`.
+sys.modules.setdefault("ssm3d", sys.modules[__name__])
+for _legacy_sub in ("train", "train.train_super", "patch", "da3_adapter",
+                    "mamba3", "eval", "eval.da3_reference", "data", "data.bench"):
+    try:
+        _mod = __import__(f"mamba3_attn.{_legacy_sub}", fromlist=["_"])
+        sys.modules.setdefault(f"ssm3d.{_legacy_sub}", _mod)
+    except (ImportError, ModuleNotFoundError):
+        pass
+del _legacy_sub
+
 __all__ = ["_DA3_SRC", "_MAMBA_SSM_SRC"]
