@@ -1,6 +1,6 @@
 """CIFAR-10 sanity check — Mamba-3 attention vs softmax attention vs CNN.
 
-See `doc/PLAN.md` for motivation and the acceptance gate. All three variants
+See `doc/PLAN_cifar10.md` for motivation and the acceptance gate. All three variants
 share the same recipe (AdamW, lr 1e-3, wd 0.05, 5-ep warmup → cosine, batch 128,
 50 epochs, RandomCrop+Flip, bf16 autocast on CUDA) and a matched parameter
 budget (~2.7 M).
@@ -561,7 +561,7 @@ def write_summary_md(out: Path, results: dict, args) -> None:
         "",
         "Live: <https://paperswithcode.com/sota/image-classification-on-cifar-10>",
         "",
-        "## Acceptance gate (`PLAN.md §5`)",
+        "## Acceptance gate (`PLAN_cifar10.md §5`)",
         "",
     ]
     gate = evaluate_gate(results)

@@ -1,5 +1,5 @@
 """Merge `run_vit_attn.log` into `results.json` after a `--variants vit_mamba3`
-resume overwrote it (see `doc/PLAN.md §9.10.1`). Re-renders summary.md and figures.
+resume overwrote it (see `doc/PLAN_cifar10.md §9.10.1`). Re-renders summary.md and figures.
 
 Usage:
     uv run python scripts/merge_vit_attn_log_into_results.py \
@@ -96,7 +96,7 @@ def write_summary_md(out: Path, results: dict, cfg: dict) -> None:
 
     a = results.get("vit_attn")
     m = results.get("vit_mamba3")
-    lines += ["", "## Acceptance gate (`PLAN.md §5`, T=1025 efficiency context)", ""]
+    lines += ["", "## Acceptance gate (`PLAN_cifar10.md §5`, T=1025 efficiency context)", ""]
     if a is None or m is None:
         lines.append("_Not evaluable_: gate requires both vit_attn and vit_mamba3 results.")
     else:
