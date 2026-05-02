@@ -2,7 +2,7 @@
 
 > **See also:** [`doc/PLAN_mamba3_DA3.md`](PLAN_mamba3_DA3.md) — the prior DA3 ↔ Mamba-3 distillation plan (CM01–CM22, super-phase / sub-phase, etc.). All section numbers cited as `§15.x` from earlier commits live there.
 
-> **Status (2026-04-29):** §9.7 Mamba-friendly recipe rerun finished — `vit_mamba3` test acc **70.04 %**, +25.45 pp over §9.6's 44.59 % (no collapse), but still **−12.46 pp** behind the softmax baseline. Recipe was a real confound, mixing-quality gap is also real. See [§9.8](#98-results--mamba-friendly-recipe-rerun-97). **Next: §9.9 plateau-scheduler 3-variant rerun** using `ReduceLROnPlateau` on EMA(train_loss) — see [§9.9](#99-next-action--plateau-scheduler-rerun-all-3-variants).
+> **Status (2026-05-02):** Pivoted to long-sequence efficiency at `patch_size=1` (T=1025) — Mamba-3's structural advantage is in O(T) recurrence vs softmax's O(T²), so the headline question is now memory/latency at long T, not accuracy at T=65. `vit_attn` 30-ep run finished (best test 68.37 %, latency 331 ms, peak 3623 MiB at B=128). `vit_mamba3` paused before launch — resume with `--variants vit_mamba3` against the saved config; see [§9.10](#910-long-sequence-efficiency-test--patch_size1-t1025-in-progress).
 
 ## §1. Context — why this side-track
 
@@ -291,3 +291,75 @@ Estimated wall-clock: cnn 8 min + vit_attn 8 min + vit_mamba3 20 min ≈ **36 mi
 
 - **PASS-plateau** = `test_acc(vit_mamba3) ≥ test_acc(vit_attn) − 2 pp` under plateau scheduling. → both schedule and recipe were confounds; resume `PLAN_mamba3_DA3.md`.
 - **FAIL-plateau** = gap remains > 2 pp under both cosine and plateau. → mixing-quality gap is robust to schedule choice; trigger §9.5 FAIL branch (reconsider swap), with §9.7 + §9.9 cosine + plateau as the supporting evidence.
+
+### §9.10. Long-sequence efficiency test — `patch_size=1` (T=1025), in progress
+
+**Why this test.** The §9.9-family runs (`patch_size=4`, T=65) pushed Mamba-3 outside its structural advantage — at T=65 attention is essentially free, so the test mostly probed inductive bias. At `patch_size=1` (T=1025) softmax's attention matrix is 16× larger and Mamba's chunked SSD recurrence stays linear in T, so this is the regime where the swap should pay off in **latency and peak memory**. Accuracy is secondary here; the headline numbers are wall-clock and `peak_mib`.
+
+**Recipe** (`configs/cifar10_patch1.yaml`, recoverable via `--config`):
+
+| Knob | Value | vs §9.9 plateau |
+|---|---|---|
+| `patch_size` | **1** (T=1025) | T=65 → T=1025 (16× more tokens) |
+| `batch_size` | **32** | 128 → 32 (memory budget at long T) |
+| `epochs` | **30** | 80 → 30 (this is an efficiency test, not a convergence run) |
+| `mamba_chunk_size` | `null` (Triton SISO kernel default) | unchanged — kernel handles long T natively |
+| Everything else | unchanged | lr 3e-4, warmup 10, plateau, grad_clip 1.0, seed 42 |
+
+**Variants:** `vit_attn` and `vit_mamba3` only (CNN skipped — not relevant for the long-sequence efficiency story).
+
+**Status (2026-05-02 15:43 JST).** `vit_attn` finished cleanly; `vit_mamba3` was killed at startup so the laptop could be moved. Per-epoch trajectory survives in `outputs/cifar10_compare_patch1/run_vit_attn.log`; best ckpt and resolved config are on disk.
+
+**Partial results — `vit_attn` only:**
+
+| Variant | Test Acc (best) | Train Acc (final) | Train s/epoch | Latency (ms, B=128) | Peak (MiB) |
+|---|---:|---:|---:|---:|---:|
+| `vit_attn` (ViT-Tiny + softmax, T=1025) | **68.37 %** (ep 27) | 83.58 (ep 30) | 313.7 | **331.16** | **3623.0** |
+| `vit_mamba3` | _pending — see resume below_ | | | | |
+
+Reference for scaling: at `patch_size=2` (T=257), `vit_attn` was 78.27 % / 44.28 ms / 374.3 MiB and `vit_mamba3` was 84.29 % / 47.96 ms / 378.8 MiB (`outputs/cifar10_compare_patch2/`). From T=257 to T=1025 (4× more tokens), `vit_attn` latency grew 7.5× and peak memory grew 9.7× — between linear and quadratic, as expected for softmax. Mamba-3 at T=1025 should grow ~linearly from its T=257 numbers (latency ≈ 190 ms, peak ≈ 1.5 GiB if the SSD recurrence holds), giving the headline efficiency win.
+
+**Caveats.**
+
+- Script-side print bug: efficiency line is logged as `(B=128, T=65)` but the model's actual forward at this run is T=1025 — only the label is hardcoded; the measurement is correct.
+- Single seed; no multi-seed variance bound (consistent with the rest of §9).
+- Accuracy after only 30 ep at T=1025 is not converged — that is intentional (efficiency test, not convergence test).
+
+#### §9.10.1. Resume steps for `vit_mamba3`
+
+The script does not checkpoint mid-training, so a clean resume is **per variant**, not per epoch. The `vit_attn` checkpoint is already saved; only `vit_mamba3` needs to run. The same config (`configs/cifar10_patch1.yaml`) is reused — only the variant list narrows.
+
+```bash
+# 1) Run vit_mamba3 against the saved config; outputs land in the same dir.
+uv run python scripts/cifar10_compare.py \
+    --config configs/cifar10_patch1.yaml \
+    --variants vit_mamba3
+```
+
+Expected wall-clock at T=1025, batch=32 with the Triton SISO kernel: **~50–75 min** for 30 epochs (vs `vit_attn`'s 157 min — chunked SSD is linear in T while softmax is quadratic).
+
+**Output handling — the script writes `results.json`, `summary.md`, and figures from scratch each run, so a `--variants vit_mamba3` resume will overwrite them with single-variant data.** Two-step recovery so the head-to-head is preserved:
+
+```bash
+# 2) Before re-running: snapshot the current results so they survive overwrite.
+cp outputs/cifar10_compare_patch1/run.log outputs/cifar10_compare_patch1/run_vit_attn.log  # already done
+# (no results.json to snapshot — vit_attn alone never produced one because the variant loop was killed)
+
+# 3) After vit_mamba3 finishes: merge vit_attn's per-epoch trajectory (parsed from
+#    run_vit_attn.log) and best ckpt (ckpt_vit_attn.pt) into results.json, then
+#    re-render summary.md and figures via plot_cifar10_compare.py.
+#    Implementation: small post-hoc merge script — to be written when resume runs.
+```
+
+The merge script needs to:
+
+1. Parse `run_vit_attn.log` regex `^\s+ep\s+(\d+)\s+trL\s+(\S+)\s+trA\s+(\S+)\s+teL\s+(\S+)\s+teA\s+(\S+)\s+lr\s+(\S+)\s+(\S+)s` → per-epoch list for `vit_attn`.
+2. Read `best_test_acc` from `ckpt_vit_attn.pt`.
+3. Re-measure `vit_attn` efficiency by loading `ckpt_vit_attn.pt` and running `measure(...)` (or read it from the existing `run_vit_attn.log`'s `efficiency:` line: latency 331.16, peak 3623.0).
+4. Inject the assembled `vit_attn` entry into `results.json` next to `vit_mamba3`.
+5. Re-run `write_summary_md` and `make_all_figures` on the merged dict.
+
+**Decision deferred until vit_mamba3 lands:**
+
+- If `vit_mamba3` peak/latency comes in well under `vit_attn`'s 3623 MiB / 331 ms, the efficiency story is closed (Mamba's structural advantage is real at long T) regardless of accuracy gap. This is the primary test.
+- Accuracy comparison at 30 ep at T=1025 is undertrained; treat as orientation only. A longer run (80–100 ep) would be needed for a convergence verdict at this T.
