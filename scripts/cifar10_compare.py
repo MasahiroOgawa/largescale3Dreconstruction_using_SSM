@@ -23,6 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import yaml
 from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
@@ -32,6 +33,15 @@ from bench_efficiency_patched import count_params, measure  # noqa: E402
 from plot_cifar10_compare import make_all_figures  # noqa: E402
 
 from mamba3_attn.patch import install_mamba3  # noqa: E402
+
+# Stream per-epoch lines to log files in real time (block-buffering would hide
+# progress until the buffer fills or the process exits).
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(line_buffering=True)
+
+# Args whose default type is Path; YAML loads them as str, so coerce on load.
+_PATH_ARGS = ("out", "data_dir", "config")
 
 CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR10_STD = (0.2470, 0.2435, 0.2616)
@@ -576,8 +586,39 @@ def write_summary_md(out: Path, results: dict, args) -> None:
 # ---------------------------------------------------------------------------
 
 
+def load_config(path: Path) -> dict:
+    """Load a YAML config and coerce known Path-typed keys to Path objects."""
+    with open(path) as f:
+        cfg = yaml.safe_load(f) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError(f"config {path} must be a YAML mapping, got {type(cfg).__name__}")
+    for k in _PATH_ARGS:
+        if k in cfg and cfg[k] is not None and not isinstance(cfg[k], Path):
+            cfg[k] = Path(cfg[k])
+    return cfg
+
+
+def dump_config(args: argparse.Namespace, path: Path) -> None:
+    """Write the resolved args namespace to a YAML file for recovery."""
+    cfg: dict = {}
+    for k, v in vars(args).items():
+        if k == "config":
+            continue
+        cfg[k] = str(v) if isinstance(v, Path) else v
+    with open(path, "w") as f:
+        yaml.safe_dump(cfg, f, sort_keys=True)
+
+
 def main() -> None:
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=Path, default=None)
+    pre_args, _ = pre.parse_known_args()
+    config_defaults = load_config(pre_args.config) if pre_args.config else {}
+
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--config", type=Path, default=None,
+                    help="YAML config with defaults; CLI args override. Resolved "
+                         "config is auto-dumped to <out>/config.yaml on every run.")
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--batch-size", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -610,9 +651,16 @@ def main() -> None:
                     help="Floor for plateau LR reductions (default 1e-6)")
     ap.add_argument("--plateau-loss-ema-alpha", type=float, default=0.3,
                     help="EMA alpha for train-loss smoothing fed to plateau scheduler (default 0.3)")
+    if config_defaults:
+        unknown = set(config_defaults) - {a.dest for a in ap._actions}
+        if unknown:
+            raise ValueError(f"unknown config keys: {sorted(unknown)}")
+        ap.set_defaults(**config_defaults)
     args = ap.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
+    dump_config(args, args.out / "config.yaml")
+    print(f"[config] resolved → {args.out / 'config.yaml'}")
     device = torch.device(args.device)
 
     if device.type == "cpu" and args.epochs > 5:

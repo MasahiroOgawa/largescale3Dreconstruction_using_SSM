@@ -1,0 +1,28 @@
+# CIFAR-10 patch1 — small efficiency-test for Mamba-3 attention at long seq.
+# 30 epochs (small test, not a full convergence run). Triton SISO kernel is
+# the default in mamba3_attn (no --mamba-chunk-size needed at T=1025).
+#
+# Recovery: uv run python scripts/cifar10_compare.py \
+#     --config configs/cifar10_patch1.yaml
+
+batch_size: 32
+data_dir: data/cifar10
+device: cuda
+epochs: 30
+grad_clip: 1.0
+lr: 0.0003
+lr_schedule: plateau
+mamba_chunk_size: null
+num_workers: 4
+out: outputs/cifar10_compare_patch1
+patch_size: 1
+plateau_factor: 0.5
+plateau_loss_ema_alpha: 0.3
+plateau_min_lr: 1.0e-06
+plateau_patience: 5
+plateau_threshold: 0.001
+seed: 42
+variants:
+  - vit_attn
+  - vit_mamba3
+warmup_epochs: 10
