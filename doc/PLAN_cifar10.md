@@ -363,3 +363,108 @@ The merge script needs to:
 
 - If `vit_mamba3` peak/latency comes in well under `vit_attn`'s 3623 MiB / 331 ms, the efficiency story is closed (Mamba's structural advantage is real at long T) regardless of accuracy gap. This is the primary test.
 - Accuracy comparison at 30 ep at T=1025 is undertrained; treat as orientation only. A longer run (80–100 ep) would be needed for a convergence verdict at this T.
+
+## §10. Cross-run investigation — why CNN beats both ViTs, why Mamba-3 overfits less
+
+A retrospective synthesis across §9.6 (patch4 cosine), `outputs/cifar10_compare_plateau/` (patch4 plateau), `outputs/cifar10_compare_patch2/` (patch2 plateau), and `outputs/cifar10_compare_patch1/` (patch1, vit_attn only). Triggered by the question "if matched-recipe is fair, why do both ViTs still trail CNN at every patch size?"
+
+### §10.1. Headline numbers across patch sizes
+
+All runs use AdamW lr=3e-4 (except §9.6 cosine at 1e-3), wd=0.05, batch=128 except patch1 (batch=32), seed=42, plateau scheduler unless noted.
+
+| Run | Patch | T | Variant | Train | **Test** | Train loss (final) | Test loss (final) |
+|---|---:|---:|---|---:|---:|---:|---:|
+| `cifar10_compare_plateau` | 4 | 65 | cnn | 98.92 | **91.84** | 0.031 | 0.397 |
+| `cifar10_compare_plateau` | 4 | 65 | vit_attn | 96.97 | **80.34** | 0.086 | 0.814 |
+| `cifar10_compare_plateau` | 4 | 65 | vit_mamba3 | 94.41 | **83.06** | 0.159 | 0.621 |
+| `cifar10_compare_patch2`  | 2 | 257 | cnn | 98.92 | **91.84** | — | — |
+| `cifar10_compare_patch2`  | 2 | 257 | vit_attn | 97.17 | **78.27** | — | — |
+| `cifar10_compare_patch2`  | 2 | 257 | vit_mamba3 | 96.53 | **84.29** | — | — |
+| `cifar10_compare_patch1`  | 1 | 1025 | vit_attn (30 ep) | 83.58 | **68.37** (best ep 27) | 0.46 | 1.08 (rising) |
+
+Two facts dominate:
+
+1. **CNN beats both ViTs at every patch size we tried** (gap 8–13 pp), even when patch shrinks toward "no patching."
+2. **Among ViTs, mamba3 overfits less than attn** at patch=4 plateau (gap 11.4 pp vs 16.6 pp); at patch=2, mamba3 also out-tests vit_attn (84.29 vs 78.27).
+
+The rest of §10 explains both.
+
+### §10.2. Why CNN wins on accuracy — inductive bias, not the recipe
+
+A CNN has two assumptions wired into the operator:
+
+- **Locality** — a 3×3 conv only ever looks at neighboring pixels.
+- **Translation equivariance** — the same filter slides across all positions.
+
+ViT/Mamba have neither. They split the image into patches, throw them into a bag with a learned position embedding, and must *learn* from data that "patch (3,4) is next to patch (3,5)" and "a cat at (1,1) is the same cat at (7,7)." With 50K CIFAR-10 images and no pretraining, this is a heavy lift. ViT papers (Dosovitskiy 2020) explicitly observed ViT underperforms ResNets at this data scale; CIFAR-10 is ~600× smaller than ImageNet-1k, well below the regime where transformers catch up.
+
+**This is architectural, not a recipe issue, and not fixable by any setting in `--lr`/`--wd`/`--epochs`.**
+
+### §10.3. Same recipe ≠ same effective regularization
+
+The recipe is matched across variants — but architectures don't *respond* to that recipe identically. At patch4 plateau, ep 80:
+
+- CNN: train→test gap **7.1 pp** (98.9 → 91.8)
+- vit_attn: gap **16.6 pp** (97.0 → 80.3)
+- vit_mamba3: gap **11.4 pp** (94.4 → 83.1)
+
+CNN's weight sharing is itself a regularizer — the same 3×3 filter must work at every position, so the model physically cannot memorize position-specific quirks. ViT has no such constraint: every patch position can learn independently, so the model memorizes 50K-set idiosyncrasies under the same augmentation that leaves CNN comfortable. **Strong augmentation (Mixup/CutMix) helps ViT a lot and CNN very little** — that's the §4 reference where ViT-Tiny + Mixup ≈ 92 % closes most of the gap. Under matched *weak* aug (RandomCrop + HFlip only), the architectural regularization gap shows up as a generalization gap.
+
+### §10.4. Patch size is not the dominant explanation
+
+Smaller patches do not monotonically close the gap to CNN, and they do not affect the two ViTs the same way:
+
+| Patch | T | vit_attn test | vit_mamba3 test |
+|---:|---:|---:|---:|
+| 4 | 65 | 80.34 (plateau) | 83.06 |
+| 2 | 257 | **78.27** ↓ | **84.29** ↑ |
+| 1 | 1025 | 68.37 (30 ep, undertrained) | pending |
+
+Smaller patches *hurt* vit_attn (more tokens to overfit on with the same data) but *help* vit_mamba3 (more state-update steps, longer effective sequence — closer to SSD's regime). Across all three sizes, **CNN wins on accuracy**. So the persistent gap to CNN is architecture-level, not patch-size-level.
+
+### §10.5. vit_attn overfitting onset at patch=1 — ~30k steps = ~ep 19
+
+From `outputs/cifar10_compare_patch1/run_vit_attn.log` (batch=32, ~1563 steps/epoch):
+
+| Epoch | ~Steps | Train acc | Test acc | Train loss | Test loss |
+|---:|---:|---:|---:|---:|---:|
+| 19 | 30k | 71.35 | **67.45** | 0.81 | 0.94 |
+| 20 | 31k | 72.42 | 66.23 ↓ | 0.78 | 0.99 ↑ |
+| 27 | 42k | 80.61 | **68.37** (best) | 0.55 | 1.01 |
+| 30 | 47k | 83.58 | 67.08 | 0.46 | **1.08** ↑ |
+
+Around 30k steps test acc plateaus at ~68 % and **test loss starts rising** (0.94 → 1.08) while train loss keeps falling (0.81 → 0.46). Train acc continues climbing 71 → 84. This divergence is the textbook signature of overfitting: the model has finished learning the generalizable signal and is now memorizing per-image details of the train set. The plateau scheduler doesn't intervene because it watches *train* loss, which is still decreasing.
+
+### §10.6. Why `vit_mamba3` overfits less than `vit_attn`
+
+`vit_mamba3` does overfit, but more slowly and less severely. Three reasons in order of importance:
+
+**1. mamba3 hasn't fully fit the train set yet (the deflationary explanation).** At patch4 plateau ep 80, train loss is 0.159 for mamba3 vs 0.086 for vit_attn — almost 2× higher. vit_attn is in the interpolation regime (near-zero train loss); mamba3 isn't. Overfitting only becomes pronounced *after* training loss is driven low enough that further updates can only fit training-specific quirks. If we ran mamba3 to 200 ep until trA hit 98 %, the test-loss curve would likely turn up too. Phrased fairly: **mamba3 converges more slowly, so it spends less time in the overfitting regime** — not "immune to overfitting."
+
+**2. SSD has a structural information bottleneck softmax doesn't.** Softmax attention at T=65 explicitly materializes a 65×65 score matrix and can form arbitrary content-addressable pairwise lookups ("token i pulls hard from token j"). Mamba-3 SSD compresses past-token information through a fixed-size recurrent state and cannot represent arbitrary pairwise interactions — only patterns that survive the state's compression bottleneck. **Less expressive memorization → less overfitting and a lower train-acc ceiling, both from the same cause.** This is the SSD analog of "RNN's hidden state is an implicit regularizer."
+
+**3. Mamba's selective Δ-gating ≈ context dropout.** Mamba-2/3 gating decays past state contributions adaptively per token, structurally similar to applying dropout to the context representation. Softmax has no equivalent built-in mechanism (and we're not using attention-dropout in the recipe).
+
+### §10.7. Mixing capacity — terminology
+
+"Mixing" = cross-token information flow inside a layer (the half of a transformer block that is *not* the per-token MLP). "Mixing capacity" = how much information the layer can move between tokens, and how flexibly. The ladder, from least to most:
+
+| Operator | Per-token connections | Content-addressable? | Cost |
+|---|---|---|---|
+| 3×3 conv | 9 fixed-position neighbors | no | O(1) per position |
+| 1D conv (kernel k) | k fixed-position neighbors | no | O(k) per position |
+| Mamba SSD | bounded by state-dim d_state through recurrence | partly (selective Δ-gating) | O(T) total |
+| Softmax attention | up to T edges per token, all pairs | yes (QK content) | O(T²) total |
+
+CNNs have low but heavily structured mixing (locality + weight sharing). Softmax has the highest raw mixing — any-to-any, content-addressable — but pays in O(T²) and in overfit pressure on small data. SSD sits between them: linear-time recurrence with content-dependent gating, but information must squeeze through the state's bottleneck.
+
+### §10.8. Conclusion — the capacity ↔ priors trade-off and what it means for the depth pipeline
+
+**On CIFAR-10 specifically.** No mixer in this study reaches CNN's accuracy at 50K images and matched recipe. CNN's locality + translation-equivariance priors dominate at this data scale; the ViTs would need either pretraining or strong aug (Mixup/CutMix) to close the gap, neither of which is in the matched recipe by design. Among the two ViTs, softmax wins on raw mixing power (better at short T when capacity matters) but overfits harder; SSD has lower capacity (lower ceiling, also less overfit). These are two views of the same fact about each operator's capacity.
+
+**Implication for the depth pipeline (`PLAN.md §15.13`'s 1.27× gap).** The §9.8 "fair-recipe" patch4 result (mamba3 70.04 % vs attn 82.50 %, gap −12.5 pp) and the §10.6 capacity argument together suggest the depth gap is **not purely a training-recipe / distillation issue** — a real mixing-capacity gap survives proper SSD hyperparameters at the regime where attention has a capacity advantage. Two complementary follow-ups remain credible:
+
+- **Long-T efficiency wins** (§9.10 patch1) — at T=1025 attention's O(T²) becomes a real cost (vit_attn: 331 ms / 3.6 GiB at batch=128) and SSD's structural advantage should pay off in latency/peak memory regardless of accuracy. This is the regime the project's depth pipeline ultimately targets.
+- **At short T, accept that SSD trades accuracy for efficiency.** The depth task at DA3-SMALL's current sequence length is closer to "short T" than "long T," so the 1.27× gap is partly a real-capacity tax. Distillation/recipe tuning can shrink but probably not erase it.
+
+The CIFAR-10 sanity check did its job: it ruled out "depth gap is purely recipe noise" and located a concrete architectural reason. Continuing investment in the swap is justified primarily by §9.10's efficiency story (long-T scaling), not by hopes of accuracy parity at short T.
