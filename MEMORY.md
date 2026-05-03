@@ -3,3 +3,4 @@
 - [Don't gate between pre-approved sequential steps](memory/feedback_dont_gate_planned_steps.md) — once a multi-step plan is agreed, execute through it without re-asking between steps
 - [/cleanup-commit-push between each step](memory/feedback_cleanup_between_steps.md) — each step lands as its own clean per-step commit + push
 - [Every step must report efficiency AND accuracy](memory/feedback_efficiency_and_accuracy_together.md) — every variant-vs-DA3 comparison reports both; reuse `eval_ckpt_sweep.py` / `eval_recon_metrics.py` / `eval_ray_metrics.py`
+- [No paper without competitive accuracy](memory/feedback_no_efficiency_only_paper.md) — efficiency-only paper framing is off the table; accuracy must reach DA3-SMALL (or better)

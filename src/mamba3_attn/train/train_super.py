@@ -36,12 +36,13 @@ from torch import Tensor
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 
+from ..data.view_split import split_views, write_split
 from ..eval.da3_reference import DEFAULT_HF_MODEL, load_da3
 from ..mamba3 import Mamba3SelfAttention
 from ..patch import install_mamba3, count_mamba3_attn
 from .da3_loss import DA3LossWeights, da3_paper_loss
 from .gt_ray import gt_ray_map
-from .multi_view import multi_view_iterator
+from .multi_view import iter_single_scene, load_full_scene_cache, multi_view_iterator
 
 
 TEACHER_HF = {
@@ -74,6 +75,26 @@ class SuperPhaseConfig:
     n_dpt_top_fusion_unfrozen: int = 2
     weights: DA3LossWeights = field(default_factory=DA3LossWeights)
     lambda_feat: float = 1.0  # feature-distillation weight; auto-disabled when teacher dim differs
+    # Skip the install_mamba3 swap so the student stays as un-patched DA3-SMALL.
+    # Used for the per-scene-overfit "ceiling" baseline (PLAN §15.59 row 1) where
+    # we want the same training recipe applied to the un-patched architecture.
+    no_mamba3_swap: bool = False
+    # Per-scene overfit (PLAN §15.59). When `scene_overfit` is set, training pulls
+    # `n_views` per step from the train half of `split_views(...)` instead of cycling
+    # across multiple scenes. The held-out test indices are written to `split.json`.
+    scene_overfit: Optional[str] = None
+    scene_dataset: str = "eth3d"
+    train_frac: float = 0.75
+    split_seed: int = 42
+    candidate_views: int = 256
+    frame_stride: int = 1
+    augment: bool = True
+    # Group-wise LRs for the `all` scope under scene-overfit. The default of `None`
+    # keeps the legacy single-group lr=1e-5 path so existing super-1/2/3 runs are
+    # unaffected.
+    lr_attn: Optional[float] = None
+    lr_head: Optional[float] = None
+    lr_other: Optional[float] = None
 
 
 def _amp_dtype(name: str) -> torch.dtype:
@@ -149,8 +170,20 @@ def _feature_distill_loss(student_feats: list[Tensor], teacher_feats: list[Tenso
     return total / max(len(student_feats), 1)
 
 
-def set_trainables(student, scope: str, n_top_fusion: int) -> tuple[list[nn.Parameter], list[dict], dict]:
-    """Set requires_grad per scope. Returns (params_flat, param_groups, info)."""
+def set_trainables(
+    student, scope: str, n_top_fusion: int,
+    lr_attn: Optional[float] = None,
+    lr_head: Optional[float] = None,
+    lr_other: Optional[float] = None,
+) -> tuple[list[nn.Parameter], list[dict], dict]:
+    """Set requires_grad per scope. Returns (params_flat, param_groups, info).
+
+    When `scope == "all"` and any of `lr_attn / lr_head / lr_other` is set, the
+    optimizer is built with three groups (attn / dpt+cam_dec / other) using the
+    supplied LRs. This is the per-scene-overfit recipe (PLAN §15.59) where the
+    Mamba-3 attentions need to move farther from warm-start than the DA3-pretrained
+    heads or MLPs.
+    """
     for p in student.model.parameters():
         p.requires_grad_(False)
 
@@ -223,7 +256,16 @@ def set_trainables(student, scope: str, n_top_fusion: int) -> tuple[list[nn.Para
         if cam_params:
             groups.append({"params": cam_params, "lr": 1e-4, "tag": "cam_dec"})
     elif scope == "all":
-        groups = [{"params": flat, "lr": 1e-5, "tag": "all"}]
+        if lr_attn is None and lr_head is None and lr_other is None:
+            groups = [{"params": flat, "lr": 1e-5, "tag": "all"}]
+        else:
+            head_params = dpt_params + cam_params
+            if attn_params:
+                groups.append({"params": attn_params, "lr": lr_attn or 1e-5, "tag": "attn"})
+            if head_params:
+                groups.append({"params": head_params, "lr": lr_head or 1e-5, "tag": "head"})
+            if other_params:
+                groups.append({"params": other_params, "lr": lr_other or 1e-5, "tag": "other"})
     elif scope == "cam_dec_only":
         if cam_params:
             groups.append({"params": cam_params, "lr": 1e-4, "tag": "cam_dec"})
@@ -289,13 +331,22 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
         for p in teacher.model.parameters():
             p.requires_grad_(False)
 
-    print(f"[train_super] loading student DA3-SMALL + Mamba-3 swap", flush=True)
+    print(f"[train_super] loading student DA3-SMALL"
+          f"{' + Mamba-3 swap' if not cfg.no_mamba3_swap else ' (un-patched, no swap)'}",
+          flush=True)
     student = load_da3(DEFAULT_HF_MODEL, device=cfg.device)
-    install_mamba3(
-        student.model, which="all", state_dim=cfg.state_dim,
-        use_fused_kernel=cfg.use_fused_kernel, chunk_size=cfg.chunk_size,
-    )
-    print(f"[train_super] swapped {count_mamba3_attn(student.model)} attentions", flush=True)
+    if not cfg.no_mamba3_swap:
+        install_mamba3(
+            student.model, which="all", state_dim=cfg.state_dim,
+            use_fused_kernel=cfg.use_fused_kernel, chunk_size=cfg.chunk_size,
+        )
+        print(f"[train_super] swapped {count_mamba3_attn(student.model)} attentions",
+              flush=True)
+    if cfg.no_mamba3_swap and cfg.sub_phase == 1:
+        raise ValueError(
+            "no_mamba3_swap with sub=1 (attn_only) trains zero parameters: "
+            "un-patched DA3 has no Mamba-3 attentions to unfreeze. Use sub=3 (all) instead."
+        )
     student = student.to(cfg.device)
 
     if cfg.init_ckpt is not None:
@@ -304,7 +355,10 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
         student.model.load_state_dict(state["model"])
     student.model.train()
 
-    flat, groups, info = set_trainables(student, sub_label, cfg.n_dpt_top_fusion_unfrozen)
+    flat, groups, info = set_trainables(
+        student, sub_label, cfg.n_dpt_top_fusion_unfrozen,
+        lr_attn=cfg.lr_attn, lr_head=cfg.lr_head, lr_other=cfg.lr_other,
+    )
     n_total = sum(info.values())
     print(f"[train_super] trainable: attn={info['attn']/1e6:.2f}M, "
           f"dpt={info['dpt']/1e6:.2f}M, cam_dec={info['cam_dec']/1e6:.2f}M, "
@@ -316,10 +370,43 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
     amp_dtype = _amp_dtype(cfg.amp_dtype)
 
     require_gt = cfg.super_phase == 3
-    data = multi_view_iterator(
-        Path("data"), n_views=cfg.n_views, image_size=cfg.image_size,
-        seed=cfg.seed, require_gt=require_gt,
-    )
+    if cfg.scene_overfit is not None:
+        if cfg.super_phase != 3:
+            raise ValueError(
+                "scene_overfit requires super=3 (GT supervision). Per-scene "
+                "overfit drops distillation entirely (PLAN §15.59 root-cause #2)."
+            )
+        print(
+            f"[train_super] scene-overfit on {cfg.scene_dataset}/{cfg.scene_overfit}",
+            flush=True,
+        )
+        cache = load_full_scene_cache(
+            cfg.scene_dataset, cfg.scene_overfit, Path("data"),
+            image_size=cfg.image_size, candidate_views=cfg.candidate_views,
+            frame_stride=cfg.frame_stride,
+        )
+        n_views_total = cache.images.shape[0]
+        train_idx, test_idx = split_views(
+            n_views_total, train_frac=cfg.train_frac, seed=cfg.split_seed,
+        )
+        write_split(
+            out_dir, num_views=n_views_total, train_frac=cfg.train_frac,
+            seed=cfg.split_seed, train=train_idx, test=test_idx,
+        )
+        print(
+            f"[train_super] scene has {n_views_total} views; "
+            f"train={len(train_idx)} test={len(test_idx)} "
+            f"(seed={cfg.split_seed}, frac={cfg.train_frac})",
+            flush=True,
+        )
+        data = iter_single_scene(
+            cache, train_idx, n_views=cfg.n_views, augment=cfg.augment, seed=cfg.seed,
+        )
+    else:
+        data = multi_view_iterator(
+            Path("data"), n_views=cfg.n_views, image_size=cfg.image_size,
+            seed=cfg.seed, require_gt=require_gt,
+        )
 
     # Feature distillation enabled only for super-phase 1 (DA3-SMALL teacher,
     # dim-matched). LARGE teacher (super 2) has 1024-dim features that don't
@@ -382,6 +469,28 @@ def main() -> None:
     ap.add_argument("--n-views", type=int, default=4)
     ap.add_argument("--image-size", type=int, default=504)
     ap.add_argument("--ckpt-every", type=int, default=250)
+    ap.add_argument("--warmup-steps", type=int, default=50)
+    ap.add_argument("--decay-steps", type=int, default=100)
+    ap.add_argument("--chunk-size", type=int, default=128)
+    ap.add_argument("--state-dim", type=int, default=64)
+    # Per-scene overfit (PLAN §15.59) — when --scene-overfit is set, super must be 3.
+    ap.add_argument("--scene-overfit", type=str, default=None,
+                    help="Scene name (e.g. 'terrains'). Activates per-scene overfit mode.")
+    ap.add_argument("--scene-dataset", type=str, default="eth3d",
+                    choices=["eth3d", "hiroom", "7scenes"])
+    ap.add_argument("--train-frac", type=float, default=0.75)
+    ap.add_argument("--split-seed", type=int, default=42)
+    ap.add_argument("--candidate-views", type=int, default=256,
+                    help="Cap on views loaded from the scene before splitting.")
+    ap.add_argument("--frame-stride", type=int, default=1,
+                    help="Frame stride for 7Scenes long sequences.")
+    ap.add_argument("--no-augment", action="store_true",
+                    help="Disable per-view photometric jitter (debugging only).")
+    ap.add_argument("--lr-attn", type=float, default=None)
+    ap.add_argument("--lr-head", type=float, default=None)
+    ap.add_argument("--lr-other", type=float, default=None)
+    ap.add_argument("--no-mamba3-swap", action="store_true",
+                    help="Train un-patched DA3-SMALL (per-scene-overfit ceiling baseline).")
     args = ap.parse_args()
 
     cfg = SuperPhaseConfig(
@@ -392,6 +501,21 @@ def main() -> None:
         n_views=args.n_views,
         image_size=args.image_size,
         ckpt_every=args.ckpt_every,
+        warmup_steps=args.warmup_steps,
+        decay_steps=args.decay_steps,
+        chunk_size=args.chunk_size,
+        state_dim=args.state_dim,
+        scene_overfit=args.scene_overfit,
+        scene_dataset=args.scene_dataset,
+        train_frac=args.train_frac,
+        split_seed=args.split_seed,
+        candidate_views=args.candidate_views,
+        frame_stride=args.frame_stride,
+        augment=not args.no_augment,
+        lr_attn=args.lr_attn,
+        lr_head=args.lr_head,
+        lr_other=args.lr_other,
+        no_mamba3_swap=args.no_mamba3_swap,
     )
     train(cfg, args.out_dir)
 

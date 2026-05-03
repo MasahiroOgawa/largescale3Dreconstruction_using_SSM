@@ -34,6 +34,7 @@ import torch
 
 from ..data.bench import load_bench_cams, load_bench_scene
 from ..data.hiroom import list_hiroom_scenes
+from ..data.view_split import read_split
 from ..eval.da3_reference import DEFAULT_HF_MODEL, load_da3
 from ..patch import install_mamba3
 
@@ -60,17 +61,21 @@ class SceneMetrics:
 
 def build_patched_api(ckpt_path: str | None, device: str = "cuda", state_dim: int = 64,
                       patched: bool = True):
-    """Load DA3-SMALL → optionally install_mamba3 + load ckpt → return api.
+    """Load DA3-SMALL → optionally install_mamba3 → optionally load ckpt → return api.
 
-    `patched=False, ckpt_path=None` returns the un-patched DA3 reference.
+    Combinations supported:
+      - `patched=True,  ckpt_path=...`  : Mamba-3-patched DA3 with trained weights.
+      - `patched=True,  ckpt_path=None` : Mamba-3-patched DA3 at warm-start (no training).
+      - `patched=False, ckpt_path=...`  : un-patched DA3-SMALL with overfit weights.
+      - `patched=False, ckpt_path=None` : un-patched DA3-SMALL zero-shot reference.
     """
     api = load_da3(DEFAULT_HF_MODEL, device=device)
     if patched:
         install_mamba3(api.model, which="all", state_dim=state_dim,
                        use_fused_kernel=True, chunk_size=128)
-        if ckpt_path is not None:
-            state = torch.load(ckpt_path, map_location=device, weights_only=False)
-            api.model.load_state_dict(state["model"])
+    if ckpt_path is not None:
+        state = torch.load(ckpt_path, map_location=device, weights_only=False)
+        api.model.load_state_dict(state["model"])
     api = api.to(device)
     api.model.eval()
     return api
@@ -163,11 +168,30 @@ def _eval_recon(depths: np.ndarray, rgbs: np.ndarray, Ks: np.ndarray, Es_pred: n
 @torch.inference_mode()
 def evaluate_one_scene(api, dataset: str, scene: str, data_root: Path,
                        max_images: int = 12, image_size: int = 504,
-                       frame_stride: int = 80, recon: bool = True) -> SceneMetrics:
+                       frame_stride: int = 80, recon: bool = True,
+                       view_indices: list[int] | None = None) -> SceneMetrics:
+    """Evaluate one scene. If `view_indices` is given, restrict to those positional
+    indices into the loaded sample (held-out test views from split.json). Loads the
+    full candidate set (≥ max(view_indices) + 1 views) before slicing so the
+    indices are stable wrt the train-time split.
+    """
+    load_max = max_images if view_indices is None else max(max_images, max(view_indices) + 1)
     sample = load_bench_scene(dataset, scene, data_root,
-                               max_images=max_images, image_size=image_size,
+                               max_images=load_max, image_size=image_size,
                                load_gt_depth=True,
                                frame_stride=frame_stride if dataset == "7scenes" else 1)
+    if view_indices is not None:
+        if max(view_indices) >= sample.images.shape[0]:
+            raise ValueError(
+                f"view_indices max={max(view_indices)} but only {sample.images.shape[0]} views loaded"
+            )
+        idx = list(view_indices)
+        sample.images = sample.images.index_select(0, torch.tensor(idx, dtype=torch.long))
+        if sample.gt_depth is not None:
+            sample.gt_depth = sample.gt_depth.index_select(0, torch.tensor(idx, dtype=torch.long))
+        if sample.valid_mask is not None:
+            sample.valid_mask = sample.valid_mask.index_select(0, torch.tensor(idx, dtype=torch.long))
+        sample.image_paths = [sample.image_paths[i] for i in idx]
     if sample.images.shape[0] < 2:
         return SceneMetrics(dataset=dataset, scene=scene)
     image_paths = [str(p) for p in sample.image_paths]
@@ -286,7 +310,11 @@ def _print_table(rows: list[SceneMetrics], label: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", type=str, required=True, help="Patched-DA3 ckpt path")
+    ap.add_argument("--ckpt", type=str, default=None,
+                    help="Ckpt path. Omit for the un-patched DA3 zero-shot reference.")
+    ap.add_argument("--no-patch", action="store_true",
+                    help="Skip install_mamba3; eval an un-patched DA3 model "
+                    "(reference or un-patched-overfit ckpt).")
     ap.add_argument("--data-root", type=Path, default=Path("data"))
     ap.add_argument("--state-dim", type=int, default=64)
     ap.add_argument("--max-images", type=int, default=12)
@@ -297,15 +325,40 @@ def main() -> None:
                     help="Also evaluate un-patched DA3 reference for direct comparison.")
     ap.add_argument("--pose-only", action="store_true",
                     help="Skip recon (F-score) eval, run only pose AUC.")
+    # Per-scene-overfit eval (PLAN §15.59). When set, eval is restricted to one
+    # scene's held-out view indices (typically loaded from a training run's split.json).
+    ap.add_argument("--scene-overfit", type=str, default=None,
+                    help="Scene name; restricts eval to one scene's held-out views.")
+    ap.add_argument("--scene-dataset", type=str, default="eth3d",
+                    choices=["eth3d", "hiroom", "7scenes"])
+    ap.add_argument("--split-json", type=Path, default=None,
+                    help="Path to split.json from training; uses its 'test' indices.")
+    ap.add_argument("--view-indices", type=int, nargs="+", default=None,
+                    help="Manual override: explicit positional view indices to eval.")
     args = ap.parse_args()
 
-    scenes = _scene_iter(args.data_root)
-    print(f"[phase4] eval scenes: {len(scenes)}")
-    for d, s in scenes:
-        print(f"  {d}/{s}")
+    if args.scene_overfit is not None:
+        if args.split_json is not None:
+            _, view_indices = read_split(args.split_json)
+        elif args.view_indices is not None:
+            view_indices = list(args.view_indices)
+        else:
+            ap.error("--scene-overfit requires either --split-json or --view-indices")
+        scenes = [(args.scene_dataset, args.scene_overfit)]
+        print(f"[phase4] scene-overfit eval on {args.scene_dataset}/{args.scene_overfit}, "
+              f"held-out test indices = {view_indices}")
+    else:
+        view_indices = None
+        scenes = _scene_iter(args.data_root)
+        print(f"[phase4] eval scenes: {len(scenes)}")
+        for d, s in scenes:
+            print(f"  {d}/{s}")
 
-    print(f"\n[phase4] loading patched DA3 from {args.ckpt}")
-    student = build_patched_api(args.ckpt, device=args.device, state_dim=args.state_dim)
+    label_main = "un-patched DA3" if args.no_patch else "patched DA3"
+    src = args.ckpt if args.ckpt is not None else "DA3-SMALL pretrained (no ckpt)"
+    print(f"\n[phase4] loading {label_main} from {src}")
+    student = build_patched_api(args.ckpt, device=args.device, state_dim=args.state_dim,
+                                patched=not args.no_patch)
 
     student_rows: list[SceneMetrics] = []
     for ds, sc in scenes:
@@ -315,6 +368,7 @@ def main() -> None:
                 student, ds, sc, args.data_root,
                 max_images=args.max_images, image_size=args.image_size,
                 frame_stride=args.frame_stride, recon=not args.pose_only,
+                view_indices=view_indices,
             )
             student_rows.append(sm)
             print(f"  AUC30={sm.auc30:.4f}  F_posed={sm.fscore_posed:.4f}  F_unp={sm.fscore_unposed:.4f}", flush=True)
@@ -336,6 +390,7 @@ def main() -> None:
                     ref, ds, sc, args.data_root,
                     max_images=args.max_images, image_size=args.image_size,
                     frame_stride=args.frame_stride, recon=not args.pose_only,
+                    view_indices=view_indices,
                 )
                 ref_rows.append(sm)
                 print(f"  AUC30={sm.auc30:.4f}  F_posed={sm.fscore_posed:.4f}  F_unp={sm.fscore_unposed:.4f}", flush=True)

@@ -22,6 +22,7 @@ import torch
 from torch import Tensor
 
 from ..data.bench import load_bench_cams, load_bench_scene
+from ..data.eth3d_multi import _apply_color_jitter
 from ..data.eth3d_multi import TRAIN_SCENES as ETH3D_TRAIN_SCENES
 from ..data.hiroom import list_hiroom_scenes
 
@@ -133,3 +134,105 @@ def multi_view_iterator(
             if require_gt and (batch.gt_depth is None or batch.valid.float().mean() < 0.05):
                 continue
             yield batch
+
+
+def load_full_scene_cache(
+    dataset: str,
+    scene: str,
+    data_root: Path,
+    image_size: int,
+    candidate_views: int = 256,
+    frame_stride: int = 1,
+) -> MultiViewBatch:
+    """Load *all* candidate views of one scene once into an in-memory `MultiViewBatch`.
+
+    For ETH3D / HiRoom, `candidate_views` should be ≥ the scene's view count
+    (≈ 42 for ETH3D `terrains`, ≤ 30 per HiRoom scene). For 7Scenes (1000 frames)
+    pass a `frame_stride` ≥ 20 to subsample down to ~50 candidates before split.
+    """
+    sample = load_bench_scene(
+        dataset, scene, data_root, max_images=candidate_views,
+        image_size=image_size, load_gt_depth=True, frame_stride=frame_stride,
+    )
+    if sample.gt_depth is None or sample.valid_mask is None:
+        raise RuntimeError(f"{dataset}/{scene}: no GT depth — required for per-scene overfit")
+    names = [p.name for p in sample.image_paths]
+    cams = load_bench_cams(dataset, scene, data_root, image_size=image_size, image_names=names)
+    if any(n not in cams.intrinsics or n not in cams.extrinsics for n in names):
+        raise RuntimeError(f"{dataset}/{scene}: missing per-view intrinsics or extrinsics")
+    Ks, Es = _stack_cams(cams, names)
+    return MultiViewBatch(
+        images=sample.images,
+        gt_depth=sample.gt_depth,
+        gt_K=Ks,
+        gt_w2c=Es,
+        valid=sample.valid_mask,
+        dataset=dataset,
+        scene=scene,
+    )
+
+
+def _slice_batch(cache: MultiViewBatch, indices: list[int]) -> MultiViewBatch:
+    idx = torch.as_tensor(indices, dtype=torch.long)
+    return MultiViewBatch(
+        images=cache.images.index_select(0, idx),
+        gt_depth=cache.gt_depth.index_select(0, idx),
+        gt_K=cache.gt_K.index_select(0, idx),
+        gt_w2c=cache.gt_w2c.index_select(0, idx),
+        valid=cache.valid.index_select(0, idx),
+        dataset=cache.dataset,
+        scene=cache.scene,
+    )
+
+
+def _photometric_aug(images: Tensor, rng: random.Random) -> Tensor:
+    """Per-view independent color jitter on `(S, 3, H, W)` images.
+
+    Geometric augmentation (hflip / random crop) would invalidate the cached
+    `gt_K` / `gt_w2c` consumed by L_C / L_P in DA3's §3.3, so this stays
+    photometric-only.
+    """
+    factors_list = [
+        {
+            "brightness": rng.uniform(0.6, 1.4),
+            "contrast": rng.uniform(0.6, 1.4),
+            "saturation": rng.uniform(0.6, 1.4),
+            "hue": rng.uniform(-0.1, 0.1),
+        }
+        for _ in range(images.shape[0])
+    ]
+    return torch.stack(
+        [_apply_color_jitter(images[i], f) for i, f in enumerate(factors_list)],
+        dim=0,
+    )
+
+
+def iter_single_scene(
+    cache: MultiViewBatch,
+    train_indices: list[int],
+    n_views: int,
+    augment: bool = True,
+    seed: int = 0,
+) -> Iterator[MultiViewBatch]:
+    """Yield batches forever, sampling `n_views` indices from `train_indices` per step.
+
+    `cache` is produced by `load_full_scene_cache(...)`. `train_indices` is the
+    train half of `view_split.split_views(...)`. With augmentation enabled, each
+    yielded batch's images receive per-view color jitter; intrinsics/extrinsics
+    are passed through unchanged so L_C / L_P remain valid.
+    """
+    if len(train_indices) < n_views:
+        raise ValueError(
+            f"train_indices has {len(train_indices)} views, need ≥ n_views={n_views}"
+        )
+    rng = random.Random(seed)
+    while True:
+        picked = rng.sample(train_indices, n_views)
+        batch = _slice_batch(cache, picked)
+        if augment:
+            batch = MultiViewBatch(
+                images=_photometric_aug(batch.images, rng),
+                gt_depth=batch.gt_depth, gt_K=batch.gt_K, gt_w2c=batch.gt_w2c,
+                valid=batch.valid, dataset=batch.dataset, scene=batch.scene,
+            )
+        yield batch
