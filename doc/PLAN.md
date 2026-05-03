@@ -4615,3 +4615,110 @@ treating CIFAR-10 §9.10 as the architectural-parity argument and
 attempt is documented as a negative result with the test ladder
 T1–T4 as supporting evidence.
 
+### 15.59 Per-scene-overfit pivot (2026-05-03) — recipe + protocol; results pending
+
+**Why this section exists.** §15.58 closed the *cross-scene generalization*
+recipe; the Mamba-3 attention swap could not recover DA3-SMALL pose accuracy
+across held-out scenes at any feasible budget on consumer hardware. The §15.58
+"Path 1" efficiency-only recommendation is **withdrawn** per user direction
+(`MEMORY.md → No paper without competitive accuracy`): efficiency without
+matched accuracy is not a publishable end-state for this project.
+
+The new framing — laid out in `~/.claude/plans/based-on-our-previous-keen-hartmanis.md`
+— drops cross-scene generalization in favor of *scene specialization*: train
+and evaluate on the same scene, with a deterministic view-level train/test
+split. With 32 train views ample for full-unfreeze GT supervision, the
+data-volume bottleneck (§15.1 R1 / §15.58 H3) is removed for that scene.
+
+The remaining question becomes:
+
+> Does Mamba-3 attention, jointly trained from a DA3-SMALL warm-start on a
+> single scene's training views, recover DA3-SMALL accuracy on **held-out
+> views of the same scene** — at the 1.54×–6.3× faster inference the
+> architecture already delivers (§15.55 Phase 4b)?
+
+This is the deployment shape that real-world scene-specialized 3D capture
+services actually need (site-specific reconstruction, fixed-route robots,
+indoor mapping for a known building) and the only scope at which the limited
+compute we have can answer the original research question affirmatively.
+
+#### Why the previous failures don't reproduce here
+
+| # | §15.x cause | Removed by per-scene overfit? |
+|---|---|---|
+| 1 | Cross-scene generalization is data-bound (§15.1 R1; §15.7→§15.13; CM3/CM5 +69–114 %) | **Yes** — train and test are inside the same scene |
+| 2 | Distillation cosine loss discards ray-channel layout (§15.31; §15.35) | **Yes** — drop distillation entirely; train against GT |
+| 3 | Frozen-DPT/cam_dec retrofit can't close credit-assignment path (§15.55 Phase 4; T3/T4) | **Yes** — full joint unfreeze from a fresh warm-start |
+| 4 | DPT-match Phase-B overfits backbone, breaks Phase-C (§15.51.1/§15.51.2) | **Yes** — single-stage joint training |
+| 5 | Mamba-3 short-T inductive-bias gap (CIFAR §9.8, T=65, −12.46 pp) | **Mitigated** — DA3 runs at T≈1296 / T≈15K cross-view, where Mamba-3 has a structural advantage |
+
+#### Recipe (`scripts/train_scene_overfit.py` — landed 2026-05-03)
+
+- **Init**: un-patched DA3-SMALL pretrained → `install_mamba3(which="all", state_dim=64, use_fused_kernel=True, chunk_size=128)` (16 attentions: 12 backbone + 4 cam_enc) → warm-start Mamba-3 B/C/V from DINOv2 qkv. Heads / MLPs / norms / embeds keep DA3-SMALL pretrained values.
+- **Triton kernel mandatory.** §15.46 measured 30–150× speedup vs naive PyTorch SSD; §15.47 found the kernel path is also materially better on accuracy (warm-start F-score 0.058 → 0.095, +63 %). Kernel is the canonical compute path; there is no `--no-fused-kernel` escape.
+- **Why `state_dim=64`** (not 32 or 128):
+  - DINOv2 warm-start coverage: `head_dim=64`, so `state_dim=64` gives 100 % B/C warm-start; 128 leaves the second 64 dims random.
+  - CM11 (32) regressed −7.7 % `|rel_err|` and lost rank (§15.8). CM26 (128) regressed +2.9 % `|rel_err|` *but on the obsolete SSM3DNet backbone* (§15.23 / §15.28) — the 128 result on patched-DA3 + GT supervision + full unfreeze has not been measured.
+  - 64 is therefore the right starting point: maximum DA3-SMALL prior, fits in 12 GB at `chunk_size=128`. 128 is the natural next test if accuracy gates miss (see §15.59.X tier ladder).
+- **Trainable**: everything (~36 M). LR groups: `lr_attn=1e-4`, `lr_head=5e-5`, `lr_other=1e-5`.
+- **Loss**: DA3 paper §3.3 against GT (`L_D + L_M + L_grad + L_P + β·L_C`), already implemented in `src/mamba3_attn/train/da3_loss.py`.
+- **Schedule**: WSD (CM24 recipe), `--warmup-steps 200 --decay-steps 500 --steps 5000`. Ckpts every 500.
+- **Data**: ETH3D `terrains` 42 views, deterministic split via `src/mamba3_attn/data/view_split.py`: 32 train / 10 test (`--train-frac 0.75 --split-seed 42`). Photometric-only augmentation per view (color jitter ±0.4/±0.1); no geometric aug so cached `gt_K`/`gt_w2c` stay valid for `L_C`/`L_P`.
+- **Resolution**: `--img-size 504 --chunk-size 128`, `B=1`, `S=4` train views per step.
+
+#### Reference baselines on the same protocol
+
+The orchestrator `scripts/train_scene_overfit.py` runs all four on the
+identical 32-train / 10-test split and writes `comparison.md`:
+
+1. **Un-patched DA3-SMALL, full overfit** — ceiling attainable on this scene with this data + schedule.
+2. **Patched DA3 (Mamba-3), full overfit** — the experiment.
+3. **Patched DA3 (Mamba-3), head-only** — attentions frozen at warm-start; isolates how much pure attention-fitting buys vs head adaptation.
+4. **Un-patched DA3-SMALL, zero-shot** — published-style number; lower-bound check that overfit even helps.
+
+#### Acceptance gates (per scene, held-out test views)
+
+| Metric | Direction | Gate (vs row 1 ceiling) |
+|---|---|---|
+| pose AUC@30° (DA3 official `compute_pose`) | ↑ | row 2 ≥ 0.90 × row 1 |
+| F-score@5cm (TSDF, recon-posed) | ↑ | row 2 ≥ 0.90 × row 1 |
+| depth `\|rel_err\|` | ↓ | row 2 ≤ 1.10 × row 1 |
+| latency at 504²×8 views | ↓ | row 2 ≤ 0.70 × row 1 (≈1.5×, already proven §15.55 Phase 4b) |
+| peak memory at 504²×8 views | ↓ | row 2 ≤ 1.05 × row 1 |
+
+If `terrains` passes, repeat on one HiRoom held-out and one 7Scenes
+held-out for cross-domain confirmation (same script, different
+`--scene` + `--dataset`).
+
+#### If gates miss — structured architecture-sweep ladder
+
+Hard rule: efficiency-only is not a publishable end-state. Climb the ladder until accuracy is recovered or the experiment is abandoned.
+
+| Tier | Trigger | Lever |
+|---|---|---|
+| T1 | Miss ≤ 5 % | longer schedule (5 k → 10 k steps, same recipe) |
+| T2 | Miss 5–15 % or T1 misses | `state_dim = 128` (per-head capacity 2×; warm-start partial) |
+| T3 | T2 misses | `num_heads = 12` (head_dim 64→32; aggregate concat-rank 2×) |
+| T4 | T3 misses | hybrid swap (`install_mamba3(which="self_only")`): keep cross-view layers as transformer, swap only per-view |
+| T5 | T4 misses | Mamba-3 MIMO (`mimo_rank = 4`, §15.21 CM28 design) |
+| T6 | T5 misses | Honestly abandon this scene; pivot the paper to a different problem statement. **No efficiency-only fallback.** |
+
+Tiers stack: T1+T2, T1+T2+T3, … if the deficient metric improves but
+still misses. End-to-end budget: ~50 h GPU + ~12 h code (T1→T5).
+
+#### How to run
+
+```bash
+uv run python scripts/train_scene_overfit.py \
+    --scene terrains --dataset eth3d \
+    --train-frac 0.75 --split-seed 42 \
+    --steps 5000 --warmup-steps 200 --decay-steps 500 \
+    --img-size 504 --chunk-size 128 --state-dim 64 \
+    --out outputs/runs/scene_overfit_terrains
+```
+
+Estimated 3–4 h on a 12 GB GPU. After completion, results land in
+`outputs/runs/scene_overfit_terrains/comparison.md` (4-row table +
+acceptance-gate verdict). Numbers will be appended below as §15.59.1
+once the run lands.
+
