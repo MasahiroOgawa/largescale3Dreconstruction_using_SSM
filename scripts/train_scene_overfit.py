@@ -71,23 +71,30 @@ def _build_variants(args) -> list[Variant]:
 
     variants: list[Variant] = []
 
-    # 1. Un-patched DA3-SMALL, full overfit (ceiling)
+    # 1. Un-patched DA3-SMALL zero-shot reference (no training).
+    # Pipeline-correctness check: should land near the DA3 paper's terrains
+    # number; large gap implies our eval pipeline (split / image_size / metric
+    # defs) is buggy and all other rows are untrustworthy.
+    variants.append(Variant(
+        name="unpatched_zeroshot",
+        label="1. DA3-SMALL zero-shot (pipeline check)",
+        train_args=None,
+        eval_args=["--no-patch"],
+    ))
+
+    # 2. Un-patched DA3-SMALL, full scene-overfit (recipe ceiling).
+    # Tells us how well DA3's architecture itself can fit this scene under our
+    # training recipe; bounds the best-case row 4 should approach.
     variants.append(Variant(
         name="unpatched_overfit",
-        label="DA3-SMALL un-patched, overfit",
+        label="2. DA3-SMALL un-patched, scene-overfit (recipe ceiling)",
         train_args=base_train + ["--no-mamba3-swap"],
         eval_args=["--no-patch"],
     ))
 
-    # 2. Patched DA3 (Mamba-3), full overfit
-    variants.append(Variant(
-        name="patched_overfit",
-        label="patched DA3 (Mamba-3), overfit",
-        train_args=base_train[:],
-        eval_args=[],
-    ))
-
-    # 3. Patched DA3, head-only (frozen attentions, just DPT + cam_dec adapt).
+    # 3. Patched DA3 (Mamba-3), head-only (frozen attentions, just DPT + cam_dec adapt).
+    # Cheapest mamba3 row: tests whether the post-swap mamba3 backbone can be
+    # adapted to the scene by retraining only the depth+camera heads.
     # Replace `--sub 3` (all) with `--sub 2` (head); other args identical.
     head_train: list[str] = []
     i = 0
@@ -100,17 +107,18 @@ def _build_variants(args) -> list[Variant]:
             i += 1
     variants.append(Variant(
         name="patched_head_only",
-        label="patched DA3 (Mamba-3), head-only",
+        label="3. mamba3 swap, head-only adapt",
         train_args=head_train,
         eval_args=[],
     ))
 
-    # 4. Un-patched DA3-SMALL zero-shot reference (no training)
+    # 4. Patched DA3 (Mamba-3), full scene-overfit — the row that actually
+    # answers "does mamba3 swap match DA3?" (compared against row 2).
     variants.append(Variant(
-        name="unpatched_zeroshot",
-        label="DA3-SMALL un-patched, zero-shot",
-        train_args=None,
-        eval_args=["--no-patch"],
+        name="patched_overfit",
+        label="4. mamba3 swap, full unfreeze (the comparison row)",
+        train_args=base_train[:],
+        eval_args=[],
     ))
 
     return variants
@@ -208,11 +216,12 @@ def _write_comparison(out_dir: Path, variants: list[Variant],
             f"{fmt('fscore_posed')} | {fmt('fscore_unposed')} |\n"
         )
 
-    # Acceptance gates: row 2 (patched_overfit) vs row 1 (unpatched_overfit ceiling).
+    # Acceptance gates: row 4 (patched_overfit, mamba3-swap full) vs
+    # row 2 (unpatched_overfit, DA3 architecture ceiling).
     ceiling = metrics.get("unpatched_overfit", {})
     patched = metrics.get("patched_overfit", {})
     if ceiling and patched:
-        md.append("\n## Acceptance gates (row 2 vs row 1, ceiling = un-patched-overfit)\n")
+        md.append("\n## Acceptance gates (row 4 vs row 2, ceiling = un-patched scene-overfit)\n")
         md.append("\n| Metric | Ceiling | Patched | Ratio | Gate (≥ 0.9 of ceiling) |\n|---|---|---|---|---|\n")
         for k, label in [
             ("auc30", "AUC@30°"), ("auc15", "AUC@15°"),

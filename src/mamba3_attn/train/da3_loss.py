@@ -45,11 +45,12 @@ class DA3LossWeights:
     lambda_cam: float = 1.0        # β
     lambda_conf_log: float = 1.0   # λ_c (aleatoric log-penalty, legacy form only)
     use_aleatoric: bool = True
-    # Heteroscedastic Laplace via Kendall-Gal log-scale (PLAN §15.59.1):
-    #   L = exp(-s)·|err| + s,  b = exp(s) = c - 1.
-    # Old form `c·|err| - λ·log(c)` is upper-unbounded in c → confidence collapse.
-    # Kendall-Gal prices overconfidence exponentially via 1/b → self-regularizes.
-    use_kendall_gal: bool = True
+    # Default OFF: original DA3 loss (`c·|err| − λ·log(c)`). The §15.59.1 OOM
+    # cascade that motivated the Kendall-Gal pivot is now solved by the
+    # phase4_evaluator TSDF guard — collapse no longer crashes the host —
+    # so we keep the original DA3 paper setup for direct comparability.
+    # The KG branch remains for ablation; flip this to True to enable it.
+    use_kendall_gal: bool = False
 
 
 @dataclass
@@ -65,7 +66,7 @@ class DA3LossOut:
 def _l1_aleatoric(
     pred: Tensor, target: Tensor, conf: Optional[Tensor],
     valid: Optional[Tensor], lambda_log: float, use_aleatoric: bool,
-    use_kendall_gal: bool = True,
+    use_kendall_gal: bool = False,
 ) -> Tensor:
     """Heteroscedastic ℓ1 loss with per-pixel `conf` (aleatoric).
 
