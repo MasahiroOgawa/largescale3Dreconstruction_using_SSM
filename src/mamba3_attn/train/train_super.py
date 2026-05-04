@@ -491,6 +491,10 @@ def main() -> None:
     ap.add_argument("--lr-other", type=float, default=None)
     ap.add_argument("--no-mamba3-swap", action="store_true",
                     help="Train un-patched DA3-SMALL (per-scene-overfit ceiling baseline).")
+    ap.add_argument("--no-kendall-gal", action="store_true",
+                    help="Use the legacy DA3 aleatoric form `c·|err| − λ·log(c)`. Default "
+                    "(Kendall-Gal log-scale, PLAN §15.59.1) prices overconfidence "
+                    "exponentially; legacy form suffers confidence collapse on overfit.")
     args = ap.parse_args()
 
     cfg = SuperPhaseConfig(
@@ -517,6 +521,7 @@ def main() -> None:
         lr_other=args.lr_other,
         no_mamba3_swap=args.no_mamba3_swap,
     )
+    cfg.weights.use_kendall_gal = not args.no_kendall_gal
     train(cfg, args.out_dir)
 
 

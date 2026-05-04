@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import faulthandler
+import gc
 import sys
 import traceback
 from dataclasses import dataclass
@@ -147,14 +148,28 @@ def _depth_to_world_points(depth: np.ndarray, K: np.ndarray, w2c: np.ndarray) ->
     return (R_c2w @ P_cam.T).T + t_c2w
 
 
+def _sanitize_depth(depths: np.ndarray, max_depth: float) -> np.ndarray:
+    """Replace non-finite with 0 and clamp to [0, max_depth].
+
+    Open3D's `ScalableTSDFVolume` block-allocates around the deepest finite
+    pixel; a single NaN/inf or outlier from a degenerate ckpt explodes the
+    volume bounds and OOMs the host (PLAN §15.59.1). This guard keeps eval
+    runnable regardless of model output quality — bad depths just produce
+    empty/sparse fused clouds, which is the *correct* signal anyway.
+    """
+    out = np.where(np.isfinite(depths), depths, 0.0).astype(np.float32, copy=False)
+    return np.clip(out, 0.0, max_depth)
+
+
 def _tsdf_fuse(depths: np.ndarray, rgbs: np.ndarray, Ks: np.ndarray, Es: np.ndarray,
                max_depth: float = 30.0) -> np.ndarray:
     """TSDF-fuse + sample 1M points. depths (S,H,W), rgbs (S,H,W,3), Ks (S,3,3), Es (S,4,4)."""
     from depth_anything_3.bench.utils import (
         create_tsdf_volume, fuse_depth_to_tsdf, sample_points_from_mesh,
     )
+    depths = _sanitize_depth(depths, max_depth)
     volume = create_tsdf_volume(voxel_length=4.0 / 512.0, sdf_trunc=0.04)
-    mesh = fuse_depth_to_tsdf(volume, depths.astype(np.float32),
+    mesh = fuse_depth_to_tsdf(volume, depths,
                                rgbs.astype(np.uint8),
                                Ks.astype(np.float32),
                                Es.astype(np.float32),
@@ -253,6 +268,14 @@ def evaluate_one_scene(api, dataset: str, scene: str, data_root: Path,
     pred_depth_posed = _resize_depth(pred_depth_posed, (H_gt, W_gt))
     max_depth = 30.0 if dataset == "eth3d" else 10.0
 
+    pred_unposed_extr = np.asarray(pred_unposed.extrinsics).copy()
+    pred_unposed_depth = np.asarray(pred_unposed.depth).astype(np.float32)
+    pred_unposed_K = np.asarray(pred_unposed.intrinsics).astype(np.float32)
+    del pred_unposed, pred_posed
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     print(f"  [stage] recon posed (TSDF fuse + eval)...", flush=True)
     try:
         m_posed = _eval_recon(
@@ -266,22 +289,24 @@ def evaluate_one_scene(api, dataset: str, scene: str, data_root: Path,
     except Exception as e:
         traceback.print_exc()
         print(f"  [recon_posed FAILED] {dataset}/{scene}: {e}", flush=True)
+    del pred_depth_posed
+    gc.collect()
 
     print(f"  [stage] recon unposed (Umeyama align + TSDF)...", flush=True)
     try:
         from depth_anything_3.utils.pose_align import align_poses_umeyama
         _, _, scale, aligned = align_poses_umeyama(
             gt_w2c.numpy().copy(),
-            np.asarray(pred_unposed.extrinsics).copy(),
+            pred_unposed_extr,
             return_aligned=True, ransac=True, random_state=42,
         )
-        pred_depth_unposed = np.asarray(pred_unposed.depth).astype(np.float32)
+        pred_depth_unposed = pred_unposed_depth
         if pred_depth_unposed.ndim == 4:
             pred_depth_unposed = pred_depth_unposed.squeeze(0)
         pred_depth_unposed = _resize_depth(pred_depth_unposed, (H_gt, W_gt)) * scale
         pred_depth_unposed = np.ascontiguousarray(pred_depth_unposed)
 
-        pred_K_unposed = np.asarray(pred_unposed.intrinsics).astype(np.float32)
+        pred_K_unposed = pred_unposed_K
         if pred_K_unposed.ndim == 4:
             pred_K_unposed = pred_K_unposed.squeeze(0)
 

@@ -43,8 +43,13 @@ class DA3LossWeights:
     lambda_grad: float = 1.0       # α
     lambda_point: float = 1.0
     lambda_cam: float = 1.0        # β
-    lambda_conf_log: float = 1.0   # λ_c (aleatoric log-penalty)
+    lambda_conf_log: float = 1.0   # λ_c (aleatoric log-penalty, legacy form only)
     use_aleatoric: bool = True
+    # Heteroscedastic Laplace via Kendall-Gal log-scale (PLAN §15.59.1):
+    #   L = exp(-s)·|err| + s,  b = exp(s) = c - 1.
+    # Old form `c·|err| - λ·log(c)` is upper-unbounded in c → confidence collapse.
+    # Kendall-Gal prices overconfidence exponentially via 1/b → self-regularizes.
+    use_kendall_gal: bool = True
 
 
 @dataclass
@@ -60,12 +65,30 @@ class DA3LossOut:
 def _l1_aleatoric(
     pred: Tensor, target: Tensor, conf: Optional[Tensor],
     valid: Optional[Tensor], lambda_log: float, use_aleatoric: bool,
+    use_kendall_gal: bool = True,
 ) -> Tensor:
-    """ℓ1(pred, target) optionally weighted by per-pixel `conf` (aleatoric).
+    """Heteroscedastic ℓ1 loss with per-pixel `conf` (aleatoric).
 
     Uses `valid` mask to ignore zero/invalid GT (NaN/inf) where present.
     `conf` may be lower rank than the per-pixel error (e.g. (B,S,H,W) for
     a (B,S,H,W,6) ray error); broadcast by appending singleton channels.
+
+    Two forms (PLAN §15.59.1):
+
+    - `use_kendall_gal=True` (default): heteroscedastic Laplace via the
+      Kendall-Gal log-scale parameterization. Treats `b = c - 1` as the
+      Laplace scale (≥ 0 by DA3's `expp1` head) and `s = log b` as the
+      learned log-scale:
+
+          L = (|err| / b) + s = exp(−s)·|err| + s
+
+      Overconfidence (`b → 0`) is priced exponentially via `|err|/b`, so
+      the model can only achieve negative loss by genuinely fitting the
+      data — no confidence collapse.
+
+    - `use_kendall_gal=False`: legacy DA3 form `c·|err| − λ·log(c)`. Kept
+      for ablation/regression checks only; suffers confidence collapse on
+      per-scene overfit (§15.59.1 ckpts hit `L_M = −19/−21`).
     """
     err = (pred.float() - target.float()).abs()
     if valid is not None:
@@ -78,10 +101,17 @@ def _l1_aleatoric(
         denom = torch.tensor(float(err.numel()), device=err.device)
     if conf is None or not use_aleatoric:
         return err.sum() / denom
-    c = conf.float().clamp_min(1e-6)
-    while c.dim() < err.dim():
-        c = c.unsqueeze(-1)
-    weighted = c * err - lambda_log * torch.log(c)
+    if use_kendall_gal:
+        b = (conf.float() - 1.0).clamp_min(1e-6)
+        while b.dim() < err.dim():
+            b = b.unsqueeze(-1)
+        s = torch.log(b)
+        weighted = err / b + s
+    else:
+        c = conf.float().clamp_min(1e-6)
+        while c.dim() < err.dim():
+            c = c.unsqueeze(-1)
+        weighted = c * err - lambda_log * torch.log(c)
     if valid is not None:
         v = valid.float()
         while v.dim() < weighted.dim():
@@ -234,6 +264,7 @@ def da3_paper_loss(
         l_depth = _l1_aleatoric(
             s_depth, t_depth, s_dconf, valid_depth,
             weights.lambda_conf_log, weights.use_aleatoric,
+            weights.use_kendall_gal,
         )
 
     # L_M: aleatoric ℓ1 on ray (6 channels).
@@ -252,6 +283,7 @@ def da3_paper_loss(
         l_ray = _l1_aleatoric(
             s_ray, t_ray, s_rconf, valid_ray,
             weights.lambda_conf_log, weights.use_aleatoric,
+            weights.use_kendall_gal,
         )
 
     # L_grad: ℓ1 on depth gradients.
