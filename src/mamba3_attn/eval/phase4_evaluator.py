@@ -26,11 +26,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import faulthandler
+import sys
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import torch
+
+# Dump a Python traceback on SIGSEGV/SIGABRT/etc. so CUDA-level crashes (which
+# bypass Python's try/except) leave a diagnosable stack instead of a silent rc=1.
+faulthandler.enable(file=sys.stderr, all_threads=True)
 
 from ..data.bench import load_bench_cams, load_bench_scene
 from ..data.hiroom import list_hiroom_scenes
@@ -176,10 +183,12 @@ def evaluate_one_scene(api, dataset: str, scene: str, data_root: Path,
     indices are stable wrt the train-time split.
     """
     load_max = max_images if view_indices is None else max(max_images, max(view_indices) + 1)
+    print(f"  [stage] load_bench_scene (load_max={load_max}, image_size={image_size})...", flush=True)
     sample = load_bench_scene(dataset, scene, data_root,
                                max_images=load_max, image_size=image_size,
                                load_gt_depth=True,
                                frame_stride=frame_stride if dataset == "7scenes" else 1)
+    print(f"  [stage] loaded {sample.images.shape[0]} views, images={tuple(sample.images.shape)}", flush=True)
     if view_indices is not None:
         if max(view_indices) >= sample.images.shape[0]:
             raise ValueError(
@@ -196,19 +205,21 @@ def evaluate_one_scene(api, dataset: str, scene: str, data_root: Path,
         return SceneMetrics(dataset=dataset, scene=scene)
     image_paths = [str(p) for p in sample.image_paths]
     names = [p.name for p in sample.image_paths]
+    print(f"  [stage] load_bench_cams (n={len(names)})...", flush=True)
     cams = load_bench_cams(dataset, scene, data_root, image_size=image_size, image_names=names)
     gt_w2c = torch.from_numpy(np.stack([cams.extrinsics[n] for n in names])).float()
     gt_K = np.stack([cams.intrinsics[n] for n in names])
 
     sm = SceneMetrics(dataset=dataset, scene=scene)
 
-    # --- Pose / unposed inference: api.inference without GT cams ---
+    print(f"  [stage] api.inference unposed (S={len(image_paths)}, res={image_size})...", flush=True)
     pred_unposed = api.inference(
         image_paths,
         process_res=image_size,
         ref_view_strategy="saddle_balanced",
         export_dir=None,
     )
+    print(f"  [stage] inference unposed done", flush=True)
     pred_extr_unposed = torch.from_numpy(np.asarray(pred_unposed.extrinsics)).float()
     pose_m = _eval_pose(pred_extr_unposed, gt_w2c)
     sm.auc30 = float(pose_m.auc30)
@@ -219,7 +230,7 @@ def evaluate_one_scene(api, dataset: str, scene: str, data_root: Path,
     if not recon:
         return sm
 
-    # --- Posed inference: pass GT extrinsics + intrinsics ---
+    print(f"  [stage] api.inference posed...", flush=True)
     pred_posed = api.inference(
         image_paths,
         extrinsics=gt_w2c.numpy(),
@@ -228,6 +239,7 @@ def evaluate_one_scene(api, dataset: str, scene: str, data_root: Path,
         ref_view_strategy="saddle_balanced",
         export_dir=None,
     )
+    print(f"  [stage] inference posed done", flush=True)
 
     # Build per-view depth + RGB at original (image_size) resolution for TSDF.
     pred_depth_posed = np.asarray(pred_posed.depth).astype(np.float32)
@@ -241,6 +253,7 @@ def evaluate_one_scene(api, dataset: str, scene: str, data_root: Path,
     pred_depth_posed = _resize_depth(pred_depth_posed, (H_gt, W_gt))
     max_depth = 30.0 if dataset == "eth3d" else 10.0
 
+    print(f"  [stage] recon posed (TSDF fuse + eval)...", flush=True)
     try:
         m_posed = _eval_recon(
             pred_depth_posed, rgbs, gt_K, gt_w2c.numpy(),
@@ -251,9 +264,10 @@ def evaluate_one_scene(api, dataset: str, scene: str, data_root: Path,
         sm.prec_posed = float(m_posed["precision"])
         sm.recall_posed = float(m_posed["recall"])
     except Exception as e:
-        print(f"  [recon_posed FAILED] {dataset}/{scene}: {e}")
+        traceback.print_exc()
+        print(f"  [recon_posed FAILED] {dataset}/{scene}: {e}", flush=True)
 
-    # --- Unposed recon: align pred extrinsics to GT via Umeyama, fuse pred depth ---
+    print(f"  [stage] recon unposed (Umeyama align + TSDF)...", flush=True)
     try:
         from depth_anything_3.utils.pose_align import align_poses_umeyama
         _, _, scale, aligned = align_poses_umeyama(
@@ -283,7 +297,8 @@ def evaluate_one_scene(api, dataset: str, scene: str, data_root: Path,
         sm.prec_unposed = float(m_unposed["precision"])
         sm.recall_unposed = float(m_unposed["recall"])
     except Exception as e:
-        print(f"  [recon_unposed FAILED] {dataset}/{scene}: {e}")
+        traceback.print_exc()
+        print(f"  [recon_unposed FAILED] {dataset}/{scene}: {e}", flush=True)
 
     return sm
 
@@ -373,6 +388,7 @@ def main() -> None:
             student_rows.append(sm)
             print(f"  AUC30={sm.auc30:.4f}  F_posed={sm.fscore_posed:.4f}  F_unp={sm.fscore_unposed:.4f}", flush=True)
         except Exception as e:
+            traceback.print_exc()
             print(f"  [FAILED] {ds}/{sc}: {e}", flush=True)
 
     _print_table(student_rows, "STUDENT (patched DA3 + Mamba-3)")

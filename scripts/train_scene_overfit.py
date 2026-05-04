@@ -124,11 +124,15 @@ def _run(cmd: list[str], log_path: Path) -> int:
     return proc.returncode
 
 
-def _train_one(variant: Variant, out_dir: Path) -> Path | None:
+def _train_one(variant: Variant, out_dir: Path, steps: int) -> Path | None:
     """Returns the path to the final ckpt (or None for zero-shot)."""
     if variant.train_args is None:
         return None
     var_dir = out_dir / variant.name
+    final_ckpt = var_dir / f"ckpt_{steps}.pt"
+    if final_ckpt.exists():
+        print(f"[scene_overfit] {variant.name}: {final_ckpt.name} already exists, skipping training", flush=True)
+        return final_ckpt
     cmd = [
         "uv", "run", "python", "-m", "mamba3_attn.train.train_super",
         "--out-dir", str(var_dir),
@@ -279,7 +283,7 @@ def main() -> None:
 
     for v in variants:
         try:
-            ckpt = _train_one(v, args.out)
+            ckpt = _train_one(v, args.out, args.steps)
         except Exception as e:
             print(f"[scene_overfit] train {v.name} failed: {e}", flush=True)
             continue
