@@ -28,12 +28,14 @@ from __future__ import annotations
 import argparse
 import faulthandler
 import gc
+import os
 import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import psutil
 import torch
 
 # Dump a Python traceback on SIGSEGV/SIGABRT/etc. so CUDA-level crashes (which
@@ -161,19 +163,89 @@ def _sanitize_depth(depths: np.ndarray, max_depth: float) -> np.ndarray:
     return np.clip(out, 0.0, max_depth)
 
 
+def _estimate_world_surface_m2(depths: np.ndarray, Ks: np.ndarray) -> float:
+    """Cheap upper bound on the world-space surface integrated by TSDF.
+
+    Per-pixel world area at depth z is z²/(fx·fy); summed across valid pixels
+    in all views gives a back-of-envelope surface area. Healthy ETH3D outdoor
+    scenes land around 600–2000 m²; a confidence-collapsed ckpt that saturates
+    near max_depth crosses 8000+ m². TSDF block memory is roughly linear in
+    this number, so it's an effective early-out before Open3D allocates.
+    """
+    total = 0.0
+    for d, K in zip(depths, Ks):
+        valid = (d > 0) & np.isfinite(d)
+        if not valid.any():
+            continue
+        z = d[valid].astype(np.float64, copy=False)
+        fx, fy = float(K[0, 0]), float(K[1, 1])
+        if fx <= 0 or fy <= 0:
+            continue
+        total += float(np.sum(z * z) / (fx * fy))
+    return total
+
+
 def _tsdf_fuse(depths: np.ndarray, rgbs: np.ndarray, Ks: np.ndarray, Es: np.ndarray,
                max_depth: float = 30.0) -> np.ndarray:
-    """TSDF-fuse + sample 1M points. depths (S,H,W), rgbs (S,H,W,3), Ks (S,3,3), Es (S,4,4)."""
-    from depth_anything_3.bench.utils import (
-        create_tsdf_volume, fuse_depth_to_tsdf, sample_points_from_mesh,
-    )
+    """TSDF-fuse + sample 1M points. depths (S,H,W), rgbs (S,H,W,3), Ks (S,3,3), Es (S,4,4).
+
+    Wrapped in two host-RAM guards (PLAN §15.59.1):
+      1. World-space surface-area pre-flight: degenerate ckpts that saturate
+         depth near max_depth produce wildly large estimated surfaces; abort
+         before Open3D allocates a single block.
+      2. Per-view RSS check inside the integrate loop: trips even when the
+         pre-flight underestimates (e.g., bimodal degenerate depth).
+
+    Both raise MemoryError so the existing `_eval_recon` try/except logs a
+    clean failure and lets the eval continue — instead of letting the kernel
+    SIGKILL the process and take tmux/claude down with it.
+    """
+    import open3d as o3d
+    from depth_anything_3.bench.utils import create_tsdf_volume, sample_points_from_mesh
+
     depths = _sanitize_depth(depths, max_depth)
+    Ks_f = Ks.astype(np.float32)
+    Es_f = Es.astype(np.float32)
+    rgbs_u8 = rgbs.astype(np.uint8)
+
+    surf_m2 = _estimate_world_surface_m2(depths, Ks_f)
+    surf_budget_m2 = float(os.environ.get("PHASE4_SURFACE_M2", "8000"))
+    if surf_m2 > surf_budget_m2:
+        raise MemoryError(
+            f"TSDF pre-flight: estimated world surface {surf_m2:.0f} m² > "
+            f"{surf_budget_m2:.0f} m² budget; depth likely degenerate, skipping recon."
+        )
+
+    rss_budget_gb = float(os.environ.get("PHASE4_RSS_LIMIT_GB", "16"))
+    proc = psutil.Process()
+    rss_start_gb = proc.memory_info().rss / (1024 ** 3)
+
     volume = create_tsdf_volume(voxel_length=4.0 / 512.0, sdf_trunc=0.04)
-    mesh = fuse_depth_to_tsdf(volume, depths,
-                               rgbs.astype(np.uint8),
-                               Ks.astype(np.float32),
-                               Es.astype(np.float32),
-                               max_depth=max_depth)
+    for i in range(len(depths)):
+        d = depths[i]
+        h, w = d.shape[:2]
+        depth_o3d = o3d.geometry.Image(d)
+        color_o3d = o3d.geometry.Image(rgbs_u8[i])
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+            color_o3d, depth_o3d,
+            depth_trunc=max_depth,
+            convert_rgb_to_intensity=False,
+            depth_scale=1.0,
+        )
+        K = Ks_f[i]
+        ixt_o3d = o3d.camera.PinholeCameraIntrinsic(w, h, K[0, 0], K[1, 1], K[0, 2], K[1, 2])
+        volume.integrate(rgbd, ixt_o3d, Es_f[i])
+        rss_gb = proc.memory_info().rss / (1024 ** 3)
+        if rss_gb > rss_budget_gb:
+            del volume, rgbd, depth_o3d, color_o3d
+            gc.collect()
+            raise MemoryError(
+                f"TSDF integrate: RSS {rss_gb:.1f} GB > {rss_budget_gb:.1f} GB budget "
+                f"after view {i + 1}/{len(depths)} (started at {rss_start_gb:.1f} GB); "
+                f"aborting before host OOM."
+            )
+
+    mesh = volume.extract_triangle_mesh()
     pcd = sample_points_from_mesh(mesh, num_points=1_000_000)
     return np.asarray(pcd.points)
 
