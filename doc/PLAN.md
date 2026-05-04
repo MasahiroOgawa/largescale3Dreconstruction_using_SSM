@@ -4722,3 +4722,91 @@ Estimated 3–4 h on a 12 GB GPU. After completion, results land in
 acceptance-gate verdict). Numbers will be appended below as §15.59.1
 once the run lands.
 
+### 15.59.1 Step-1 (`terrains`) attempt — eval crashes, confidence collapse, Kendall-Gal pivot (2026-05-04)
+
+The first scene-overfit run on `terrains` produced **trained ckpts whose evaluations all OOM-killed** the host (3 of 4 variants), while training itself succeeded with anomalously deep negative losses. Root-cause analysis below; eval results pending the loss fix.
+
+#### Symptoms
+
+| Variant | train final loss | eval outcome |
+|---|---|---|
+| un-patched DA3 overfit | `loss=-19.23  L_M=-19.40  L_D=0.06` | OOM-killed during `recon unposed` (TSDF) |
+| patched DA3 overfit | `loss=-23.45  L_M=-21.16  L_D=-2.41` | OOM-killed before stage prints (early) |
+| patched DA3 head-only | `loss=4.79   L_M=2.10   L_D=0.95` | OOM-killed during `recon posed` (TSDF) |
+| un-patched DA3 zero-shot | n/a (no training) | **succeeded**: AUC30=0.6607, F_posed=0.0001, F_unposed=0.0346 |
+
+All four runs used the same eval code path; the only difference between zero-shot (succeeded) and the three trained variants (crashed) is `--ckpt`.
+
+`journalctl -k` confirms **system OOM kills** at 10:45 / 11:06 / 11:19 / 11:47 with python3 anon-rss ≈ 30 GB on a 32 GB / 2 GB-swap host. `SIGKILL` is uncatchable, which is why the diagnostic instrumentation added in `cdfff06` produced no traceback and tmux+claude died as collateral.
+
+#### Root cause — aleatoric confidence collapse, *not* CUDA / kernel
+
+DA3's heteroscedastic ℓ1 loss in `src/mamba3_attn/train/da3_loss.py:_l1_aleatoric` is
+
+    L = c · |err| − λ · log(c),     c = exp(s) + 1  ∈ [1, +∞)
+
+where `c` is precision (1/σ) and the head's `expp1` activation lower-bounds `c ≥ 1`. The optimum is `c* = 1/|err|`, with `L* = 1 + log(|err|)` — so **negative loss is normal** for sub-metre errors. The pathology is the **upper-unbounded `c`** combined with a **linear-in-c penalty**: the optimizer can outrun the data-fit term `c·|err|` by inflating `c` faster than `|err|` shrinks, harvesting the `−log(c)` bonus without genuine accuracy improvement.
+
+That collapse trajectory is exactly what the `L_M = −19/−21` and `L_D = −2.4` values show. It also predicts the eval OOM: a model rewarded for being maximally confident regardless of correctness emits degenerate depth (saturated, NaN, or far-tail values) which explodes Open3D's `ScalableTSDFVolume` block allocation. The two symptoms are the same bug.
+
+The patched **head-only** variant (attentions frozen, less capacity) shows positive `L_M=2.1`, `L_D=0.95` — collapse is capacity-driven, consistent with the diagnosis. It still OOM'd in eval, suggesting the un-patched-overfit ckpt's split.json indices hit a particularly memory-hostile scene state regardless of the depth-degeneracy degree, but the dominant cause for the two negative-loss variants is confidence collapse.
+
+#### Why not clamp `c ∈ [0, 1]` or `c.clamp_max(1e3)`
+
+`c` is precision, not a probability — capping at 1 would forbid expressing `σ < 1 m`, useless for centimetre-scale depth. An ad-hoc upper clamp like `c.clamp_max(1e3)` works mechanically but introduces a hyperparameter unrelated to the problem geometry and silently caps the achievable calibration. The **theoretically established** fix is to switch to the Kendall-&-Gal log-scale parameterization, where the data-fit penalty grows *exponentially* with overconfidence and the loss self-regularizes without any hyperparameter tuning.
+
+#### Pivot — heteroscedastic Laplace via Kendall-Gal log-scale (`s = log b`)
+
+Replace the loss form with
+
+    L = exp(−s) · |err| + s,     b = exp(s)  ∈ (0, +∞)   ← Laplace scale (= 1/c)
+
+| Direction | Old form (`c·|err| − log c`) | New form (`exp(−s)·|err| + s`) |
+|---|---|---|
+| Overconfidence (`c → ∞` / `s → −∞`) penalty | linear in `c` | **exponential** in `−s` |
+| Optimum | `c* = 1/|err|` | `s* = log|err|` |
+| `L*` at optimum | `1 + log|err|` | `1 + log|err|`  *(unchanged)* |
+| Failure mode at training | confidence runaway → any negative `L` | overconfidence priced exponentially → `L` only goes negative when `|err|` is genuinely small |
+
+So the achievable minimum is identical (`1 + log|err|`, ≈ −3.6 at 10 cm, ≈ −8.2 at 1 cm); the difference is the **shape of the cost surface around overconfidence**, which is what the optimizer actually sees. Negative loss is still expected — it just now means *calibrated low-uncertainty fit*, not *collapsed confidence*.
+
+##### Implementation plan (no submodule fork)
+
+DA3's DPT head emits `c = exp(s_logit) + 1 ∈ [1, ∞)` (`third_party/depth-anything-3/src/depth_anything_3/model/dpt.py:_apply_activation_single`). We invert in our loss to recover `s_logit`:
+
+    b = (c − 1).clamp_min(1e-6)        # Laplace scale, ≥ 0 since `expp1`
+    s = torch.log(b)
+    weighted = (err / b) + s            # = exp(−s)·|err| + s
+
+This recovers the Kendall-Gal objective without any change to the upstream submodule (CLAUDE.md rule respected) and without any change to the DPT head's output range — only the loss interprets `c` differently. The clamp_min guards `b → 0`; in practice the optimizer pushes `b → |err|`, far from the clamp, so it's only a numerical safety net.
+
+Concrete diff (preview):
+- `src/mamba3_attn/train/da3_loss.py`: rename `_l1_aleatoric` → `_l1_aleatoric_legacy`, add `_l1_kendall_gal_laplace(pred, target, conf, valid)` per the formula above; flag `weights.use_kendall_gal: bool = True`; `da3_paper_loss` dispatches by flag for safety / ablation.
+- `src/mamba3_attn/train/da3_loss.py:DA3LossOut`: unchanged — `l_depth` / `l_ray` are now Kendall-Gal-form magnitudes, so absolute values are not directly comparable across §15.59 (pre-fix) and §15.59.2 (post-fix); document this in the train logger.
+- No change to checkpoint format, no change to DPT activation, no change to the patch system.
+
+##### Re-train protocol — §15.59.2
+
+Same recipe as §15.59 (state_dim=64, full-unfreeze, WSD 200/500/5000, `terrains` 32/10 split, seed 42, image_size=504), with the loss switched to Kendall-Gal. Run order:
+
+1. un-patched DA3, full overfit (5000 steps)
+2. patched DA3 (Mamba-3), full overfit (5000 steps)
+3. patched DA3 (Mamba-3), head-only (5000 steps)
+4. eval all three + zero-shot reference under `phase4_evaluator` against the held-out 10 views, write `outputs/runs/scene_overfit_terrains_kg/comparison.md`.
+
+##### Healthy-loss expectations under Kendall-Gal
+
+For depth ground truth at metre scale and well-trained models reaching `|err| ~ 0.1 m`, expected `L_D` settles near `1 + log(0.1) ≈ −1.3`. For ray maps at near-pixel error (`|err| ~ 0.01`), `L_M` settles near `1 + log(0.01) ≈ −3.6`. Total losses around `−2` to `−5` are plausible; values below `−10` would re-trigger the collapse-investigation playbook (now with the exponential-penalty cost surface, this should be much harder to reach).
+
+##### Eval-side guard (cheap, kept regardless of loss fix)
+
+Independent of the training pivot, add a `pred_depth = np.clip(pred_depth, 0, max_depth); pred_depth[~np.isfinite(pred_depth)] = 0` guard immediately before `_tsdf_fuse` calls in `phase4_evaluator.py`, and free `pred_unposed`/`pred_posed` Python objects after their depth/extrinsics arrays are extracted. This bounds Open3D's `ScalableTSDFVolume` allocation regardless of what depth values the model emits, so a single bad ckpt never again takes down the host. Lands together with §15.59.2 to keep diff size honest.
+
+#### Acceptance gates for §15.59.2
+
+- All three variants reach step 5000 with `loss > 1 + log(0.001) ≈ −5.9`. Anything more negative re-opens collapse investigation.
+- All four evals (3 trained + zero-shot) complete without OOM. Peak python RSS during eval `< 12 GB`.
+- §15.59 acceptance-gate table (row 2 ≥ 0.90 × row 1 on AUC30 / F-score) judged on the new numbers.
+
+If the gates pass, §15.59 is complete. If they miss, descend the §15.59 architecture-sweep ladder (T1 → T5) starting from the §15.59.2 ckpt. If `L` *still* runs away under Kendall-Gal (it shouldn't, modulo data anomalies), revisit `λ_log` weighting or add an L2 prior on `s`.
+
