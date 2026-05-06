@@ -163,6 +163,22 @@ def _sanitize_depth(depths: np.ndarray, max_depth: float) -> np.ndarray:
     return np.clip(out, 0.0, max_depth)
 
 
+def _release_to_os() -> None:
+    """Force glibc to return freed memory to the OS.
+
+    Python's `del` and `gc.collect()` mark Open3D's TSDF blocks as freed, but
+    glibc's allocator keeps them in its arena pool — so the next call in the
+    same process sees inflated RSS even though the memory is logically free.
+    `malloc_trim(0)` flushes the pool. No-op on non-glibc platforms.
+    """
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def _estimate_world_surface_m2(depths: np.ndarray, Ks: np.ndarray) -> float:
     """Cheap upper bound on the world-space surface integrated by TSDF.
 
@@ -218,36 +234,61 @@ def _tsdf_fuse(depths: np.ndarray, rgbs: np.ndarray, Ks: np.ndarray, Es: np.ndar
 
     rss_budget_gb = float(os.environ.get("PHASE4_RSS_LIMIT_GB", "16"))
     proc = psutil.Process()
-    rss_start_gb = proc.memory_info().rss / (1024 ** 3)
 
-    volume = create_tsdf_volume(voxel_length=4.0 / 512.0, sdf_trunc=0.04)
-    for i in range(len(depths)):
-        d = depths[i]
-        h, w = d.shape[:2]
-        depth_o3d = o3d.geometry.Image(d)
-        color_o3d = o3d.geometry.Image(rgbs_u8[i])
-        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-            color_o3d, depth_o3d,
-            depth_trunc=max_depth,
-            convert_rgb_to_intensity=False,
-            depth_scale=1.0,
-        )
-        K = Ks_f[i]
-        ixt_o3d = o3d.camera.PinholeCameraIntrinsic(w, h, K[0, 0], K[1, 1], K[0, 2], K[1, 2])
-        volume.integrate(rgbd, ixt_o3d, Es_f[i])
-        rss_gb = proc.memory_info().rss / (1024 ** 3)
-        if rss_gb > rss_budget_gb:
-            del volume, rgbd, depth_o3d, color_o3d
-            gc.collect()
-            raise MemoryError(
-                f"TSDF integrate: RSS {rss_gb:.1f} GB > {rss_budget_gb:.1f} GB budget "
-                f"after view {i + 1}/{len(depths)} (started at {rss_start_gb:.1f} GB); "
-                f"aborting before host OOM."
-            )
-
-    mesh = volume.extract_triangle_mesh()
-    pcd = sample_points_from_mesh(mesh, num_points=1_000_000)
-    return np.asarray(pcd.points)
+    # Adaptive voxel size: paper-default 4/512m, halved per retry so a
+    # catastrophically dispersed depth field (e.g. saturating max_depth)
+    # still produces a measurable F-score at coarser resolution rather than
+    # NaN. F-score numbers across retries are slightly less precise but
+    # comparable — beats no number at all.
+    voxel_length = 4.0 / 512.0
+    max_retries = int(os.environ.get("PHASE4_TSDF_MAX_RETRIES", "2"))
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        rss_start_gb = proc.memory_info().rss / (1024 ** 3)
+        volume = create_tsdf_volume(voxel_length=voxel_length, sdf_trunc=0.04)
+        try:
+            for i in range(len(depths)):
+                d = depths[i]
+                h, w = d.shape[:2]
+                depth_o3d = o3d.geometry.Image(d)
+                color_o3d = o3d.geometry.Image(rgbs_u8[i])
+                rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+                    color_o3d, depth_o3d,
+                    depth_trunc=max_depth,
+                    convert_rgb_to_intensity=False,
+                    depth_scale=1.0,
+                )
+                K = Ks_f[i]
+                ixt_o3d = o3d.camera.PinholeCameraIntrinsic(w, h, K[0, 0], K[1, 1], K[0, 2], K[1, 2])
+                volume.integrate(rgbd, ixt_o3d, Es_f[i])
+                rss_gb = proc.memory_info().rss / (1024 ** 3)
+                if rss_gb > rss_budget_gb:
+                    raise MemoryError(
+                        f"TSDF integrate (voxel={voxel_length:.4f}m): RSS {rss_gb:.1f} GB "
+                        f"> {rss_budget_gb:.1f} GB budget after view {i + 1}/{len(depths)} "
+                        f"(started at {rss_start_gb:.1f} GB)."
+                    )
+            mesh = volume.extract_triangle_mesh()
+            pcd = sample_points_from_mesh(mesh, num_points=1_000_000)
+            if attempt > 0:
+                print(f"  [tsdf_fuse] succeeded at voxel_length={voxel_length:.4f}m "
+                      f"(attempt {attempt + 1}/{max_retries + 1})", flush=True)
+            return np.asarray(pcd.points)
+        except MemoryError as e:
+            last_error = e
+            del volume
+            _release_to_os()
+            if attempt < max_retries:
+                voxel_length *= 2
+                print(f"  [tsdf_fuse] retrying at coarser voxel_length={voxel_length:.4f}m: {e}",
+                      flush=True)
+            else:
+                break
+    assert last_error is not None
+    raise MemoryError(
+        f"TSDF fuse exhausted {max_retries + 1} retries up to voxel_length={voxel_length:.4f}m; "
+        f"last error: {last_error}"
+    )
 
 
 def _eval_recon(depths: np.ndarray, rgbs: np.ndarray, Ks: np.ndarray, Es_pred: np.ndarray,
@@ -362,7 +403,7 @@ def evaluate_one_scene(api, dataset: str, scene: str, data_root: Path,
         traceback.print_exc()
         print(f"  [recon_posed FAILED] {dataset}/{scene}: {e}", flush=True)
     del pred_depth_posed
-    gc.collect()
+    _release_to_os()
 
     print(f"  [stage] recon unposed (Umeyama align + TSDF)...", flush=True)
     try:
