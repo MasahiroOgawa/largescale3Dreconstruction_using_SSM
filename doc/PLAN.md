@@ -4810,3 +4810,55 @@ Independent of the training pivot, add a `pred_depth = np.clip(pred_depth, 0, ma
 
 If the gates pass, §15.59 is complete. If they miss, descend the §15.59 architecture-sweep ladder (T1 → T5) starting from the §15.59.2 ckpt. If `L` *still* runs away under Kendall-Gal (it shouldn't, modulo data anomalies), revisit `λ_log` weighting or add an L2 prior on `s`.
 
+### 15.59.3 Step-2 (`terrains`) result — Kendall-Gal reverted, all four variants evaluated, recipe is degenerate (2026-05-06)
+
+Re-ran the four-variant comparison under the **original DA3 loss** (`c·|err| − λ·log(c)`) after determining the §15.59.2 Kendall-Gal pivot never produced a measurable held-out win. Final results from `outputs/runs/scene_overfit_terrains_orig/comparison.md`:
+
+| # | Variant | AUC@30° ↑ | AUC@15° ↑ | F_posed ↑ | F_unposed ↑ |
+|---|---|---|---|---|---|
+| 1 | DA3-SMALL zero-shot (pipeline check) | 0.6607 | 0.4785 | 0.0001 | 0.0348 |
+| 2 | DA3-SMALL un-patched, scene-overfit (recipe ceiling) | 0.6415 | 0.4030 | 0.0000 | 0.0011 |
+| 3 | mamba3 swap, head-only adapt | 0.0437 | 0.0193 | 0.0008 | 0.0000 |
+| 4 | mamba3 swap, full unfreeze (the comparison row) | 0.5519 | 0.4474 | 0.0001 | 0.0163 |
+
+Acceptance gates (row 4 vs row 2 ceiling, ≥ 0.9):
+
+| Metric | Ceiling (V2) | Patched (V4) | Ratio | Gate |
+|---|---|---|---|---|
+| AUC@30° | 0.6415 | 0.5519 | 0.860 | ❌ FAIL |
+| AUC@15° | 0.4030 | 0.4474 | 1.110 | ✅ PASS |
+| F-score posed | 0.0000 | 0.0001 | div-0 | n/a |
+| F-score unposed | 0.0011 | 0.0163 | 14.818 | ✅ PASS |
+
+#### Reverts and engineering work landed alongside this result
+
+- **Kendall-Gal reverted** (`d9b71fe`): `DA3LossWeights.use_kendall_gal` defaults to `False`. The §15.59.1 hypothesis that the legacy loss form drove confidence collapse did not survive measurement — both forms drive `L_M → −∞` on this 32-view recipe (V2: legacy L=−20.4 vs KG L=−19.6, indistinguishable), and Kendall-Gal showed no held-out advantage. Branch kept under the flag for ablation.
+- **Variant ordering fixed** (`d9b71fe` + `78abe90`): variants renumbered 1…4 in the natural reading order (zero-shot → ceiling → head-only → full mamba3), with execution order rearranged so the training variants run before the zero-shot variant (which depends on their `split.json`).
+- **Eval guards completed** (`463fe9d` + `b9be624` + `97558c2`): TSDF surface-area pre-flight, per-view RSS budget, `malloc_trim(0)` between recon stages, adaptive-voxel retry on per-view overflow, and TSDF-block release on the `_tsdf_fuse` success path. With all four landed, every variant produces a real F-score regardless of how degenerate the depth field becomes — collapsed depths fall back to coarser voxels and never SIGKILL the host.
+
+#### Two findings, in priority order
+
+**1. The §15.59 protocol is broken at the premise.** Row 2 (un-patched scene-overfit, the supposed ceiling) is **strictly worse than row 1 (zero-shot)** on every metric: AUC30 0.6415 < 0.6607, AUC15 0.4030 < 0.4785, F_unposed 0.0011 < 0.0348 (~30× worse). The full-unfreeze, 5000-step recipe rewrites pretrained DA3 weights into something measurably worse than not training at all. So row 4's "comparison vs row 2 ceiling" is not informative about mamba3 swap quality — it's comparing two corrupted models.
+
+The honest comparison is **row 4 vs row 1 zero-shot**:
+
+| Metric | V1 zero-shot | V4 mamba3 full | Ratio |
+|---|---|---|---|
+| AUC@30° | 0.6607 | 0.5519 | 0.835 |
+| AUC@15° | 0.4785 | 0.4474 | 0.935 |
+| F-score posed | 0.0001 | 0.0001 | 1.00 |
+| F-score unposed | 0.0348 | 0.0163 | 0.469 |
+
+V4 retains 84–94% of zero-shot pose accuracy and 47–100% of zero-shot depth quality — better than V2's near-total depth collapse, but still below the published architecture's zero-shot performance.
+
+**2. mamba3 swap is more recipe-robust than un-patched DA3.** On the same broken recipe (5000 steps, full unfreeze, lr_attn=1e-4 / lr_head=5e-5 / lr_other=1e-5), V4 *beats* V2 on three of four metrics — most strikingly F_unposed (0.0163 vs 0.0011, 14.8× higher). The mamba3 backbone resists the confidence-collapse pathology that destroys un-patched DA3's depth field on this recipe. Whether this is a load-bearing property of the swap (state-space attention's bounded-memory recurrence regularizes against memorization) or an artifact of being further from the trained DA3 weight optimum is the obvious next investigation.
+
+#### What this means for §15.59
+
+The acceptance-gate framework — "row 4 ≥ 0.9 × row 2" — cannot be passed because row 2 itself is broken. Two viable paths forward:
+
+- **Recipe fix first.** Find a (lr, step-count, regularization) configuration where row 2 ≥ row 1 on at least pose AUC30, then re-run the four variants and judge gates against a real ceiling. Candidate: lr ÷ 100, steps 200–500, weight_decay ↑.
+- **Drop the ceiling row.** Compare row 4 against row 1 directly. Acceptance gate becomes ratio ≥ 0.9 against zero-shot DA3-SMALL; current run misses on AUC30 (0.835) and F_unposed (0.469). This route makes the protocol about the mamba3 swap's *raw* effect on a published model, not about its competitiveness with optimal DA3 fine-tuning.
+
+The user's standing constraint (memory `feedback_no_efficiency_only_paper.md`) requires accuracy at DA3-SMALL parity or better; current numbers don't meet that bar under either interpretation. §15.59 is not yet complete; pick a path before the next training cycle.
+
