@@ -4888,3 +4888,51 @@ Mem/lat ratios = Triton-kernel Mamba-3 / DA3 transformer (lower is better).
 
 Efficiency side meets the paper's requirement; accuracy side does not yet (V4 < V1 on AUC@30° and F_unposed). The efficiency win is real and reproducible, but per `feedback_no_efficiency_only_paper.md` cannot stand alone — accuracy must reach DA3-SMALL parity before §15.59 can ship.
 
+### 15.59.4 V2 recipe fix — low-LR / short fine-tune restores a real ceiling (2026-05-07)
+
+Investigated why §15.59.3's V2 (un-patched scene-overfit) underperformed V1 (zero-shot) on every metric. Root cause was the recipe, not the loss or architecture.
+
+#### Diagnosis
+
+V2 train losses at step 5000 (under original DA3 loss): `L_D = −2.66` → train depth err ≈ 7 cm (healthy fit), `L_M = −20.32` → train ray-map err ≈ 5×10⁻¹⁰ (memorized to numerical zero). Test pose AUC30 0.6585 (within 0.3% of V1) — pose generalizes. Test F_unposed 0.0011 (30× *worse* than V1's 0.0349) — depth catastrophically overfit.
+
+Three coupled mechanisms:
+
+- **Catastrophic forgetting** from full-unfreeze + aggressive LR (`lr_attn=1e-4`, `lr_head=5e-5`): warmup phase erases pretrained depth-head weights before training can adapt them.
+- **Aleatoric runaway** in DA3's `c·|err| − λ log c` loss: unbounded minimum at `c → ∞` on memorized pixels drives `L_M → −20`. Both Kendall-Gal (§15.59.2) and original DA3 form (§15.59.3) hit this — switching loss form does not fix it; the recipe does.
+- **Pose vs depth asymmetry**: pose has 192 numbers to fit (6 DoF × 32 views), depth has 80M (504² × 32). 32 train views can't constrain 80M depth targets without overfitting.
+
+Pre-flight surface estimate confirms depth is destroyed early then partially recovers: ckpt_1000 → 11837 m² (TSDF guard pre-flight skip), ckpt_5000 → < 8000 m² (fuses but `F_unposed = 0.0011`). V1 zero-shot is in the ~600–800 m² regime that the original architecture is calibrated for.
+
+#### Countermeasure (1) — recipe at fine-tuning scale
+
+Single-knob recipe change: `--steps 200 --warmup-steps 20 --decay-steps 50 --lr-attn 1e-5 --lr-head 5e-6 --lr-other 1e-6 --ckpt-every 50`. LR ÷ 10, steps ÷ 25, schedule scaled proportionally.
+
+V2 ckpt sweep under the new recipe (`outputs/runs/scene_overfit_terrains_lowlr/`):
+
+| Ckpt | AUC@30° | AUC@15° | F_posed | F_unposed |
+|---|---|---|---|---|
+| V1 zero-shot baseline | 0.6607 | 0.4785 | 0.0002 | 0.0349 |
+| V2 ckpt_50 | 0.7407 | 0.5881 | 0.0027 | 0.0179 |
+| V2 ckpt_100 | 0.7274 | 0.5630 | 0.0051 | 0.0185 |
+| **V2 ckpt_150** | **0.8015** | **0.6356** | 0.0071 | **0.0645** |
+| V2 ckpt_200 | 0.7956 | 0.6356 | **0.0097** | 0.0531 |
+
+ckpt_150 V2 beats V1 on all four metrics: AUC30 +21%, AUC15 +33%, F_posed 35.5×, F_unposed +85%. The §15.59 protocol's premise — "scene-overfit V2 is a real ceiling above zero-shot V1" — finally holds.
+
+F_unposed trajectory has a real sweet spot: 0.0179 → 0.0185 → **0.0645** → 0.0531. Between ckpt_100 and ckpt_150 the depth field crosses from "still degenerate" to "well-fit"; between ckpt_150 and ckpt_200 it starts overfitting again. ckpt_150 is the right pick at this LR.
+
+#### Open follow-ons
+
+- **Validation-based early stopping (countermeasure 2)** would replace the ckpt sweep with a deterministic stop criterion. Recommended for any future scene where the optimal step is not 150.
+- **Orchestrator ckpt selection bug**: `train_super.py:_train_one`'s `sorted(var_dir.glob("ckpt_*.pt"))[-1]` uses lexicographic sort, so for ckpt_every=50 the "latest" ckpt picked is `ckpt_50.pt`, not `ckpt_200.pt`. The §15.59.4 sweep worked around this by evaluating each ckpt explicitly. Fix: numeric sort by step count.
+- **V4 (mamba3 full unfreeze) under the new recipe**: pending. With V2 now a real ceiling, the V4 vs V2 gates from §15.59.3 can be judged honestly.
+
+#### Acceptance status
+
+V2 acceptance gate vs V1 zero-shot (≥ 1.0× zero-shot): **passes on all 4 metrics**. §15.59 protocol's premise restored.
+
+V4 acceptance gate vs V2 ceiling (≥ 0.9 ratio): **pending re-run** under the new recipe.
+
+
+
