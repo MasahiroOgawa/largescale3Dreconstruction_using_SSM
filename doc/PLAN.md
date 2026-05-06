@@ -4862,3 +4862,29 @@ The acceptance-gate framework — "row 4 ≥ 0.9 × row 2" — cannot be passed 
 
 The user's standing constraint (memory `feedback_no_efficiency_only_paper.md`) requires accuracy at DA3-SMALL parity or better; current numbers don't meet that bar under either interpretation. §15.59 is not yet complete; pick a path before the next training cycle.
 
+#### Efficiency comparison (this is the other half of §15.59 per `feedback_efficiency_and_accuracy_together.md`)
+
+Full DA3-SMALL forward (backbone + DPT head + cam_dec), B=1, RTX 4080 12 GB, image_size=504², swept across n_views ∈ {4, 8, 12, 16}. Apples-to-apples: same model, only attention modules differ. Outputs at `outputs/runs/scene_overfit_terrains_orig/efficiency_{table.md, comparison.png, .json}`.
+
+| S | cross-T | DA3 transformer | +Mamba-3 (PyTorch ref) | +Mamba-3 (Triton kernel) | mem ratio | lat ratio |
+|---|---|---|---|---|---|---|
+| 4  |  5,184 |  728 MiB /  97 ms |  736 MiB /   512 ms |  736 MiB /  78 ms | 1.01× | 0.80× |
+| 8  | 10,368 | 1315 MiB / 244 ms | 1323 MiB / 2,157 ms | 1323 MiB / 154 ms | 1.01× | 0.63× |
+| 12 | 15,552 | 1448 MiB / 442 ms | 1457 MiB / 5,812 ms | 1457 MiB / 245 ms | 1.01× | 0.55× |
+| 16 | 20,736 | 1617 MiB / 694 ms | 1626 MiB / 10,183 ms | 1626 MiB / 339 ms | 1.01× | 0.49× |
+
+Mem/lat ratios = Triton-kernel Mamba-3 / DA3 transformer (lower is better).
+
+**Two findings:**
+
+1. **Triton-kernel Mamba-3 is faster than transformer at every view count, with the gap widening as T grows** — 1.25× at T=5k, 2.04× at T=20k. Memory parity (1.01×, the +9 MiB is the +2.15M-parameter SSD state machinery). This is the linear-in-T vs quadratic-in-T scaling story showing up exactly where it should: the cross-view sequence length is the dominant cost driver in DA3.
+
+2. **The PyTorch reference SSD path is 5–15× *slower* than transformer** — and the gap widens with T (5×, 9×, 13×, 15×). The Triton kernel is load-bearing for the efficiency claim; without it, the swap is a regression on this hardware. Confirms the §15.46/§15.47 thread that the kernel is the load-bearing artifact, not the SSD architecture itself.
+
+**Joint accuracy + efficiency picture for §15.59 (V4 = mamba3 swap, full unfreeze):**
+
+- vs zero-shot DA3-SMALL (V1): pose 84–94%, depth 47–100%, **2× faster at S=16 with same memory**.
+- vs un-patched scene-overfit (V2, broken ceiling): AUC@15° 1.11×, F_unposed **14.8×**, AUC@30° 0.86×, **plus 2× speedup**.
+
+Efficiency side meets the paper's requirement; accuracy side does not yet (V4 < V1 on AUC@30° and F_unposed). The efficiency win is real and reproducible, but per `feedback_no_efficiency_only_paper.md` cannot stand alone — accuracy must reach DA3-SMALL parity before §15.59 can ship.
+

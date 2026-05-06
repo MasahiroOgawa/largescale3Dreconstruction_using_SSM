@@ -16,14 +16,17 @@ where Mamba-3 (linear-in-T) succeeds.
 Example:
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \\
         uv run python scripts/bench_efficiency_patched.py \\
-            --sizes 224 392 504 --n-views 4 8 12
+            --sizes 224 392 504 --n-views 4 8 12 \\
+            --out-dir outputs/runs/scene_overfit_terrains_orig
 """
 from __future__ import annotations
 
 import argparse
 import gc
+import json
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 import torch
 
@@ -195,12 +198,96 @@ def summary_ratios(rows: list[dict], sizes: list[int], n_views_list: list[int]) 
             print(f"{img:>5} {nv:>3} {T:>8}  {tag}")
 
 
+def write_outputs(rows: list[dict], sizes: list[int], n_views_list: list[int],
+                  out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "efficiency.json").write_text(json.dumps(rows, indent=2))
+
+    by_key: dict[tuple[int, int, str], dict] = {
+        (r["img_size"], r["n_views"], r["label"]): r for r in rows
+    }
+    md = ["# Efficiency comparison — DA3-SMALL transformer vs +Mamba-3\n",
+          "\nFull-model forward (backbone + DPT head + cam_dec), B=1, GPU.\n",
+          "Apples-to-apples: same architecture, only attention modules differ.\n",
+          "\n| img | S | cross-T | DA3 transformer | +Mamba-3 (PyTorch) | +Mamba-3 (Triton) | mem ratio | lat ratio |\n",
+          "|---|---|---|---|---|---|---|---|\n"]
+    for img in sizes:
+        for nv in n_views_list:
+            T = nv * (img // 14) ** 2
+            attn = by_key.get((img, nv, "DA3-SMALL (transformer)"))
+            ssd_pt = by_key.get((img, nv, "DA3-SMALL +Mamba-3 (PyTorch)"))
+            ssd_tr = by_key.get((img, nv, "DA3-SMALL +Mamba-3 (Triton kernel)"))
+            def cell(r: dict | None) -> str:
+                if r is None:
+                    return "-"
+                if r.get("OOM"):
+                    return "**OOM**"
+                return f"{r['peak_MiB']:.0f} MiB / {r['latency_ms']:.0f} ms"
+            mem_r_str = lat_r_str = "-"
+            if attn and ssd_tr and not attn.get("OOM") and not ssd_tr.get("OOM"):
+                mem_r_str = f"{ssd_tr['peak_MiB'] / attn['peak_MiB']:.2f}×"
+                lat_r_str = f"{ssd_tr['latency_ms'] / attn['latency_ms']:.2f}×"
+            elif attn and attn.get("OOM") and ssd_tr and not ssd_tr.get("OOM"):
+                mem_r_str = "attn OOM"
+                lat_r_str = "—"
+            md.append(f"| {img} | {nv} | {T} | {cell(attn)} | {cell(ssd_pt)} | {cell(ssd_tr)} | {mem_r_str} | {lat_r_str} |\n")
+    md.append("\nMem/lat ratios = Triton-kernel Mamba-3 / DA3 transformer (lower is better for both).\n")
+    (out_dir / "efficiency_table.md").write_text("".join(md))
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("[bench] matplotlib not available; skipping plot")
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+    labels_to_plot = [
+        ("DA3-SMALL (transformer)", "o-", "tab:blue"),
+        ("DA3-SMALL +Mamba-3 (PyTorch)", "s--", "tab:orange"),
+        ("DA3-SMALL +Mamba-3 (Triton kernel)", "^-", "tab:green"),
+    ]
+    for img in sizes:
+        for label, marker, color in labels_to_plot:
+            xs, lats, mems = [], [], []
+            for nv in n_views_list:
+                T = nv * (img // 14) ** 2
+                r = by_key.get((img, nv, label))
+                if r is None or r.get("OOM"):
+                    continue
+                xs.append(T)
+                lats.append(r["latency_ms"])
+                mems.append(r["peak_MiB"])
+            if xs:
+                axes[0].plot(xs, lats, marker, color=color, label=f"{label} (img={img}²)")
+                axes[1].plot(xs, mems, marker, color=color, label=f"{label} (img={img}²)")
+    axes[0].set_xlabel("cross-view sequence length T")
+    axes[0].set_ylabel("latency (ms)")
+    axes[0].set_title("Forward latency vs sequence length")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(fontsize=7)
+    axes[1].set_xlabel("cross-view sequence length T")
+    axes[1].set_ylabel("peak GPU memory (MiB)")
+    axes[1].set_title("Peak GPU memory vs sequence length")
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend(fontsize=7)
+    plt.tight_layout()
+    plot_path = out_dir / "efficiency_comparison.png"
+    fig.savefig(plot_path, dpi=120)
+    plt.close(fig)
+    print(f"\n[bench] wrote {out_dir}/efficiency_table.md + efficiency.json + efficiency_comparison.png")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sizes", type=int, nargs="+", default=[224, 392, 504])
     ap.add_argument("--n-views", type=int, nargs="+", default=[4, 8, 12])
     ap.add_argument("--state-dim", type=int, default=64)
     ap.add_argument("--device", type=str, default="cuda")
+    ap.add_argument("--out-dir", type=Path, default=None,
+                    help="If set, write efficiency_table.md, efficiency.json, "
+                    "and efficiency_comparison.png under this directory.")
     args = ap.parse_args()
 
     device = torch.device(args.device)
@@ -208,6 +295,8 @@ def main() -> None:
 
     rows = run_grid(args.sizes, args.n_views, args.state_dim, device)
     summary_ratios(rows, args.sizes, args.n_views)
+    if args.out_dir is not None:
+        write_outputs(rows, args.sizes, args.n_views, args.out_dir)
 
 
 if __name__ == "__main__":
