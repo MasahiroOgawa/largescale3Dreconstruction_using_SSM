@@ -290,14 +290,22 @@ def main() -> None:
 
     metrics: dict[str, dict[str, float]] = {}
 
-    for v in variants:
+    # Execute training variants first so `canonical_split` (produced by the
+    # first training run) exists before any zero-shot variant tries to eval
+    # against it. The `variants` list is preserved verbatim for the final
+    # comparison table — only execution order is rearranged.
+    exec_order = (
+        [v for v in variants if v.train_args is not None]
+        + [v for v in variants if v.train_args is None]
+    )
+
+    for v in exec_order:
         try:
             ckpt = _train_one(v, args.out, args.steps)
         except Exception as e:
             print(f"[scene_overfit] train {v.name} failed: {e}", flush=True)
             continue
 
-        # If this is the zero-shot variant, derive split from canonical_split.
         split_for_eval = canonical_split if canonical_split is not None and canonical_split.exists() else None
         try:
             eval_log = _eval_one(v, args.out, ckpt, args, split_for_eval)
