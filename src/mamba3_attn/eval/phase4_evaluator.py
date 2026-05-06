@@ -270,10 +270,18 @@ def _tsdf_fuse(depths: np.ndarray, rgbs: np.ndarray, Ks: np.ndarray, Es: np.ndar
                     )
             mesh = volume.extract_triangle_mesh()
             pcd = sample_points_from_mesh(mesh, num_points=1_000_000)
+            # Copy out, then release the TSDF blocks back to the OS so the
+            # next `_tsdf_fuse` call (e.g., gt_cloud right after pred_cloud
+            # in `_eval_recon`) starts at clean RSS — without this, glibc
+            # holds the freed blocks and the next call retries at coarser
+            # voxel for no good reason. Copy is ~24 MB, negligible.
+            points = np.array(pcd.points, copy=True)
+            del volume, mesh, pcd
+            _release_to_os()
             if attempt > 0:
                 print(f"  [tsdf_fuse] succeeded at voxel_length={voxel_length:.4f}m "
                       f"(attempt {attempt + 1}/{max_retries + 1})", flush=True)
-            return np.asarray(pcd.points)
+            return points
         except MemoryError as e:
             last_error = e
             del volume
