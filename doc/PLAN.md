@@ -4934,5 +4934,79 @@ V2 acceptance gate vs V1 zero-shot (≥ 1.0× zero-shot): **passes on all 4 metr
 
 V4 acceptance gate vs V2 ceiling (≥ 0.9 ratio): **pending re-run** under the new recipe.
 
+### 15.59.5 V4 under the low-LR recipe — fails because mamba3 init isn't pretrained (2026-05-07)
+
+Re-ran the four-variant orchestrator under the §15.59.4 recipe (steps=200, lr_attn=1e-5, lr_head=5e-6, lr_other=1e-6). Run dir: `outputs/runs/scene_overfit_terrains_lowlr_full/`. V4 ckpt sweep:
+
+| Ckpt | AUC@30° | AUC@15° | F_posed | F_unposed |
+|---|---|---|---|---|
+| V4 ckpt_50 | 0.0148 | 0.0000 | 0.0002 | 0.0000 |
+| V4 ckpt_100 | 0.0000 | 0.0000 | 0.0018 | 0.0000 |
+| V4 ckpt_150 | 0.0022 | 0.0000 | nan | 0.0000 |
+| V4 ckpt_200 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+
+V4 is catastrophically broken at every ckpt under the new recipe. AUC30 ≈ 0 across the board.
+
+#### Diagnosis — asymmetric init quality between V2 and V4
+
+V2 starts from DA3-SMALL pretrained transformer attention (good init for the task). V4 starts from `install_mamba3` initialization — the SSD weights are *fresh*, not pretrained on this task. The §15.59.4 recipe (`lr_attn=1e-5 × 200 steps`) is sized for *gentle nudging of pretrained weights*; it is not enough to *train* the freshly-initialized mamba3 attention. V4 needs orders-of-magnitude more learning signal.
+
+Reference: V4 under the §15.59.3 pretraining-scale recipe (`lr_attn=1e-4 × 5000 steps`) reached AUC30=0.5519 — broken depth, but pose recovered to a measurable level. So mamba3 attention *can* be trained; just not at this LR/step combo.
+
+#### Pivot — pretrain mamba3 attention via per-layer block-wise distillation, then fine-tune
+
+The recipe-knob approach (asymmetric LRs, longer training) doesn't address the underlying problem: there's no mamba3 pretraining signal in the §15.59 protocol. We need a warm-up phase that aligns each mamba3 attention layer with what the original DA3 transformer attention does, *without* requiring large-scale pretraining data.
+
+##### Stage A — block-wise distillation against the original DA3 teacher
+
+Independent per-layer training, embarrassingly parallel:
+
+```
+for each layer k in 0..N-1 (independently):
+    install_mamba3 on ONLY layer k of a fresh DA3 model
+    freeze everything except layer k's mamba3 attention
+    distill: minimize MSE(student_block_k_output, teacher_block_k_output)
+    save layer-k mamba3 weights
+```
+
+Each per-layer training sees the teacher's clean activations as both input and target — no upstream drift propagation, no coupling between layer trainings.
+
+Why per-layer parallel beats the alternatives:
+- vs **all-at-once distillation** (existing `super=1/sub=1`): each layer's gradient is mixed with all others; convergence per-layer is slower and noisier.
+- vs **sequential top-down/bottom-up**: small per-layer errors compound into shifted input distributions for subsequent layers.
+- vs **per-layer parallel**: each layer's distillation is a clean, self-contained problem — fixed input distribution (teacher's), fixed target (teacher's output). Result is the strongest per-layer init.
+
+Implementation knobs (suggestions, can tune):
+- **Pre-compute teacher activations** once on the distillation set. Save per-layer (input, output) pairs to disk (~10 GB for ~80 multi-view inputs × 24 layers). Each per-layer training reads pairs from disk; no teacher forward needed during training.
+- **Distill the residual block's output** (post-attn + post-MLP), not the bare attention output. The MLP stays frozen but its post-activation values are what the next layer sees as input.
+- **Distillation data**: 5–10 ETH3D / HiRoom scenes × 4–8 views each = 20–80 multi-view inputs. No GT depth/cameras needed; only the teacher's own activations. Already loaded.
+- **Single-GPU scheduling**: run k=0..23 sequentially (parallel-in-time costs more memory than the 12 GB box has). With teacher activations cached, each per-layer training is cheap.
+
+##### Stage B — joint refinement across all distilled layers
+
+Per-layer training is *isolated*: no layer knows about the others' approximation errors. When the 24 distilled layers are assembled into a single mamba3 model, those errors compound end-to-end. Stage B closes the gap:
+
+- Unfreeze all mamba3 attention layers.
+- ~100 steps at lr=1e-5, end-to-end MSE loss against teacher's final output.
+- Absorbs residual cross-layer drift; turns "24 well-distilled layers" into a working model.
+
+##### Stage C — per-scene fine-tune at the §15.59.4 recipe
+
+Once the mamba3 attention is aligned with the teacher, run the existing low-LR scene-overfit recipe (`--steps 200 --lr-attn 1e-5 --lr-head 5e-6 --lr-other 1e-6`). The mamba3 V4 should now behave like V2 did at this recipe — small gentle adaptation of well-initialized weights.
+
+##### Acceptance gates for §15.59.5
+
+- After Stage B (post-distillation, pre-fine-tune): student vs teacher final-output MSE within 5× of teacher's own forward-pass numerical noise.
+- After Stage C: V4 ≥ 0.9 × V2 on all four metrics. With V2 at 0.8015 / 0.6356 / 0.0071 / 0.0645, the gate becomes V4 ≥ 0.7214 / 0.5720 / 0.0064 / 0.0581.
+
+#### Order of operations — start cheap, escalate only if needed
+
+1. **First (cheap)**: run the existing `super=1/sub=1` all-at-once attention distillation (already implemented in `train_super.py`). ~15 min. If subsequent Stage C reaches V2 quality, the all-at-once warm-up is sufficient and per-layer machinery is overkill.
+2. **If (1) misses**: implement per-layer parallel distillation as described above. Larger compute (~2 hours single-GPU) and ~300 LOC of new orchestration.
+
+Run order today: try (1) first. Decide on (2) based on the result.
+
+
+
 
 
