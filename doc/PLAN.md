@@ -5006,6 +5006,46 @@ Once the mamba3 attention is aligned with the teacher, run the existing low-LR s
 
 Run order today: try (1) first. Decide on (2) based on the result.
 
+### 15.59.6 Per-layer scene-overfit ablation — partial run, interrupted twice (2026-05-07)
+
+Side-ablation, separate from §15.59.5's distillation Stage A. Goal: probe whether mamba3 attention can be trained on a *single* DA3 layer at a time under the scene-overfit recipe — if any single layer's mamba3 swap reaches V2-level metrics, the all-mamba3 V4 failure (§15.59.5) is a *coupling* problem, not a per-layer trainability problem.
+
+Scripts: `scripts/per_layer_overfit.py` (orchestrator) + `scripts/per_layer_plot.py` (aggregator). Run dir: `outputs/runs/per_layer_overfit/`. Recipe: `super=3 sub=1`, scene=eth3d/terrains, steps=200, ckpt-every=50, split-seed=42, train-frac=0.75. Per-layer flat index `k`: backbone blocks at 0..11, `cam_enc.trunk` blocks at 12..15.
+
+#### Run state (paused for PC reboot)
+
+| Layer | Trained ckpts (50/100/150/200) | Eval MEANs |
+|---|---|---|
+| 00..11 (backbone) | ✅ all 4 ckpts on disk | only 00 + 01 evals MEAN-complete |
+| 12..15 (`cam_enc.trunk`) | ❌ training failed — `RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn` | n/a |
+
+**Layers 12-15 are unreachable in this recipe** — `cam_enc.trunk` is "input camera-conditioning, only active when extrinsics are passed" (`src/mamba3_attn/patch.py:11-13`), and scene-overfit training feeds images only. With only those layers' mamba3 attention trainable, no trainable parameter is on the loss path → autograd raises before any ckpt is saved. Not fixable by re-running; needs a recipe that injects extrinsics (deviates from DA3 paper setup, ruled out).
+
+**Layers 00 + 01 MEAN results** (AUC@30° / AUC@15° / F_posed / F_unposed):
+
+| Layer | ckpt_50 | ckpt_100 | ckpt_150 | ckpt_200 |
+|---|---|---|---|---|
+| 00 | 0.1911 / 0.0889 / 0.0027 / 0.0000 | 0.3281 / 0.1644 / 0.0022 / 0.0000 | 0.1259 / 0.0237 / 0.0225 / nan | 0.1393 / 0.0533 / 0.0220 / nan |
+| 01 | 0.3141 / 0.1200 / 0.0169 / 0.0236 | 0.1911 / 0.0593 / 0.0208 / 0.0130 | 0.1807 / 0.0474 / 0.0158 / 0.0008 | 0.1844 / 0.0593 / 0.0102 / 0.0000 |
+
+V2 ceiling (§15.59.4) is AUC@30°=0.8015 / AUC@15°=0.6356 / F_posed=0.0071 / F_unposed=0.0645. Single-layer mamba3 swaps in layers 00 + 01 peak at AUC@30° ≈ 0.33 — well below V2 — and *degrade* with more steps (best ckpt is 50 or 100, not 200). Preliminary signal: per-layer mamba3 swap under this recipe still under-performs an all-DA3-attention model, even before considering all-at-once coupling. Layers 02-11 evals needed to confirm whether any layer index does reach V2 quality.
+
+#### Why it stalled (twice)
+
+1. **First crash (Chrome → PC kernel hang, ~15:33)**. Training had completed for layers 00-11 (ckpts on disk); evals were mid-run. Eval logs from this period ended with `RuntimeError: No CUDA GPUs are available` because CUDA wasn't yet up when the orchestrator was restarted. 47 of 48 eval logs were corrupt; only `layer_00/eval_ckpt_50.log` survived clean.
+2. **Second crash (NVIDIA driver/library mismatch, ~17:00)**. Re-launched orchestrator (`--layers 0,1,...,11`) reused training ckpts and started re-running evals. Layer_00 + layer_01 evals (8 in total) completed. While idle waiting for the run, an unattended package upgrade replaced `libnvidia-ml` to `580.159` while the loaded kernel module stayed at `580.126.20`. Subsequent evals (layers 02-11) failed with `Error 804: forward compatibility was attempted on non supported HW`. 40 eval logs corrupt. `nvidia-smi` now reports `Failed to initialize NVML: Driver/library version mismatch`; needs a host reboot.
+
+#### Resume after reboot
+
+1. Verify CUDA: `uv run python -c "import torch; print(torch.cuda.is_available())"` should print `True`.
+2. Delete the 40 corrupt logs that lack a `MEAN` line:
+   ```
+   for f in outputs/runs/per_layer_overfit/layer_*/eval_ckpt_*.log; do grep -q '^MEAN' "$f" || rm "$f"; done
+   ```
+3. Re-launch only the missing evals (layers 02-11): `uv run python scripts/per_layer_overfit.py --out outputs/runs/per_layer_overfit --layers 2,3,4,5,6,7,8,9,10,11`. Trainings skip (final ckpts exist); only ~40 evals × ~7 min ≈ ~5 h of eval work.
+4. Once 48 MEAN logs exist, run `uv run python scripts/per_layer_plot.py --out outputs/runs/per_layer_overfit` for `train_loss_curves.png`, `eval_metric_curves.png`, `per_layer_summary.md`.
+5. Add a footnote to `per_layer_summary.md` explaining layers 12-15 are unreachable in this recipe (text from this section).
+
 
 
 

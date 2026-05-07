@@ -5,3 +5,4 @@
 - [Every step must report efficiency AND accuracy](memory/feedback_efficiency_and_accuracy_together.md) — every variant-vs-DA3 comparison reports both; reuse `eval_ckpt_sweep.py` / `eval_recon_metrics.py` / `eval_ray_metrics.py`
 - [No paper without competitive accuracy](memory/feedback_no_efficiency_only_paper.md) — efficiency-only paper framing is off the table; accuracy must reach DA3-SMALL (or better)
 - [Stay close to the DA3 paper setup](memory/feedback_stay_close_to_da3_paper.md) — fix root causes outside the DA3 pipeline before swapping loss/hyperparams; deviations need measured wins
+- [Never re-run a training that already produced its outputs](memory/feedback_never_rerun_training.md) — same recipe + seed + scene ⇒ reuse existing ckpts/eval logs; pass `--variants` to skip already-done variants

@@ -64,6 +64,9 @@ class SuperPhaseConfig:
     use_fused_kernel: bool = True
     chunk_size: int = 128
     weight_decay: float = 0.05
+    # When set, install_mamba3 swaps only these flat layer indices
+    # (0..N_bb-1 backbone, N_bb..N_bb+N_cam-1 cam_enc).
+    swap_layers: Optional[list[int]] = None
     grad_clip: float = 1.0
     warmup_steps: int = 50
     decay_steps: int = 100
@@ -339,9 +342,11 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
         install_mamba3(
             student.model, which="all", state_dim=cfg.state_dim,
             use_fused_kernel=cfg.use_fused_kernel, chunk_size=cfg.chunk_size,
+            layer_indices=cfg.swap_layers,
         )
-        print(f"[train_super] swapped {count_mamba3_attn(student.model)} attentions",
-              flush=True)
+        n_swapped = count_mamba3_attn(student.model)
+        layer_tag = f" (layers={cfg.swap_layers})" if cfg.swap_layers is not None else ""
+        print(f"[train_super] swapped {n_swapped} attentions{layer_tag}", flush=True)
     if cfg.no_mamba3_swap and cfg.sub_phase == 1:
         raise ValueError(
             "no_mamba3_swap with sub=1 (attn_only) trains zero parameters: "
@@ -495,6 +500,11 @@ def main() -> None:
                     help="Use the legacy DA3 aleatoric form `c·|err| − λ·log(c)`. Default "
                     "(Kendall-Gal log-scale, PLAN §15.59.1) prices overconfidence "
                     "exponentially; legacy form suffers confidence collapse on overfit.")
+    ap.add_argument("--swap-layer", type=int, action="append", default=None,
+                    help="Per-layer ablation: restrict mamba3 swap to these flat layer "
+                    "indices (0..N_bb-1 backbone, N_bb..N_bb+N_cam-1 cam_enc). Repeat to "
+                    "swap multiple layers, e.g. --swap-layer 0 --swap-layer 5. When omitted, "
+                    "all layers under `which` are swapped (existing behavior).")
     args = ap.parse_args()
 
     cfg = SuperPhaseConfig(
@@ -520,6 +530,7 @@ def main() -> None:
         lr_head=args.lr_head,
         lr_other=args.lr_other,
         no_mamba3_swap=args.no_mamba3_swap,
+        swap_layers=args.swap_layer,
     )
     cfg.weights.use_kendall_gal = not args.no_kendall_gal
     train(cfg, args.out_dir)

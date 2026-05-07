@@ -101,6 +101,7 @@ def install_mamba3(
     three_term: bool = True,
     use_fused_kernel: bool = True,
     chunk_size: int | None = None,
+    layer_indices: list[int] | None = None,
 ) -> int:
     """Swap self/cross attention to Mamba-3 across the DA3 network.
 
@@ -112,6 +113,10 @@ def install_mamba3(
             - "all" (default): also swap `cam_enc.trunk[i].attn` (4 more blocks
               in DA3-SMALL — camera-encoder self-attention on input cam tokens).
         state_dim, bidirectional, three_term: forwarded to Mamba3Attention.
+        layer_indices: when set, restricts the swap to these flat indices.
+            Numbering covers backbone first (0..N_bb-1), then cam_enc trunk
+            (N_bb..N_bb+N_cam-1). When None, all layers covered by `which` are
+            swapped.
 
     Returns:
         number of attention modules swapped.
@@ -121,16 +126,23 @@ def install_mamba3(
     kw = dict(state_dim=state_dim, bidirectional=bidirectional, three_term=three_term,
               use_fused_kernel=use_fused_kernel, chunk_size=chunk_size)
 
+    indices = set(layer_indices) if layer_indices is not None else None
+
     blocks = _backbone_blocks(net)
     if blocks is not None:
-        for block in blocks:
-            _swap_attn(block, **kw)
-            count += 1
+        for i, block in enumerate(blocks):
+            if indices is None or i in indices:
+                _swap_attn(block, **kw)
+                count += 1
 
     if which == "all":
         cam_enc = getattr(net, "cam_enc", None)
         if cam_enc is not None and hasattr(cam_enc, "trunk"):
-            for block in cam_enc.trunk:
+            n_bb = len(blocks) if blocks is not None else 0
+            for j, block in enumerate(cam_enc.trunk):
+                flat_idx = n_bb + j
+                if indices is not None and flat_idx not in indices:
+                    continue
                 if hasattr(block, "attn") and not isinstance(block.attn, Mamba3Attention):
                     _swap_attn(block, **kw)
                     count += 1

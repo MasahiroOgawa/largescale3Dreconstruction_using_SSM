@@ -70,7 +70,7 @@ class SceneMetrics:
 
 
 def build_patched_api(ckpt_path: str | None, device: str = "cuda", state_dim: int = 64,
-                      patched: bool = True):
+                      patched: bool = True, swap_layers: list[int] | None = None):
     """Load DA3-SMALL → optionally install_mamba3 → optionally load ckpt → return api.
 
     Combinations supported:
@@ -78,11 +78,15 @@ def build_patched_api(ckpt_path: str | None, device: str = "cuda", state_dim: in
       - `patched=True,  ckpt_path=None` : Mamba-3-patched DA3 at warm-start (no training).
       - `patched=False, ckpt_path=...`  : un-patched DA3-SMALL with overfit weights.
       - `patched=False, ckpt_path=None` : un-patched DA3-SMALL zero-shot reference.
+      - `swap_layers=[k]`               : per-layer ablation; only listed flat
+                                           layer indices are swapped to mamba3.
+                                           Topology must match the trained ckpt.
     """
     api = load_da3(DEFAULT_HF_MODEL, device=device)
     if patched:
         install_mamba3(api.model, which="all", state_dim=state_dim,
-                       use_fused_kernel=True, chunk_size=128)
+                       use_fused_kernel=True, chunk_size=128,
+                       layer_indices=swap_layers)
     if ckpt_path is not None:
         state = torch.load(ckpt_path, map_location=device, weights_only=False)
         api.model.load_state_dict(state["model"])
@@ -496,6 +500,9 @@ def main() -> None:
                     help="Path to split.json from training; uses its 'test' indices.")
     ap.add_argument("--view-indices", type=int, nargs="+", default=None,
                     help="Manual override: explicit positional view indices to eval.")
+    ap.add_argument("--swap-layer", type=int, action="append", default=None,
+                    help="Per-layer ablation: restrict mamba3 swap to these flat layer "
+                    "indices. Topology must match the trained ckpt.")
     args = ap.parse_args()
 
     if args.scene_overfit is not None:
@@ -519,7 +526,7 @@ def main() -> None:
     src = args.ckpt if args.ckpt is not None else "DA3-SMALL pretrained (no ckpt)"
     print(f"\n[phase4] loading {label_main} from {src}")
     student = build_patched_api(args.ckpt, device=args.device, state_dim=args.state_dim,
-                                patched=not args.no_patch)
+                                patched=not args.no_patch, swap_layers=args.swap_layer)
 
     student_rows: list[SceneMetrics] = []
     for ds, sc in scenes:
