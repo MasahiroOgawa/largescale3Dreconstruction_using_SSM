@@ -128,20 +128,60 @@ def _plot_eval(data: dict[int, dict], path: Path) -> None:
     plt.close(fig)
 
 
+_V2_CEILING = (0.8015, 0.6356, 0.0071, 0.0645)  # §15.59.4 V2 (terrains)
+
+
 def _write_summary(data: dict[int, dict], path: Path) -> None:
-    lines = ["# Per-layer scene-overfit summary (PLAN §15.59.5)\n",
-             "\nMetrics at each layer's *final* eval ckpt. Eval setup: only that layer's\n"
-             "attention is mamba3; the other 15 layers are the original DA3-SMALL transformer.\n",
-             "\n| Layer | Final ckpt | AUC@30° | AUC@15° | F_posed | F_unposed |\n",
-             "|---|---|---|---|---|---|\n"]
+    a30_v2, a15_v2, fp_v2, fu_v2 = _V2_CEILING
+    lines = [
+        "# Per-layer scene-overfit summary (PLAN §15.59.6)\n",
+        "\nEach row: only that layer's attention is mamba3; the other 15 layers are the original\n"
+        "DA3-SMALL transformer. Recipe: scene-overfit on eth3d/terrains, super=3 sub=1, 200 steps,\n"
+        f"ckpt-every=50, split-seed=42, train-frac=0.75. V2 ceiling (§15.59.4): "
+        f"AUC@30°={a30_v2:.4f} / AUC@15°={a15_v2:.4f} / F_posed={fp_v2:.4f} / F_unposed={fu_v2:.4f}.\n",
+        "\n## Final ckpt (step=200)\n",
+        "\n| Layer | AUC@30° | AUC@15° | F_posed | F_unposed |\n",
+        "|---|---|---|---|---|\n",
+    ]
+    for k, d in sorted(data.items()):
+        evals = d["evals"]
+        if not evals:
+            lines.append(f"| {k:02d} | n/a | n/a | n/a | n/a |\n")
+            continue
+        last_step = max(evals)
+        a30, a15, fp, fu = evals[last_step]
+        lines.append(f"| {k:02d} | {a30:.4f} | {a15:.4f} | {fp:.4f} | {fu:.4f} |\n")
+
+    lines.append(
+        "\n## Peak AUC@30° across {50, 100, 150, 200}\n"
+        "\nReports the ckpt and metrics at which AUC@30° is maximal — many layers peak\n"
+        "early (50 or 100) and degrade with more steps, so the final-ckpt row understates\n"
+        "the per-layer ceiling.\n"
+        "\n| Layer | Best ckpt | AUC@30° | AUC@15° | F_posed | F_unposed |\n"
+        "|---|---|---|---|---|---|\n"
+    )
     for k, d in sorted(data.items()):
         evals = d["evals"]
         if not evals:
             lines.append(f"| {k:02d} | — | n/a | n/a | n/a | n/a |\n")
             continue
-        last_step = max(evals)
-        a30, a15, fp, fu = evals[last_step]
-        lines.append(f"| {k:02d} | {last_step} | {a30:.4f} | {a15:.4f} | {fp:.4f} | {fu:.4f} |\n")
+        best_step = max(evals, key=lambda s: evals[s][0])
+        a30, a15, fp, fu = evals[best_step]
+        lines.append(
+            f"| {k:02d} | {best_step} | {a30:.4f} | {a15:.4f} | {fp:.4f} | {fu:.4f} |\n"
+        )
+
+    lines.append(
+        "\n## Footnote — layers 12-15 (cam_enc.trunk) are unreachable in this recipe\n"
+        "\nLayers 12-15 swap mamba3 attention into `cam_enc.trunk`, which is the input\n"
+        "camera-conditioning trunk and is only active when extrinsics are passed at the\n"
+        "DA3 forward (`src/mamba3_attn/patch.py:11-13`). Scene-overfit training feeds\n"
+        "images only — no extrinsics — so with a layer-12-15 swap, no trainable parameter\n"
+        "is on the loss path and autograd raises `RuntimeError: element 0 of tensors does\n"
+        "not require grad and does not have a grad_fn` before any ckpt is saved. Fixing\n"
+        "this would require a recipe that injects extrinsics, which deviates from the\n"
+        "DA3 paper setup (ruled out per `feedback_stay_close_to_da3_paper.md`).\n"
+    )
     path.write_text("".join(lines))
 
 
