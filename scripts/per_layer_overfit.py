@@ -53,7 +53,19 @@ def _train_layer(out_dir: Path, layer_k: int, args) -> int:
         "--swap-layer", str(layer_k),
         "--out-dir", str(out_dir),
     ]
+    if _needs_cam_posed(layer_k, args):
+        cmd.append("--cam-posed")
     return _run(cmd, out_dir / "train.log")
+
+
+def _needs_cam_posed(layer_k: int, args) -> bool:
+    """Layers ≥ n_backbone_layers live in cam_enc.trunk and need extrinsics fed
+    into student.model.forward to be on the loss path. Backbone layers don't
+    need cam_posed and we keep them off so already-trained ckpts stay reusable.
+    """
+    if args.cam_posed_all:
+        return True
+    return layer_k >= args.n_backbone_layers
 
 
 def _eval_layer_ckpt(out_dir: Path, layer_k: int, ckpt_step: int,
@@ -92,6 +104,13 @@ def main() -> None:
     ap.add_argument("--max-images", type=int, default=12)
     ap.add_argument("--candidate-views", type=int, default=256)
     ap.add_argument("--frame-stride", type=int, default=1)
+    ap.add_argument("--n-backbone-layers", type=int, default=12,
+                    help="Number of backbone (non-cam_enc) layers. Layers below this index "
+                    "are trained image-only; layers ≥ this index live in cam_enc.trunk and "
+                    "are auto-trained with --cam-posed.")
+    ap.add_argument("--cam-posed-all", action="store_true",
+                    help="Force --cam-posed on every layer (including backbone). Default "
+                    "is to apply --cam-posed only to cam_enc.trunk layers.")
     args = ap.parse_args()
 
     args.out = Path(args.out)

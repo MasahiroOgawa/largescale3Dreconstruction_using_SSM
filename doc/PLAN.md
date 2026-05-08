@@ -5052,6 +5052,36 @@ The full run on a single RTX 4080 took ~15 h of training (12 layers × ~75 min e
 
 After reboot (2026-05-08), the 40 corrupt logs were deleted and the orchestrator re-launched with `--layers 2,3,4,5,6,7,8,9,10,11`; trainings skipped via the resumability check on `ckpt_<final>.pt`, and only the missing 40 evals re-ran (~5 h). All 48 MEAN logs are now complete.
 
+#### §15.59.6 amendment (2026-05-08) — AUC@30° was misleading; training **does** generalize
+
+The "no single layer reaches V2" headline above is based on AUC@30° on a 10-view held-out test split. A direct test-loss diagnostic (`scripts/per_layer_test_loss.py` — DA3 paper loss measured on the same train and test views, no augmentation, n_views=4 batches × 10) tells a different story:
+
+- **No memorization signature.** For all 12 backbone layers, test loss is *lower* than train loss (gap ~−2 to −5; train loss measured here without augmentation, so train-distribution loss is shifted up vs the augmented training-time loss). Both train and test loss decrease together as training progresses.
+- **Most layers prefer more training, not less.** 8 of 12 layers reach their *minimum test loss* at step 200 (the final ckpt) and another 3 at step 150. The AUC@30° eval, by contrast, has 7 of 12 layers peaking at step 50 or 100 and degrading thereafter. The two metrics disagree on the "best" ckpt for **11 of 12 layers** (only layer 07 has them agreed at step 50).
+
+| Layer | best test_loss step | min test_loss | AUC@30° peak step | peak AUC@30° | aligned? |
+|---|---|---|---|---|---|
+| 00 | 150 | 11.1202 | 100 | 0.3281 | ✗ |
+| 01 | 200 | 11.3402 | 50  | 0.3141 | ✗ |
+| 02 | 150 | 11.7132 | 100 | 0.2370 | ✗ |
+| 03 | 150 | 12.1379 | 100 | 0.1230 | ✗ |
+| 04 | 200 | 8.7085  | 50  | 0.0200 | ✗ |
+| 05 | 200 | 9.9857  | 100 | 0.0022 | ✗ |
+| 06 | 200 | 8.8141  | 100 | 0.1519 | ✗ |
+| 07 | 50  | 12.0650 | 50  | 0.2089 | ✓ |
+| 08 | 200 | 9.3718  | 50  | 0.1800 | ✗ |
+| 09 | 200 | 10.2050 | 150 | 0.1237 | ✗ |
+| 10 | 150 | 8.5994  | 200 | 0.1148 | ✗ |
+| 11 | 200 | 14.2727 | 50  | 0.1274 | ✗ |
+
+So the per-layer training is *succeeding* on its objective: held-out test-view DA3 paper loss decreases monotonically (or near-monotonically) for almost every layer. The "AUC@30° random-ish" and "best ckpt is 50 or 100" pattern reported above is an artifact of (a) AUC@30° being computed on 10 views (high variance) and (b) cam_dec input distribution shift not being captured by the training loss.
+
+This re-frames §15.59.5 Stage A: per-layer scene-overfit training **is** producing useful init weights for the mamba3 layers — they're trained to predict depth/ray/cam-encoding from upstream DA3 features, generalizing to held-out views in the same scene. The right ckpt to load for the joint all-unfreeze stage is the **test-loss minimum** (mostly step 200), not the AUC@30° peak (mostly step 50/100).
+
+Implementation notes:
+- Diagnostic: `scripts/per_layer_test_loss.py --out outputs/runs/per_layer_overfit --n-batches 10`. Outputs `test_loss.json`, `test_loss_summary.md`, `test_loss_curves.png`. Re-run aggregation only with `--aggregate-only`.
+- Training infrastructure also gained `--cam-posed` (`mamba3_attn.train.train_super`), which threads GT extrinsics + intrinsics into `student.model.forward` so cam_enc.trunk runs and its mamba3 attention (flat layers 12..15) is on the loss path. This is what overturns the "layers 12-15 are unreachable" footnote in §15.59.6 above. The per-layer orchestrator (`scripts/per_layer_overfit.py`) auto-applies `--cam-posed` to layers ≥ `--n-backbone-layers` (default 12).
+
 
 
 

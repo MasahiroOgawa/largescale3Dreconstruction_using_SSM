@@ -98,6 +98,13 @@ class SuperPhaseConfig:
     lr_attn: Optional[float] = None
     lr_head: Optional[float] = None
     lr_other: Optional[float] = None
+    # Pass GT extrinsics + intrinsics into student.model.forward so cam_enc.trunk
+    # runs and its mamba3 attention (flat layers 12..15 in DA3-SMALL) is on the
+    # loss path. Required to train per-layer init weights for those layers under
+    # the scene-overfit recipe (PLAN §15.59.6 / §15.59.5 Stage A). Only valid
+    # with super_phase=3 (GT path), since super_phase=1/2 (teacher distillation)
+    # has no GT extrinsics on hand.
+    cam_posed: bool = False
 
 
 def _amp_dtype(name: str) -> torch.dtype:
@@ -142,14 +149,23 @@ def _teacher_forward(teacher, images: Tensor, export_layers: Optional[tuple[int,
     return captured
 
 
-def _student_forward(student, images: Tensor, export_layers: Optional[tuple[int, ...]] = None) -> dict:
+def _student_forward(
+    student, images: Tensor,
+    export_layers: Optional[tuple[int, ...]] = None,
+    extrinsics: Optional[Tensor] = None,
+    intrinsics: Optional[Tensor] = None,
+) -> dict:
     captured: dict = {}
     h = _capture_dpt_hook(student.model, captured)
+    fwd_kw: dict = {}
+    if extrinsics is not None:
+        fwd_kw["extrinsics"] = extrinsics
+    if intrinsics is not None:
+        fwd_kw["intrinsics"] = intrinsics
+    if export_layers:
+        fwd_kw["export_feat_layers"] = list(export_layers)
     try:
-        if export_layers:
-            out = student.model(images.unsqueeze(0), export_feat_layers=list(export_layers))
-        else:
-            out = student.model(images.unsqueeze(0))
+        out = student.model(images.unsqueeze(0), **fwd_kw)
     finally:
         h.remove()
     captured["extrinsics"] = out.extrinsics
@@ -428,7 +444,14 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
             target, gt_kwargs, t_feats = build_target(
                 batch, teacher, cfg.image_size, device, export_feat_layers=export_layers,
             )
-            s_out = _student_forward(student, batch.images.to(device), export_layers=export_layers)
+            student_extrinsics = gt_kwargs.get("gt_w2c") if cfg.cam_posed else None
+            student_intrinsics = gt_kwargs.get("gt_intrinsics") if cfg.cam_posed else None
+            s_out = _student_forward(
+                student, batch.images.to(device),
+                export_layers=export_layers,
+                extrinsics=student_extrinsics,
+                intrinsics=student_intrinsics,
+            )
             loss_out = da3_paper_loss(student=s_out, target=target, weights=cfg.weights, **gt_kwargs)
             loss = loss_out.total
 
@@ -505,7 +528,14 @@ def main() -> None:
                     "indices (0..N_bb-1 backbone, N_bb..N_bb+N_cam-1 cam_enc). Repeat to "
                     "swap multiple layers, e.g. --swap-layer 0 --swap-layer 5. When omitted, "
                     "all layers under `which` are swapped (existing behavior).")
+    ap.add_argument("--cam-posed", action="store_true",
+                    help="Pass GT extrinsics + intrinsics into student.model.forward so "
+                    "cam_enc.trunk runs (and its mamba3 attention at flat layers 12..15 "
+                    "is on the loss path). Required to train per-layer init for those "
+                    "layers under scene-overfit. Only valid with --super 3 (GT path).")
     args = ap.parse_args()
+    if args.cam_posed and args.super_phase != 3:
+        ap.error("--cam-posed requires --super 3 (GT extrinsics needed)")
 
     cfg = SuperPhaseConfig(
         super_phase=args.super_phase,
@@ -531,6 +561,7 @@ def main() -> None:
         lr_other=args.lr_other,
         no_mamba3_swap=args.no_mamba3_swap,
         swap_layers=args.swap_layer,
+        cam_posed=args.cam_posed,
     )
     cfg.weights.use_kendall_gal = not args.no_kendall_gal
     train(cfg, args.out_dir)
