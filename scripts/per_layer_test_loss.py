@@ -234,7 +234,13 @@ def main() -> None:
         wanted = {int(x) for x in args.layers.split(",")}
         layer_dirs = [d for d in layer_dirs if _layer_idx(d) in wanted]
 
+    # Merge with any pre-existing test_loss.json so a partial re-run (e.g.
+    # --layers 12,13,14,15) doesn't wipe out earlier layers' data.
+    json_path = args.out / "test_loss.json"
     results: dict = {}
+    if json_path.exists():
+        prior = json.loads(json_path.read_text())
+        results = {int(k): v for k, v in prior.items()}
     for ld in layer_dirs:
         k = _layer_idx(ld)
         if k is None:
@@ -279,9 +285,8 @@ def main() -> None:
                 torch.cuda.empty_cache()
         results[k] = per_layer
 
-    out_json = args.out / "test_loss.json"
-    out_json.write_text(json.dumps(results, indent=2))
-    print(f"wrote {out_json}", flush=True)
+    json_path.write_text(json.dumps(results, indent=2))
+    print(f"wrote {json_path}", flush=True)
 
     _write_summary(results, args.out / "test_loss_summary.md", args.out)
     print(f"wrote {args.out / 'test_loss_summary.md'}", flush=True)

@@ -5083,6 +5083,53 @@ Implementation notes:
 - Training infrastructure also gained `--cam-posed` (`mamba3_attn.train.train_super`), which threads GT extrinsics + intrinsics into `student.model.forward` so cam_enc.trunk runs and its mamba3 attention (flat layers 12..15) is on the loss path. This is what overturns the "layers 12-15 are unreachable" footnote in §15.59.6 above. The per-layer orchestrator (`scripts/per_layer_overfit.py`) auto-applies `--cam-posed` to layers ≥ `--n-backbone-layers` (default 12).
 
 
+### 15.59.7 All-unfreeze fine-tune from per-layer init — fails to reach V2 (2026-05-09)
+
+Stitched the test-loss-minimum mamba3 weights from each per-layer scene-overfit run (§15.59.6 amendment) into a single 16-layer all-mamba3 student, then ran the V2 low-LR recipe (`super=3 sub=3`, `lr_attn=1e-5`, `lr_head=5e-6`, `lr_other=1e-6`, 200 steps) with all parameters trainable and `--cam-posed` so cam_enc.trunk layers 12-15 are on the loss path. Run dir: `outputs/runs/scene_overfit_perlayer_init_terrains/`. Orchestrator: `scripts/scene_overfit_perlayer_init.py`.
+
+Per-layer source steps (test-loss-min ckpt): backbone 0-11 → {150, 200, 150, 150, 200, 200, 200, 50, 200, 200, 150, 200}; cam_enc.trunk 12-15 → {50, 50, 50, 50}.
+
+Training loss curve: `loss=16.6 → 4.8` over 200 steps (start 16.6, mid 4.5–5.7, end 4.9). Healthy descent, no divergence.
+
+#### Result — all metrics collapse below the V2 ceiling and below V4-§15.59.5
+
+| ckpt | AUC@30° | AUC@15° | F_posed | F_unp | recon posed |
+|---|---|---|---|---|---|
+| 50  | 0.0274 | 0.0000 | nan    | 0.0102 | preflight bailed (13217 m²) |
+| 100 | 0.0022 | 0.0000 | nan    | 0.0000 | preflight bailed (6229 m²)  |
+| 150 | 0.0000 | 0.0000 | 0.0000 | 0.0077 | recon ran                   |
+| 200 | 0.0000 | 0.0000 | 0.0000 | 0.0118 | recon ran                   |
+
+Compared to:
+- V2 ceiling (§15.59.4): AUC@30°=0.8015 / F_posed=0.0071 / F_unp=0.0645
+- V4 under low-LR (§15.59.5, no per-layer init): AUC@30°=0.5519 (best ckpt) — broken depth but pose recovered
+- §15.59.5 acceptance gate (≥0.9·V2): AUC@30° ≥ 0.7214
+
+Every ckpt is **roughly two orders of magnitude below** the §15.59.5 acceptance gate on AUC@30°. F_posed is 0 or nan throughout (depth reconstruction degenerate). The all-unfreeze fine-tune from per-layer init does *not* preserve the per-layer training signal — joint training appears to actively destroy it within 50 steps.
+
+#### What this means for §15.59.5 / §15.59.6 amendment
+
+§15.59.6 amendment claimed per-layer scene-overfit produces useful init weights (test-loss minimum at step ~200, generalizing to held-out views). §15.59.7 disproves this for the joint all-unfreeze case: when all 16 mamba3 layers are stitched together and jointly fine-tuned, the per-layer init does not survive the first 50 joint steps. Possible interpretations:
+
+1. **Per-layer init is not joint-compatible**: each layer was trained against frozen DA3 transformer neighbors, so its weights are conditioned on inputs that the *other* trained mamba3 layers no longer produce. Stitching 16 such layers together creates compounding distribution shift.
+2. **The cam_enc.trunk layers (12-15) at step 50 are the weak link**: per-layer training on those layers used a different forward signature (`--cam-posed`), and 50 is the lowest source step in the assembly. Their mamba3 weights may dominate the joint failure.
+3. **The V2 low-LR recipe is undertuned for this init**: 200 joint steps at `lr_attn=1e-5` may not be enough to re-equilibrate. But the descent loss curve looked healthy, so this is the least likely.
+
+The block-wise distillation pretraining that §15.59.5 originally proposed (Stage A: per-layer feature distillation against DA3-LARGE outputs, *not* against frozen DA3-SMALL transformer neighbors) remains the logical next step — it would address interpretation (1) directly by giving each layer an init conditioned on DA3-LARGE-style outputs, which are what the joint stack should produce.
+
+#### OOM postmortem and stronger TSDF guards
+
+The first attempt at the §15.59.7 eval triggered a kernel SIGKILL on the host (32 GB RAM / 2 GB swap) at `volume.integrate()` for ckpt_100 with anon-rss=24 GB / VM=51 GB. The 8000 m² surface-area preflight (§15.59.1) passed for ckpt_100 (actual 6229 m²) but a single integrate call C++-side ballooned past the 16 GB per-view RSS budget before the next Python check could fire — between integrate calls is too late for partially-saturated depth that allocates blocks across the full frustum.
+
+Rebuilt `_tsdf_fuse` guards in `src/mamba3_attn/eval/phase4_evaluator.py`:
+1. Surface budget tightened: `PHASE4_SURFACE_M2` 8000 → 4000 m². Healthy ETH3D outdoor scenes are 600-2000 m² so 4000 is still 2× headroom.
+2. New depth-saturation-fraction preflight `_depth_saturation_fraction`: bails if >20 % of valid depth pixels are within 5 % of `max_depth`. This catches the §15.59.7 ckpt_100 signature where the surface integral sits under budget but a large minority of pixels still saturate at max_depth and project to far frustum corners.
+3. Per-view RSS budget tightened: `PHASE4_RSS_LIMIT_GB` 16 → 12 GB.
+4. System available-memory floor tightened: `PHASE4_AVAIL_FLOOR_GB` 4 → 8 GB.
+
+After these guards, the §15.59.7 eval rerun completed all four ckpts cleanly with peak free-RAM never dropping below 22 GB.
+
+Side fix to systemd-user setting: an earlier mitigation (`/home/mas/.config/systemd/user.conf` with `DefaultOOMPolicy=continue`, intended to keep tmux alive when a child OOMs) was reverted. Diagnosis: that drop-in was created at 15:34, *after* the 14:00 kernel OOM, so it didn't cause the 30-min freeze the user reported — the freeze was kernel thrashing under near-zero free RAM after the eval consumed 24 GB. Reverting back to the systemd default `OOMPolicy=stop` lets tmux die on OOM (so the user notices immediately instead of waiting through a frozen host).
 
 
 

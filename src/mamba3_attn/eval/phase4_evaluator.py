@@ -205,18 +205,54 @@ def _estimate_world_surface_m2(depths: np.ndarray, Ks: np.ndarray) -> float:
     return total
 
 
+def _depth_saturation_fraction(depths: np.ndarray, max_depth: float,
+                               near_factor: float = 0.95) -> float:
+    """Fraction of valid depth pixels with z ≥ near_factor·max_depth.
+
+    A partially-trained ckpt can produce a depth map whose summed surface
+    area sits *under* the surface-area preflight budget (so it slips through)
+    while still saturating a large minority of pixels at max_depth — those
+    saturated pixels project to far frustum corners that span huge world
+    bbox volume, so TSDF integrate allocates blocks across that volume and
+    OOMs the host even though the surface integral is small.
+
+    Catches the §15.59.7 ckpt_100 incident: 24 GB anon-rss kernel OOM during
+    a single `volume.integrate()` call after the surface preflight passed.
+    """
+    near_thresh = near_factor * max_depth
+    valid_total = 0
+    near_max = 0
+    for d in depths:
+        valid = (d > 0) & np.isfinite(d)
+        valid_total += int(valid.sum())
+        near_max += int((valid & (d >= near_thresh)).sum())
+    if valid_total == 0:
+        return 0.0
+    return near_max / valid_total
+
+
 def _tsdf_fuse(depths: np.ndarray, rgbs: np.ndarray, Ks: np.ndarray, Es: np.ndarray,
                max_depth: float = 30.0) -> np.ndarray:
     """TSDF-fuse + sample 1M points. depths (S,H,W), rgbs (S,H,W,3), Ks (S,3,3), Es (S,4,4).
 
-    Wrapped in two host-RAM guards (PLAN §15.59.1):
+    Wrapped in four host-RAM guards (PLAN §15.59.1, §15.59.7):
       1. World-space surface-area pre-flight: degenerate ckpts that saturate
          depth near max_depth produce wildly large estimated surfaces; abort
          before Open3D allocates a single block.
-      2. Per-view RSS check inside the integrate loop: trips even when the
-         pre-flight underestimates (e.g., bimodal degenerate depth).
+      2. Depth-saturation-fraction pre-flight: catches the case where the
+         summed surface integral sits under the budget (so guard 1 passes)
+         but a large minority of pixels still saturate at max_depth — those
+         saturated pixels project to far frustum corners and TSDF allocates
+         blocks across the implied world bbox. This is the §15.59.7 ckpt_100
+         signature (24 GB anon-rss kernel OOM mid-integrate).
+      3. System-available-memory floor (per view, *before* integrate):
+         catches the case where another process on the host has eaten RAM,
+         or where a single integrate() would balloon past the OOM threshold
+         in one shot — situations where a process-RSS-only check is blind.
+      4. Per-view RSS check (after integrate): backstop for preflight
+         underestimates (e.g., bimodal degenerate depth).
 
-    Both raise MemoryError so the existing `_eval_recon` try/except logs a
+    All raise MemoryError so the existing `_eval_recon` try/except logs a
     clean failure and lets the eval continue — instead of letting the kernel
     SIGKILL the process and take tmux/claude down with it.
     """
@@ -229,14 +265,31 @@ def _tsdf_fuse(depths: np.ndarray, rgbs: np.ndarray, Ks: np.ndarray, Es: np.ndar
     rgbs_u8 = rgbs.astype(np.uint8)
 
     surf_m2 = _estimate_world_surface_m2(depths, Ks_f)
-    surf_budget_m2 = float(os.environ.get("PHASE4_SURFACE_M2", "8000"))
+    surf_budget_m2 = float(os.environ.get("PHASE4_SURFACE_M2", "4000"))
     if surf_m2 > surf_budget_m2:
         raise MemoryError(
             f"TSDF pre-flight: estimated world surface {surf_m2:.0f} m² > "
             f"{surf_budget_m2:.0f} m² budget; depth likely degenerate, skipping recon."
         )
 
-    rss_budget_gb = float(os.environ.get("PHASE4_RSS_LIMIT_GB", "16"))
+    sat_frac = _depth_saturation_fraction(depths, max_depth)
+    sat_budget = float(os.environ.get("PHASE4_SAT_FRAC_BUDGET", "0.20"))
+    if sat_frac > sat_budget:
+        raise MemoryError(
+            f"TSDF pre-flight: {sat_frac * 100:.1f}% of depth pixels saturated "
+            f"near max_depth={max_depth:.1f}m (> {sat_budget * 100:.0f}% budget); "
+            f"single integrate() would balloon block memory, skipping recon."
+        )
+
+    rss_budget_gb = float(os.environ.get("PHASE4_RSS_LIMIT_GB", "12"))
+    # System-available-memory floor: bail out *before* volume.integrate() if
+    # the host is close to OOM, regardless of how much of that pressure is
+    # from this process vs. siblings (other claude/dockerd/etc on a 31 GiB
+    # host). The per-view RSS check above only catches growth *between*
+    # integrate calls — a single integrate can balloon multiple GB inside
+    # the C++ side and trip the kernel OOM-killer before the loop checks
+    # again, taking the tmux scope down with it (PLAN §15.59.7 incident).
+    avail_floor_gb = float(os.environ.get("PHASE4_AVAIL_FLOOR_GB", "8"))
     proc = psutil.Process()
 
     # Adaptive voxel size: paper-default 4/512m, halved per retry so a
@@ -252,6 +305,14 @@ def _tsdf_fuse(depths: np.ndarray, rgbs: np.ndarray, Ks: np.ndarray, Es: np.ndar
         volume = create_tsdf_volume(voxel_length=voxel_length, sdf_trunc=0.04)
         try:
             for i in range(len(depths)):
+                avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+                if avail_gb < avail_floor_gb:
+                    raise MemoryError(
+                        f"TSDF integrate (voxel={voxel_length:.4f}m): system "
+                        f"available memory {avail_gb:.1f} GB < {avail_floor_gb:.1f} GB "
+                        f"floor before view {i + 1}/{len(depths)}; aborting to "
+                        f"avoid OOM-killer (would tear down enclosing tmux scope)."
+                    )
                 d = depths[i]
                 h, w = d.shape[:2]
                 depth_o3d = o3d.geometry.Image(d)
