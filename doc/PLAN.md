@@ -5132,4 +5132,64 @@ After these guards, the §15.59.7 eval rerun completed all four ckpts cleanly wi
 Side fix to systemd-user setting: an earlier mitigation (`/home/mas/.config/systemd/user.conf` with `DefaultOOMPolicy=continue`, intended to keep tmux alive when a child OOMs) was reverted. Diagnosis: that drop-in was created at 15:34, *after* the 14:00 kernel OOM, so it didn't cause the 30-min freeze the user reported — the freeze was kernel thrashing under near-zero free RAM after the eval consumed 24 GB. Reverting back to the systemd default `OOMPolicy=stop` lets tmux die on OOM (so the user notices immediately instead of waiting through a frozen host).
 
 
+### 15.59.8 Random per-scene split, multi-scene GT-supervised training — degenerate output on test scenes (2026-05-11)
+
+Departure from the §15.59.4–7 scene-overfit-on-terrains protocol: the prior runs trained and tested on the same 42 views of `terrains` (32 train / 10 test). That setup measures memorisation of one scene's view manifold, not generalisation. §15.59.8 swaps in a per-scene random split across all 11 extracted ETH3D scenes with GT depth (75/25, seed=42) → 8 train scenes, 3 unseen test scenes. Run dir: `outputs/runs/multi_scene_distill_eth3d/`. Orchestrator: `scripts/multi_scene_distill.py`.
+
+Train split (8): `electro`, `facade`, `kicker`, `office`, `pipes`, `playground`, `relief`, `relief_2`.
+Test split (3): `courtyard`, `delivery_area`, `terrains`.
+
+Recipe: all-mamba3 student (16 layers swapped from random init via `install_mamba3`), `super=3 sub=3` (GT-supervised, no teacher distillation), 3000 steps, `lr_attn=1e-4 / lr_head=5e-5 / lr_other=1e-5`, warmup=100, decay=500, n_views=4, image_size=504, ckpt every 500 steps. Kendall-Gal log-scale aleatoric loss (default).
+
+#### Training dynamics — pervasive memorisation by step 2800
+
+Training loss descended healthily through warmup (step 50 loss=9.3) then split sharply by scene difficulty around step 600:
+
+- **Easy/small scenes (playground, pipes, relief_2, office, kicker)** memorised to `loss ≈ −19 to −21`, with `L_M ≈ −18` and `L_D` going negative (Kendall-Gal log-scale lets both terms cross zero when error is < ~1 unit at confident σ).
+- **Hard/large scenes (facade, electro)** stayed at `loss ≈ 10–15` throughout — too large/varied for 3000 steps to memorise at this LR.
+
+The Kendall-Gal form *slowed* but did not prevent confidence collapse: by step 2775, pipes hit `L_M=−18.2` (≈ same magnitude as §15.59.3 V4 collapse at `−19/−21` under the legacy DA3 loss). The "exponential pricing of overconfidence" claim from §15.59.1 only delays the inevitable when `lr_attn=1e-4` runs for 3000 steps on a 14–76-image-per-scene mix.
+
+#### Test-scene results — every ckpt ~10× worse than V1 zero-shot
+
+Per-ckpt mean across the 3 test scenes:
+
+| ckpt | AUC@30° | AUC@15° | F_posed | F_unp |
+|---|---|---|---|---|
+| 500  | **0.0596** | 0.0128 | nan | 0.0000 |
+| 1000 | 0.0185 | 0.0017 | nan | 0.0031 |
+| 1500 | 0.0399 | 0.0057 | 0.0000 | 0.0007 |
+| 2000 | 0.0163 | 0.0027 | nan | 0.0052 |
+| 2500 | 0.0123 | 0.0000 | 0.0000 | 0.0031 |
+| 3000 | 0.0087 | 0.0000 | nan | 0.0047 |
+
+Per-scene best ckpt:
+- courtyard: ckpt_1500 AUC@30°=0.0929
+- delivery_area: ckpt_1000 AUC@30°=0.0293
+- terrains: ckpt_500 AUC@30°=0.1056
+
+Reference: **V1 zero-shot un-patched DA3-SMALL on terrains** (PLAN line 4736): AUC@30°=0.6607, F_unp=0.0348. The best §15.59.8 ckpt (ckpt_500 mean AUC@30°=0.060) is **11× worse than not training at all**. F_posed is `nan` on almost every (ckpt, scene) cell — the §15.59.7 surface-area preflight bailed because every test-scene depth prediction was degenerate (estimated world surface 12000–15000 m² vs the 4000 m² budget; same saturation signature as the §15.59.7 ckpt_100 failure).
+
+#### Diagnosis
+
+Two confounding signals collapsed simultaneously:
+
+1. **AUC@30° peak at ckpt_500, then monotone decline**: best test-scene performance is at the *earliest* ckpt and gets *worse* with more training. Same "best ckpt is the smallest one" pattern that §15.59.6 saw on per-layer scene-overfit (peak at ckpt_50 / 100). The 3000-step recipe at `lr_attn=1e-4` doesn't just fail to improve — it actively destroys whatever the small-step ckpts had.
+2. **Pervasive negative-loss collapse on training scenes**: 7 of 8 training scenes drove `L_M` to ≤ −5 by step 2500, with three (pipes, office, relief_2) hitting the −18 to −20 magnitude. The model is memorising training-scene-specific depth patterns and emitting saturated-depth outputs on unseen scenes.
+
+§15.59.5's diagnosis (mamba3 from random init *needs* a pretraining warmup before any GT-supervised fine-tune at this LR scale) is reinforced. Multi-scene GT supervision alone — even across 8 diverse ETH3D scenes — does not substitute for that warmup.
+
+#### Disagreement with the user's hypothesis about "train and test too differ"
+
+The user (§15.59.7 follow-up) hypothesised that the terrains-only protocol made train and test too similar (~40 images of one continuous capture). Replacing it with a true scene-disjoint random split confirms the *opposite* is also fatal: with all-different test scenes, the all-mamba3 model produces *more* degenerate output than V1 zero-shot DA3-SMALL — i.e. the failure is not "test too easy" but "mamba3 from random init can't learn a usable DA3 backbone in 3000 GT-supervised steps regardless of scene diversity". The failure is in the *architecture-init / recipe* combination, not in the train/test split design.
+
+#### What this rules out for §15.59
+
+- **GT-only multi-scene at pretraining-scale LR** is not the missing piece. §15.59.8 fully tested this.
+- The pivot to **block-wise distillation pretraining** (§15.59.5 Stage A: per-layer mamba3 distilled against DA3-LARGE-or-SMALL teacher activations on the training scenes, *before* any GT-supervised fine-tune) remains the only un-disproven path forward.
+
+#### Open question for the next step
+
+Whether to (a) implement §15.59.5 Stage A in earnest (per-layer distillation against DA3-LARGE), or (b) admit the cumulative §15.59.x evidence — five negative results in a row (V4 broken depth at §15.59.3, V4 low-LR fails at §15.59.5, no single-layer mamba3 reaches V2 at §15.59.6, all-unfreeze from per-layer init fails at §15.59.7, multi-scene random-split fails at §15.59.8) — points to "mamba3 attention is structurally incompatible with the DA3 architecture at DA3-SMALL scale, irrespective of training protocol", and pivot the paper framing accordingly.
+
 
