@@ -564,6 +564,10 @@ def main() -> None:
     ap.add_argument("--swap-layer", type=int, action="append", default=None,
                     help="Per-layer ablation: restrict mamba3 swap to these flat layer "
                     "indices. Topology must match the trained ckpt.")
+    ap.add_argument("--eval-scenes", type=str, default=None,
+                    help="Explicit comma-separated (dataset:scene) list to evaluate, e.g. "
+                    "'eth3d:terrains,eth3d:facade'. Overrides EVAL_SPLIT_ETH3D / hiroom / "
+                    "7scenes default test sets. Used by PLAN §15.59.8 random scene split.")
     args = ap.parse_args()
 
     if args.scene_overfit is not None:
@@ -576,6 +580,12 @@ def main() -> None:
         scenes = [(args.scene_dataset, args.scene_overfit)]
         print(f"[phase4] scene-overfit eval on {args.scene_dataset}/{args.scene_overfit}, "
               f"held-out test indices = {view_indices}")
+    elif args.eval_scenes is not None:
+        view_indices = None
+        scenes = [tuple(s.split(":", 1)) for s in args.eval_scenes.split(",")]
+        print(f"[phase4] eval scenes (explicit): {len(scenes)}")
+        for d, s in scenes:
+            print(f"  {d}/{s}")
     else:
         view_indices = None
         scenes = _scene_iter(args.data_root)

@@ -105,6 +105,11 @@ class SuperPhaseConfig:
     # with super_phase=3 (GT path), since super_phase=1/2 (teacher distillation)
     # has no GT extrinsics on hand.
     cam_posed: bool = False
+    # Explicit (dataset, scene) list for the multi-scene training iterator.
+    # When None, falls back to the hardcoded TRAIN_SCENES (eth3d non-terrains
+    # + hiroom train + 7scenes train). Used by PLAN §15.59.8 random-split
+    # protocol where train scenes are drawn from a runtime random partition.
+    scenes: Optional[list[tuple[str, str]]] = None
 
 
 def _amp_dtype(name: str) -> torch.dtype:
@@ -426,7 +431,7 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
     else:
         data = multi_view_iterator(
             Path("data"), n_views=cfg.n_views, image_size=cfg.image_size,
-            seed=cfg.seed, require_gt=require_gt,
+            seed=cfg.seed, require_gt=require_gt, scenes=cfg.scenes,
         )
 
     # Feature distillation enabled only for super-phase 1 (DA3-SMALL teacher,
@@ -533,9 +538,19 @@ def main() -> None:
                     "cam_enc.trunk runs (and its mamba3 attention at flat layers 12..15 "
                     "is on the loss path). Required to train per-layer init for those "
                     "layers under scene-overfit. Only valid with --super 3 (GT path).")
+    ap.add_argument("--scenes", type=str, default=None,
+                    help="Explicit comma-separated (dataset:scene) list for the multi-scene "
+                    "iterator, e.g. 'eth3d:courtyard,eth3d:facade,7scenes:chess'. Overrides "
+                    "the hardcoded TRAIN_SCENES split. Used by PLAN §15.59.8 random scene "
+                    "split. Mutually exclusive with --scene-overfit.")
     args = ap.parse_args()
     if args.cam_posed and args.super_phase != 3:
         ap.error("--cam-posed requires --super 3 (GT extrinsics needed)")
+    if args.scenes and args.scene_overfit:
+        ap.error("--scenes and --scene-overfit are mutually exclusive")
+    scenes_list: Optional[list[tuple[str, str]]] = None
+    if args.scenes:
+        scenes_list = [tuple(s.split(":", 1)) for s in args.scenes.split(",")]  # type: ignore[misc]
 
     cfg = SuperPhaseConfig(
         super_phase=args.super_phase,
@@ -562,6 +577,7 @@ def main() -> None:
         no_mamba3_swap=args.no_mamba3_swap,
         swap_layers=args.swap_layer,
         cam_posed=args.cam_posed,
+        scenes=scenes_list,
     )
     cfg.weights.use_kendall_gal = not args.no_kendall_gal
     train(cfg, args.out_dir)

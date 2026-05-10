@@ -107,13 +107,17 @@ def multi_view_iterator(
     image_size: int = 504,
     seed: int = 0,
     require_gt: bool = True,
+    scenes: list[tuple[str, str]] | None = None,
 ) -> Iterator[MultiViewBatch]:
     """Yield batches forever, cycling through train scenes in shuffled order.
 
     Skips scenes that can't produce a valid batch (insufficient views, no GT).
+    If `scenes` is given, use that explicit list instead of the hardcoded
+    train split (PLAN §15.59.8 random scene split).
     """
     rng = random.Random(seed)
-    scenes = _build_train_scene_list(data_root)
+    if scenes is None:
+        scenes = _build_train_scene_list(data_root)
     if not scenes:
         raise RuntimeError(f"No train scenes found under {data_root}")
     print(f"[multi_view] {len(scenes)} train scenes "
