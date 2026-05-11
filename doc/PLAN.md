@@ -5170,26 +5170,50 @@ Per-scene best ckpt:
 
 Reference: **V1 zero-shot un-patched DA3-SMALL on terrains** (PLAN line 4736): AUC@30°=0.6607, F_unp=0.0348. The best §15.59.8 ckpt (ckpt_500 mean AUC@30°=0.060) is **11× worse than not training at all**. F_posed is `nan` on almost every (ckpt, scene) cell — the §15.59.7 surface-area preflight bailed because every test-scene depth prediction was degenerate (estimated world surface 12000–15000 m² vs the 4000 m² budget; same saturation signature as the §15.59.7 ckpt_100 failure).
 
-#### Diagnosis
+#### Retroactive train vs test loss — both descend, gap narrows
 
-Two confounding signals collapsed simultaneously:
+Per-batch training-loss prints can mislead because each step samples one scene and the easy/small scenes drive the loss to `−20` while hard scenes stay at `+15`. A fair diagnostic averages the same DA3 paper loss over fixed batches across *all* train scenes and *all* test scenes (`scripts/multi_scene_test_loss.py`, n_views=4 × 6 batches per scene, no augmentation):
 
-1. **AUC@30° peak at ckpt_500, then monotone decline**: best test-scene performance is at the *earliest* ckpt and gets *worse* with more training. Same "best ckpt is the smallest one" pattern that §15.59.6 saw on per-layer scene-overfit (peak at ckpt_50 / 100). The 3000-step recipe at `lr_attn=1e-4` doesn't just fail to improve — it actively destroys whatever the small-step ckpts had.
-2. **Pervasive negative-loss collapse on training scenes**: 7 of 8 training scenes drove `L_M` to ≤ −5 by step 2500, with three (pipes, office, relief_2) hitting the −18 to −20 magnitude. The model is memorising training-scene-specific depth patterns and emitting saturated-depth outputs on unseen scenes.
+| ckpt | train loss | test loss | gap (test − train) |
+|---|---|---|---|
+| 500  | 29.68 | 48.10 | +18.42 |
+| 1000 | 16.71 | 32.96 | +16.25 |
+| 1500 | 16.31 | 29.04 | +12.73 |
+| 2000 | 14.89 | 27.10 | +12.21 |
+| 2500 | 14.18 | 25.11 | +10.93 |
+| 3000 | 14.11 | 25.65 | +11.54 |
 
-§15.59.5's diagnosis (mamba3 from random init *needs* a pretraining warmup before any GT-supervised fine-tune at this LR scale) is reinforced. Multi-scene GT supervision alone — even across 8 diverse ETH3D scenes — does not substitute for that warmup.
+Both train and test loss decrease together, and the gap *narrows* over training (+18.4 → +11.5). On the DA3 paper loss form, **the model is genuinely generalising** to unseen scenes — this is not the "overfit" diagnosis the per-batch L_M spikes initially suggested. The L_M = −18 to −20 readings during training are real but bounded to a few easy/small scenes (pipes 14 imgs, office 26 imgs, relief_2 31 imgs); aggregated over all 8 train scenes the mean L_M at ckpt_3000 is +8.0 (not −18), and on the 3 test scenes the mean is +15.4. Kendall-Gal log-scale loss is doing exactly what §15.59.1 promised — it caps the per-scene collapse but lets the cross-scene aggregate remain positive.
 
-#### Disagreement with the user's hypothesis about "train and test too differ"
+#### The real failure mode — training-loss / downstream-metric misalignment
 
-The user (§15.59.7 follow-up) hypothesised that the terrains-only protocol made train and test too similar (~40 images of one continuous capture). Replacing it with a true scene-disjoint random split confirms the *opposite* is also fatal: with all-different test scenes, the all-mamba3 model produces *more* degenerate output than V1 zero-shot DA3-SMALL — i.e. the failure is not "test too easy" but "mamba3 from random init can't learn a usable DA3 backbone in 3000 GT-supervised steps regardless of scene diversity". The failure is in the *architecture-init / recipe* combination, not in the train/test split design.
+The training objective is descending healthily on both train and test scenes, but AUC@30° and F-scores are *not* tracking it:
 
-#### What this rules out for §15.59
+| ckpt | train loss | test loss | mean AUC@30° | F_posed |
+|---|---|---|---|---|
+| 500  | 29.68 | 48.10 | 0.0596 | nan |
+| 3000 | 14.11 | 25.65 | 0.0087 | nan |
 
-- **GT-only multi-scene at pretraining-scale LR** is not the missing piece. §15.59.8 fully tested this.
-- The pivot to **block-wise distillation pretraining** (§15.59.5 Stage A: per-layer mamba3 distilled against DA3-LARGE-or-SMALL teacher activations on the training scenes, *before* any GT-supervised fine-tune) remains the only un-disproven path forward.
+Test loss *halved* while AUC@30° *dropped 7×*. Same disagreement §15.59.6 amendment found at the per-layer level: AUC@30° on 10-view-per-scene test sets is high-variance; F_posed is `nan` because the §15.59.7 TSDF preflight bails on saturated depth predictions even though the loss says depth is "approximately right". The Kendall-Gal log-scale gives the network a way to lower L_M by being confident about depth that happens to saturate near `max_depth` — loss-minimal but TSDF-degenerate.
+
+#### Revised diagnosis
+
+Earlier draft of this section read the per-batch L_M = −20 prints as "training-scene memorisation, pervasive collapse, model destroys what small-step ckpts had" and concluded GT-only multi-scene at pretraining-scale LR fails outright. The retroactive aggregate test loss contradicts that:
+
+- Training **does** generalise on the DA3 paper loss. Multi-scene GT supervision works as a training signal.
+- Failure is not memorisation. The model is *not* memorising training-scene-specific depth patterns and failing to apply them on test scenes — it produces qualitatively similar (degenerate, saturated-near-max_depth) depth on both.
+- The downstream evaluation metrics (AUC@30°, F_posed) reject this depth not because it's wrong on a per-pixel level but because it's *systematically biased* toward `max_depth` in a way the DA3 paper loss tolerates (low absolute pixel error if σ is also large) but TSDF reconstruction does not.
+
+This recasts the §15.59.x track: the architecture-init combination *can* be optimised under the training objective, but the training objective is the wrong shape for the downstream evaluation. The remaining open question is no longer "can mamba3 learn anything at all" — §15.59.8 says yes — but "is there a training objective form that drives mamba3's depth predictions out of the `near-max_depth` saturation basin into the kind of bounded depth distribution TSDF integrates cleanly".
 
 #### Open question for the next step
 
-Whether to (a) implement §15.59.5 Stage A in earnest (per-layer distillation against DA3-LARGE), or (b) admit the cumulative §15.59.x evidence — five negative results in a row (V4 broken depth at §15.59.3, V4 low-LR fails at §15.59.5, no single-layer mamba3 reaches V2 at §15.59.6, all-unfreeze from per-layer init fails at §15.59.7, multi-scene random-split fails at §15.59.8) — points to "mamba3 attention is structurally incompatible with the DA3 architecture at DA3-SMALL scale, irrespective of training protocol", and pivot the paper framing accordingly.
+Three candidate paths, ordered by cheapness:
+
+1. **Add a depth-saturation penalty** to the training loss: penalise predicted depths within 5 % of `max_depth` whenever GT depth is bounded away from it. Cheap (a few LOC in `da3_loss.py`), directly attacks the failure mode visible in the eval preflights, and reuses the §15.59.8 multi-scene infrastructure.
+2. **Switch to the DA3-LARGE distillation Stage A** (§15.59.5 plan): per-layer feature distillation against a teacher that *doesn't* saturate, providing a depth-distribution target the GT-supervised path can't supply directly. ~2 h compute.
+3. **Re-examine the DA3 paper loss form**: the `c·|err| − λ log c` (legacy) and Kendall-Gal log-scale (current default) both let `σ → ∞` cap the loss when error is large near `max_depth`. A bounded uncertainty parameterisation (e.g., σ ∈ [σ_min, σ_max]) might force the model to fit depth distribution shape, not just per-pixel residuals.
+
+Path 1 is the cheapest experiment that would tell us whether the recipe-form vs architecture story is the real bottleneck.
 
 

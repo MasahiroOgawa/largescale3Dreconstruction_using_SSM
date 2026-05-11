@@ -68,11 +68,13 @@ def _scene_arg(scenes: list[str], dataset: str = "eth3d") -> str:
     return ",".join(f"{dataset}:{s}" for s in scenes)
 
 
-def _run_training(out_dir: Path, train_scenes: list[str], args) -> int:
+def _run_training(out_dir: Path, train_scenes: list[str], test_scenes: list[str], args) -> int:
     cmd = [
         "uv", "run", "python", "-m", "mamba3_attn.train.train_super",
         "--super", "3", "--sub", "3",
         "--scenes", _scene_arg(train_scenes),
+        "--test-scenes", _scene_arg(test_scenes),
+        "--test-every", str(args.test_every),
         "--steps", str(args.steps),
         "--warmup-steps", str(args.warmup_steps),
         "--decay-steps", str(args.decay_steps),
@@ -185,6 +187,8 @@ def main() -> None:
     ap.add_argument("--chunk-size", type=int, default=128)
     ap.add_argument("--state-dim", type=int, default=64)
     ap.add_argument("--max-images", type=int, default=12)
+    ap.add_argument("--test-every", type=int, default=100,
+                    help="In-training test-loss diagnostic interval (steps).")
     ap.add_argument("--skip-train", action="store_true")
     args = ap.parse_args()
 
@@ -213,7 +217,7 @@ def main() -> None:
     print(f"[multi-scene] test:  {test_scenes}")
 
     if not args.skip_train:
-        rc = _run_training(args.out, train_scenes, args)
+        rc = _run_training(args.out, train_scenes, test_scenes, args)
         if rc != 0:
             print(f"[multi-scene] TRAIN FAILED (rc={rc})", flush=True)
             return

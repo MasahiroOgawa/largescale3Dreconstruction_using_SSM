@@ -42,7 +42,10 @@ from ..mamba3 import Mamba3SelfAttention
 from ..patch import install_mamba3, count_mamba3_attn
 from .da3_loss import DA3LossWeights, da3_paper_loss
 from .gt_ray import gt_ray_map
-from .multi_view import iter_single_scene, load_full_scene_cache, multi_view_iterator
+from .multi_view import (
+    MultiViewBatch, _slice_batch, iter_single_scene, load_full_scene_cache,
+    multi_view_iterator,
+)
 
 
 TEACHER_HF = {
@@ -110,6 +113,15 @@ class SuperPhaseConfig:
     # + hiroom train + 7scenes train). Used by PLAN §15.59.8 random-split
     # protocol where train scenes are drawn from a runtime random partition.
     scenes: Optional[list[tuple[str, str]]] = None
+    # Held-out test scenes for in-training test-loss logging. When set, every
+    # `test_every` steps we compute the DA3 paper loss (same form as training,
+    # no grad, no augmentation) on a fixed batch from each test scene, log it
+    # alongside train loss, and append to `loss_history.json`. Lets us spot
+    # memorisation in real time instead of after the fact.
+    test_scenes: Optional[list[tuple[str, str]]] = None
+    test_every: int = 100
+    test_n_views: int = 4
+    test_n_batches: int = 2
 
 
 def _amp_dtype(name: str) -> torch.dtype:
@@ -192,6 +204,54 @@ def _feature_distill_loss(student_feats: list[Tensor], teacher_feats: list[Tenso
         cos_loss = 1.0 - (s_n * t_n).sum(dim=-1).mean()
         total = total + l2 + cos_loss
     return total / max(len(student_feats), 1)
+
+
+@torch.no_grad()
+def _eval_test_loss(
+    student, test_caches: dict, rng, n_views: int, n_batches: int,
+    image_size: int, device, weights, amp_dtype, use_amp: bool, cam_posed: bool,
+) -> dict[str, float]:
+    """Average DA3 paper loss (same form as training) over fixed test scenes.
+
+    Used by the in-training test-loss diagnostic (`--test-scenes`). No
+    augmentation, no grad — pure forward + loss compute. Reuses the same
+    `build_target` / `_student_forward` / `da3_paper_loss` path as training
+    so the numbers are directly comparable to the train-step loss line.
+    """
+    keys = ("L_D", "L_M", "L_grad", "L_P", "L_C")
+    totals: list[float] = []
+    comps: dict[str, list[float]] = {k: [] for k in keys}
+    student.model.eval()
+    try:
+        for name, cache in test_caches.items():
+            n_total = cache.images.shape[0]
+            if n_total < n_views:
+                continue
+            all_idx = list(range(n_total))
+            for _ in range(n_batches):
+                picked = rng.sample(all_idx, n_views)
+                batch = _slice_batch(cache, picked)
+                with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                    target, gt_kwargs, _ = build_target(batch, None, image_size, device)
+                    extr = gt_kwargs.get("gt_w2c") if cam_posed else None
+                    intr = gt_kwargs.get("gt_intrinsics") if cam_posed else None
+                    s_out = _student_forward(
+                        student, batch.images.to(device),
+                        extrinsics=extr, intrinsics=intr,
+                    )
+                    loss_out = da3_paper_loss(student=s_out, target=target,
+                                              weights=weights, **gt_kwargs)
+                totals.append(float(loss_out.total))
+                comps["L_D"].append(float(loss_out.l_depth))
+                comps["L_M"].append(float(loss_out.l_ray))
+                comps["L_grad"].append(float(loss_out.l_grad))
+                comps["L_P"].append(float(loss_out.l_point))
+                comps["L_C"].append(float(loss_out.l_cam))
+    finally:
+        student.model.train()
+    def _m(xs: list[float]) -> float:
+        return sum(xs) / max(len(xs), 1)
+    return {"total": _m(totals), **{k: _m(v) for k, v in comps.items()}}
 
 
 def set_trainables(
@@ -442,6 +502,18 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
     if feat_distill:
         print(f"[train_super] feature distillation ENABLED at layers {FEAT_LAYERS}", flush=True)
 
+    test_caches: dict[str, MultiViewBatch] = {}
+    if cfg.test_scenes:
+        import random as _random
+        for ds, sc in cfg.test_scenes:
+            print(f"[train_super] loading test scene {ds}/{sc} for in-training loss", flush=True)
+            test_caches[f"{ds}/{sc}"] = load_full_scene_cache(
+                ds, sc, Path("data"), image_size=cfg.image_size,
+                candidate_views=cfg.candidate_views, frame_stride=cfg.frame_stride,
+            )
+        test_rng = _random.Random(cfg.seed ^ 0xBEEF)
+    loss_history: list[dict] = []
+
     log_lines: list[str] = []
     for step in range(cfg.steps):
         batch = next(data)
@@ -483,6 +555,32 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
             )
             print(line, flush=True)
             log_lines.append(line)
+
+        if test_caches and ((step + 1) % cfg.test_every == 0 or step == cfg.steps - 1):
+            test_metrics = _eval_test_loss(
+                student, test_caches, test_rng,
+                n_views=cfg.test_n_views, n_batches=cfg.test_n_batches,
+                image_size=cfg.image_size, device=device, weights=cfg.weights,
+                amp_dtype=amp_dtype, use_amp=use_amp, cam_posed=cfg.cam_posed,
+            )
+            test_line = (
+                f"[{cfg.super_phase}-{cfg.sub_phase}] step {step + 1:5d}/{cfg.steps}  "
+                f"TEST  loss={test_metrics['total']:.4f}  "
+                f"L_D={test_metrics['L_D']:.4f}  L_M={test_metrics['L_M']:.4f}  "
+                f"L_P={test_metrics['L_P']:.4f}  L_C={test_metrics['L_C']:.4f}  "
+                f"(over {len(test_caches)} scenes × {cfg.test_n_batches} batches)"
+            )
+            print(test_line, flush=True)
+            log_lines.append(test_line)
+            loss_history.append({
+                "step": step + 1,
+                "train_loss": float(loss.item()),
+                "train_L_D": float(loss_out.l_depth.item()),
+                "train_L_M": float(loss_out.l_ray.item()),
+                "test": test_metrics,
+            })
+            import json as _json
+            (out_dir / "loss_history.json").write_text(_json.dumps(loss_history, indent=2))
 
         if (step + 1) % cfg.ckpt_every == 0 or step == cfg.steps - 1:
             ckpt_path = out_dir / f"ckpt_{step + 1}.pt"
@@ -543,6 +641,13 @@ def main() -> None:
                     "iterator, e.g. 'eth3d:courtyard,eth3d:facade,7scenes:chess'. Overrides "
                     "the hardcoded TRAIN_SCENES split. Used by PLAN §15.59.8 random scene "
                     "split. Mutually exclusive with --scene-overfit.")
+    ap.add_argument("--test-scenes", type=str, default=None,
+                    help="Held-out test (dataset:scene) list for in-training test-loss "
+                    "diagnostic. Every --test-every steps, log DA3 paper loss on a fixed "
+                    "batch from each. Saved to loss_history.json. Does not affect training.")
+    ap.add_argument("--test-every", type=int, default=100)
+    ap.add_argument("--test-n-views", type=int, default=4)
+    ap.add_argument("--test-n-batches", type=int, default=2)
     args = ap.parse_args()
     if args.cam_posed and args.super_phase != 3:
         ap.error("--cam-posed requires --super 3 (GT extrinsics needed)")
@@ -551,6 +656,9 @@ def main() -> None:
     scenes_list: Optional[list[tuple[str, str]]] = None
     if args.scenes:
         scenes_list = [tuple(s.split(":", 1)) for s in args.scenes.split(",")]  # type: ignore[misc]
+    test_scenes_list: Optional[list[tuple[str, str]]] = None
+    if args.test_scenes:
+        test_scenes_list = [tuple(s.split(":", 1)) for s in args.test_scenes.split(",")]  # type: ignore[misc]
 
     cfg = SuperPhaseConfig(
         super_phase=args.super_phase,
@@ -578,6 +686,10 @@ def main() -> None:
         swap_layers=args.swap_layer,
         cam_posed=args.cam_posed,
         scenes=scenes_list,
+        test_scenes=test_scenes_list,
+        test_every=args.test_every,
+        test_n_views=args.test_n_views,
+        test_n_batches=args.test_n_batches,
     )
     cfg.weights.use_kendall_gal = not args.no_kendall_gal
     train(cfg, args.out_dir)
