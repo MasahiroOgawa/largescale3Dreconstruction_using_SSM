@@ -622,10 +622,11 @@ def main() -> None:
     ap.add_argument("--lr-other", type=float, default=None)
     ap.add_argument("--no-mamba3-swap", action="store_true",
                     help="Train un-patched DA3-SMALL (per-scene-overfit ceiling baseline).")
-    ap.add_argument("--no-kendall-gal", action="store_true",
-                    help="Use the legacy DA3 aleatoric form `c·|err| − λ·log(c)`. Default "
-                    "(Kendall-Gal log-scale, PLAN §15.59.1) prices overconfidence "
-                    "exponentially; legacy form suffers confidence collapse on overfit.")
+    ap.add_argument("--use-kendall-gal", action="store_true",
+                    help="Use the Kendall-Gal log-scale aleatoric form (PLAN §15.59.1 "
+                    "experiment). Default is the original DA3 paper form `c·|err| − λ·log(c)` "
+                    "(reverted in d9b71fe — staying close to the DA3 paper setup per "
+                    "feedback_stay_close_to_da3_paper.md).")
     ap.add_argument("--swap-layer", type=int, action="append", default=None,
                     help="Per-layer ablation: restrict mamba3 swap to these flat layer "
                     "indices (0..N_bb-1 backbone, N_bb..N_bb+N_cam-1 cam_enc). Repeat to "
@@ -691,7 +692,7 @@ def main() -> None:
         test_n_views=args.test_n_views,
         test_n_batches=args.test_n_batches,
     )
-    cfg.weights.use_kendall_gal = not args.no_kendall_gal
+    cfg.weights.use_kendall_gal = args.use_kendall_gal
     train(cfg, args.out_dir)
 
 
