@@ -66,6 +66,11 @@ class SuperPhaseConfig:
     state_dim: int = 64
     use_fused_kernel: bool = True
     chunk_size: int = 128
+    # Mamba-3 variant routed through install_mamba3. "mamba3" = full Mamba-3
+    # SSD (default, existing behaviour); "vssd" = Mamba-3 NC-SSD (doc/attention
+    # §6). SSD-only flags (use_fused_kernel, chunk_size) are silently ignored
+    # for "vssd".
+    variant: str = "mamba3"
     weight_decay: float = 0.05
     # When set, install_mamba3 swaps only these flat layer indices
     # (0..N_bb-1 backbone, N_bb..N_bb+N_cam-1 cam_enc).
@@ -421,13 +426,13 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
     student = load_da3(DEFAULT_HF_MODEL, device=cfg.device)
     if not cfg.no_mamba3_swap:
         install_mamba3(
-            student.model, which="all", state_dim=cfg.state_dim,
+            student.model, which="all", variant=cfg.variant, state_dim=cfg.state_dim,
             use_fused_kernel=cfg.use_fused_kernel, chunk_size=cfg.chunk_size,
             layer_indices=cfg.swap_layers,
         )
         n_swapped = count_mamba3_attn(student.model)
         layer_tag = f" (layers={cfg.swap_layers})" if cfg.swap_layers is not None else ""
-        print(f"[train_super] swapped {n_swapped} attentions{layer_tag}", flush=True)
+        print(f"[train_super] swapped {n_swapped} attentions [variant={cfg.variant}]{layer_tag}", flush=True)
     if cfg.no_mamba3_swap and cfg.sub_phase == 1:
         raise ValueError(
             "no_mamba3_swap with sub=1 (attn_only) trains zero parameters: "
@@ -604,6 +609,10 @@ def main() -> None:
     ap.add_argument("--decay-steps", type=int, default=100)
     ap.add_argument("--chunk-size", type=int, default=128)
     ap.add_argument("--state-dim", type=int, default=64)
+    ap.add_argument("--variant", choices=["mamba3", "vssd"], default="mamba3",
+                    help="Mamba-3 attention variant. 'mamba3' (default) = full SSD with "
+                    "bidirectional + trapezoidal mask. 'vssd' = NC-SSD (doc/attention §6) — "
+                    "single global state, no T×T mask, ~1.5× faster than SSD on CIFAR-10.")
     # Per-scene overfit (PLAN §15.59) — when --scene-overfit is set, super must be 3.
     ap.add_argument("--scene-overfit", type=str, default=None,
                     help="Scene name (e.g. 'terrains'). Activates per-scene overfit mode.")
@@ -673,6 +682,7 @@ def main() -> None:
         decay_steps=args.decay_steps,
         chunk_size=args.chunk_size,
         state_dim=args.state_dim,
+        variant=args.variant,
         scene_overfit=args.scene_overfit,
         scene_dataset=args.scene_dataset,
         train_frac=args.train_frac,
