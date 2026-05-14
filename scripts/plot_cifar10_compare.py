@@ -27,19 +27,22 @@ VARIANT_LABEL = {
     "cnn": "CNN (small ResNet)",
     "vit_attn": "ViT-Tiny + softmax",
     "vit_mamba3": "ViT-Tiny + Mamba-3 SSD",
+    "vit_mamba3_vssd": "ViT-Tiny + Mamba-3 NC-SSD (VSSD)",
 }
 # Shorter labels for narrow bar-chart panels (avoids tick-label overlap).
 VARIANT_LABEL_SHORT = {
     "cnn": "CNN",
     "vit_attn": "ViT + softmax",
     "vit_mamba3": "ViT + Mamba-3",
+    "vit_mamba3_vssd": "ViT + Mamba-3 NC-SSD",
 }
 VARIANT_COLOR = {
     "cnn": "#1f77b4",
     "vit_attn": "#ff7f0e",
     "vit_mamba3": "#2ca02c",
+    "vit_mamba3_vssd": "#d62728",
 }
-VARIANT_ORDER = ("cnn", "vit_attn", "vit_mamba3")
+VARIANT_ORDER = ("cnn", "vit_attn", "vit_mamba3", "vit_mamba3_vssd")
 CIFAR10_TRAIN_N = 50_000
 
 

@@ -468,3 +468,106 @@ CNNs have low but heavily structured mixing (locality + weight sharing). Softmax
 - **At short T, accept that SSD trades accuracy for efficiency.** The depth task at DA3-SMALL's current sequence length is closer to "short T" than "long T," so the 1.27× gap is partly a real-capacity tax. Distillation/recipe tuning can shrink but probably not erase it.
 
 The CIFAR-10 sanity check did its job: it ruled out "depth gap is purely recipe noise" and located a concrete architectural reason. Continuing investment in the swap is justified primarily by §9.10's efficiency story (long-T scaling), not by hopes of accuracy parity at short T.
+
+## §11. VSSD (Mamba-3 NC-SSD) operator — implementation and comparison
+
+Driven by the theory in `doc/attention/mamba3_attention.tex §6` (commit `605e29d`): VSSD's Non-Causal SSD reduces the Mamba-3 mask `L` (T×T) to a per-token vector `m` and collapses bidirectional SSD to a single global N×d hidden state, giving the closed form `Y = C · ((B ⊙ m)ᵀ X)`. The promise on the page is "faster than SSD, parity-or-better accuracy" on vision tasks. This section is the empirical check on small ViT-Tiny / CIFAR-10.
+
+### §11.1. Implementation
+
+Operator-only swap, mirroring how `vit_mamba3` was built — same `ViTTiny(patch=4)` skeleton, only `block.attn` changes. Files touched:
+
+- **New operator**: `src/mamba3_attn/mamba3/vssd_attention.py` — `Mamba3VSSDAttention`. Two einsums: `H = Σ_t (B⊙m)_t ⊗ V_t` then `Y = C·H`. No T×T mask, no Triton kernel, CPU-compatible.
+- **m parameterization**: `m = softplus(-A_raw)` where `A_raw` is the same projection that produces `A_log` for SSD. VSSD §3.2's note that `A` and `1/A` share the same range lets us learn `m` directly through the existing scalar projection, so the parameter inventory is identical to `Mamba3SelfAttention`.
+- **2-D RoPE** is applied to `B` and `C` before the einsum (`doc §6.6` item 3) when the surrounding model passes positions. In CIFAR-10 ViT-Tiny the wrapper calls `attn(x)` with no `pos`, so RoPE is a no-op — same as `vit_mamba3`. Apples-to-apples.
+- **DA3 adapter**: `Mamba3VSSDAdapter` in `da3_adapter.py`, same signature as `Mamba3Attention`.
+- **Dispatch**: `install_mamba3(..., variant="vssd")` routes to the new adapter; `"mamba3"` keeps the original SSD path. SSD-only flags (`bidirectional`, `three_term`, `chunk_size`, `use_fused_kernel`) are accepted-and-ignored by NC-SSD.
+- **CIFAR-10 script**: new variant `vit_mamba3_vssd` in `scripts/cifar10_compare.py`, swap via `install_mamba3(model, which="backbone_only", variant="vssd")`.
+- **Unit tests**: `tests/unit/test_vssd_attention.py` — shape, closed-form match, non-causality (∂y[0]/∂x[T-1] ≠ 0), 2-D RoPE differentiates positions, attn_mask zeroes out tokens, CPU path. All 7 tests pass (60/60 across the suite — no regression).
+
+### §11.2. Results — four-variant comparison across three recipes
+
+All three recipes run with the same script, same seed (42), same patch-size=4 (T=65), same batch=128, same data augmentation (RandomCrop+HFlip) — only the optimizer schedule differs. The prior CNN / ViT-softmax / Mamba-3-SSD numbers are reused from `outputs/cifar10_compare*/results.json` (untouched); the new VSSD runs are in `outputs/cifar10_compare_vssd_*/`. Merged 4-variant `results.json` and regenerated plots are in `outputs/cifar10_compare_*_with_vssd/`.
+
+#### §11.2.1. Cosine, 50 ep, lr 1e-3 (`outputs/cifar10_compare_cosine_with_vssd/`)
+
+| Variant | Params (M) | Best test acc | Train s/epoch | Test lat (ms, B=128) | Peak MiB |
+|---|---:|---:|---:|---:|---:|
+| CNN (small ResNet) | 2.78 | **93.69** | 6.2 | 7.68 | 221.4 |
+| ViT-Tiny + softmax | 2.69 | 82.50 | 5.8 | 6.73 | 126.9 |
+| ViT-Tiny + Mamba-3 SSD | 2.71 | 44.59 | 15.0 | 13.73 | 153.5 |
+| **ViT-Tiny + Mamba-3 NC-SSD (VSSD)** | 2.71 | **77.32** | 10.0 | 8.64 | 127.2 |
+
+**Δ (VSSD vs SSD): +32.7 pp test acc, −5.1 ms latency, −26.3 MiB peak.** The SSD collapse at this aggressive LR (§9.6) — where it underperforms a random baseline of 10 % only by virtue of training — is absent in NC-SSD. Without the structured mask `L` to drive into degenerate decay regimes, the operator simply doesn't have that failure mode here.
+
+#### §11.2.2. Mamba-friendly, 80 ep, lr 3e-4, warmup 10, grad-clip 1.0 (`outputs/cifar10_compare_mamba_recipe_with_vssd/`)
+
+CNN and ViT-softmax for this recipe were not on file (`outputs/cifar10_compare_mamba_recipe/` only had `vit_mamba3`); they were trained as a one-time top-up in `outputs/cifar10_compare_mamba_recipe_topup/`. SSD and VSSD reuse the same recipe.
+
+| Variant | Params (M) | Best test acc | Train s/epoch | Test lat (ms, B=128) | Peak MiB |
+|---|---:|---:|---:|---:|---:|
+| CNN (small ResNet) | 2.78 | **93.16** | 7.1 | 8.29 | 221.4 |
+| ViT-Tiny + softmax | 2.69 | 82.24 | 6.1 | 8.09 | 126.9 |
+| ViT-Tiny + Mamba-3 SSD | 2.71 | 70.04 | 15.0 | 13.94 | 153.5 |
+| **ViT-Tiny + Mamba-3 NC-SSD (VSSD)** | 2.71 | **73.73** | 10.1 | 9.48 | 127.2 |
+
+**Δ (VSSD vs SSD): +3.7 pp test acc, −4.5 ms latency, −26.3 MiB peak.** Modest accuracy gain, same efficiency win.
+
+#### §11.2.3. Plateau, 80 ep, lr 3e-4, warmup 10, grad-clip 1.0, factor 0.5, patience 5 (`outputs/cifar10_compare_plateau_with_vssd/`)
+
+This is the strongest recipe for `vit_mamba3` from §9.9.
+
+| Variant | Params (M) | Best test acc | Train s/epoch | Test lat (ms, B=128) | Peak MiB |
+|---|---:|---:|---:|---:|---:|
+| CNN (small ResNet) | 2.78 | **91.84** | 6.3 | 7.18 | 221.4 |
+| ViT-Tiny + softmax | 2.69 | 81.23 | 6.1 | 7.21 | 126.9 |
+| ViT-Tiny + Mamba-3 SSD | 2.71 | **83.66** | 15.2 | 14.11 | 153.5 |
+| ViT-Tiny + Mamba-3 NC-SSD (VSSD) | 2.71 | 75.06 | 9.5 | 9.38 | 127.2 |
+
+**Δ (VSSD vs SSD): −8.6 pp test acc, −4.7 ms latency, −26.3 MiB peak.** The first recipe where SSD beats VSSD on accuracy — by a wide margin. The efficiency advantage persists unchanged.
+
+### §11.3. Headline summary across recipes
+
+| Metric | Cosine | Mamba | Plateau |
+|---|---:|---:|---:|
+| VSSD test acc | 77.32 % | 73.73 % | 75.06 % |
+| SSD  test acc | 44.59 % | 70.04 % | 83.66 % |
+| Δ (VSSD − SSD) | **+32.7 pp** | **+3.7 pp** | **−8.6 pp** |
+| VSSD latency | 8.64 ms | 9.48 ms | 9.38 ms |
+| SSD  latency | 13.73 ms | 13.94 ms | 14.11 ms |
+| VSSD peak | 127.2 MiB | 127.2 MiB | 127.2 MiB |
+| SSD  peak | 153.5 MiB | 153.5 MiB | 153.5 MiB |
+
+Two consistent stories:
+
+- **Efficiency is a clean win.** NC-SSD is ~1.5× faster than SSD on every recipe (≈9 ms vs ≈14 ms, ~33 % faster). Peak memory is **17 % lower than SSD** and matches softmax to within 0.3 MiB — exactly what the theory predicts (the T×T mask is gone, state is now O(N·d) per head instead of O(T²)). Train time per epoch drops from ~15 s to ~10 s.
+- **Accuracy is recipe-dependent.** VSSD is much more *robust* across recipes than SSD: VSSD swings 73.7 % → 77.3 % across the three settings, while SSD swings 44.6 % → 83.7 %. Where SSD's structured mask `L` and bidirectional scan amplify a strong recipe, NC-SSD's single global state is less sensitive — for better (cosine, where SSD collapsed) and for worse (plateau, where SSD shone).
+
+### §11.4. Figures
+
+Comparison plots (auto-generated by `scripts/plot_cifar10_compare.py` from the merged `results.json`):
+
+- **Cosine 50 ep**: `outputs/cifar10_compare_cosine_with_vssd/{loss_vs_steps,efficiency_comparison,lr_curves}.png`
+- **Mamba 80 ep**: `outputs/cifar10_compare_mamba_recipe_with_vssd/{loss_vs_steps,efficiency_comparison,lr_curves}.png`
+- **Plateau 80 ep**: `outputs/cifar10_compare_plateau_with_vssd/{loss_vs_steps,efficiency_comparison,lr_curves}.png`
+
+Each `efficiency_comparison.png` shows 4 bars per panel (params, latency, peak mem, train s/epoch) in the canonical variant order (CNN, ViT-softmax, ViT-Mamba-3-SSD, ViT-Mamba-3-NC-SSD); each `loss_vs_steps.png` overlays the four train/test loss curves.
+
+### §11.5. Interpretation and follow-ups
+
+**On the §11 sign-off criteria** (plan: "NC-SSD must be faster than SSD on plateau AND within ±2 pp accuracy on plateau"):
+
+- ✅ Faster on plateau (−4.7 ms latency, −26 MiB peak).
+- ❌ Within ±2 pp on plateau (−8.6 pp).
+
+So one half of the sign-off fails. But the larger picture is more nuanced than a single recipe verdict:
+
+1. **VSSD beats SSD on 2 of 3 recipes**, and by a large margin (+32.7 pp) on the off-the-shelf setting (cosine, lr=1e-3). For the common "drop into a vision pipeline with default ViT hyperparameters" workflow, NC-SSD is more robust than full SSD.
+
+2. **The efficiency win is unconditional.** ~33 % less compute per token, ~17 % less peak memory. For latency-sensitive applications (real-time inference, large-batch eval), NC-SSD is the better operator regardless of accuracy.
+
+3. **The plateau accuracy gap is real but explicable from theory.** Doc §6.4 already calls this out: NC-SSD = Mamba-3 with α≡1, β≡0, γ↦m. The trapezoidal β and the per-pair relative bias from the structured `L` are gone. Under a well-tuned plateau recipe — where SSD is operating in its sweet spot — those extras genuinely matter. This is the trade flagged in §6.7 ("per-pair adaptivity: yes for SSD, no for NC-SSD").
+
+**For the depth-task connection (§10.8):** NC-SSD's efficiency profile is even closer to softmax than SSD's was, while keeping the linear-time scaling. At long T (the patch_size=1 regime in §9.10, where vit_attn already costs 331 ms / 3.6 GiB at B=128), NC-SSD's O(T·N·d) compute and O(N·d) state should outperform both softmax (O(T²)) and SSD (O(T²) for the mask materialization). The next concrete experiment is the patch_size=1 long-T comparison with VSSD added — that should be where NC-SSD wins outright. **Status: not yet run; this section closes the patch-size=4 sweep.**
+
+**Out of scope and deliberately not implemented:** VSSD's image-block extras from §6.6 of the theory note — LPU (DWConv 3×3 around NC-SSD and FFN), hybrid MSA in the last stage, overlapped downsampling. Per the §11 plan, operator-only swap; the goal here is to isolate the NC-SSD operator's contribution from architectural choices.

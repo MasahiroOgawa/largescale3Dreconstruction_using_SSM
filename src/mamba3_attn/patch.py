@@ -21,7 +21,14 @@ from typing import Literal
 
 from torch import nn
 
-from .da3_adapter import Mamba3Attention
+from .da3_adapter import Mamba3Attention, Mamba3VSSDAdapter
+
+# Map variant name → DA3-shaped attention class. Adding a new variant means
+# extending this dict and (if needed) the inner operator in mamba3/.
+_VARIANT_CLASSES: dict[str, type[nn.Module]] = {
+    "mamba3": Mamba3Attention,
+    "vssd": Mamba3VSSDAdapter,
+}
 
 
 def _infer_num_heads(attn: nn.Module) -> int:
@@ -42,10 +49,11 @@ def _infer_dim(attn: nn.Module) -> int:
 
 def _swap_attn(
     block: nn.Module, *,
+    variant: Literal["mamba3", "vssd"] = "mamba3",
     state_dim: int = 64, bidirectional: bool = True, three_term: bool = True,
     use_fused_kernel: bool = True, chunk_size: int | None = None,
 ) -> None:
-    """Replace `block.attn` in-place with a Mamba3Attention of matching (dim, num_heads)."""
+    """Replace `block.attn` in-place with the variant attention class of matching (dim, num_heads)."""
     if not hasattr(block, "attn"):
         return
     old = block.attn
@@ -55,7 +63,8 @@ def _swap_attn(
     proj_bias = True
     if hasattr(old, "proj") and isinstance(old.proj, nn.Linear):
         proj_bias = old.proj.bias is not None
-    new = Mamba3Attention(
+    cls = _VARIANT_CLASSES[variant]
+    new = cls(
         dim=dim,
         num_heads=num_heads,
         proj_bias=proj_bias,
@@ -96,6 +105,7 @@ def _backbone_blocks(net: nn.Module) -> list[nn.Module] | None:
 def install_mamba3(
     net: nn.Module,
     which: Literal["backbone_only", "all"] = "all",
+    variant: Literal["mamba3", "vssd"] = "mamba3",
     state_dim: int = 64,
     bidirectional: bool = True,
     three_term: bool = True,
@@ -103,7 +113,7 @@ def install_mamba3(
     chunk_size: int | None = None,
     layer_indices: list[int] | None = None,
 ) -> int:
-    """Swap self/cross attention to Mamba-3 across the DA3 network.
+    """Swap self/cross attention to a Mamba-3-family operator across the DA3 network.
 
     Args:
         net: typically `da3.model` (a DA3 net), or any net with a backbone
@@ -112,7 +122,13 @@ def install_mamba3(
             - "backbone_only": swap only backbone blocks (12 in DA3-SMALL).
             - "all" (default): also swap `cam_enc.trunk[i].attn` (4 more blocks
               in DA3-SMALL — camera-encoder self-attention on input cam tokens).
-        state_dim, bidirectional, three_term: forwarded to Mamba3Attention.
+        variant: operator family to install.
+            - "mamba3" (default): full Mamba-3 SSD (`Mamba3Attention`) with
+              bidirectional scans and trapezoidal three-term mask.
+            - "vssd": Non-Causal SSD (`Mamba3VSSDAdapter`); the SSD-only flags
+              `bidirectional`, `three_term`, `chunk_size`, `use_fused_kernel`
+              are silently ignored.
+        state_dim, bidirectional, three_term: forwarded to the variant class.
         layer_indices: when set, restricts the swap to these flat indices.
             Numbering covers backbone first (0..N_bb-1), then cam_enc trunk
             (N_bb..N_bb+N_cam-1). When None, all layers covered by `which` are
@@ -121,10 +137,14 @@ def install_mamba3(
     Returns:
         number of attention modules swapped.
     """
-    count = 0
+    if variant not in _VARIANT_CLASSES:
+        raise ValueError(f"unknown variant: {variant!r}; expected one of {list(_VARIANT_CLASSES)}")
 
-    kw = dict(state_dim=state_dim, bidirectional=bidirectional, three_term=three_term,
-              use_fused_kernel=use_fused_kernel, chunk_size=chunk_size)
+    count = 0
+    target_cls = _VARIANT_CLASSES[variant]
+    kw = dict(variant=variant, state_dim=state_dim, bidirectional=bidirectional,
+              three_term=three_term, use_fused_kernel=use_fused_kernel,
+              chunk_size=chunk_size)
 
     indices = set(layer_indices) if layer_indices is not None else None
 
@@ -143,7 +163,7 @@ def install_mamba3(
                 flat_idx = n_bb + j
                 if indices is not None and flat_idx not in indices:
                     continue
-                if hasattr(block, "attn") and not isinstance(block.attn, Mamba3Attention):
+                if hasattr(block, "attn") and not isinstance(block.attn, target_cls):
                     _swap_attn(block, **kw)
                     count += 1
 
@@ -151,4 +171,7 @@ def install_mamba3(
 
 
 def count_mamba3_attn(net: nn.Module) -> int:
-    return sum(1 for m in net.modules() if isinstance(m, Mamba3Attention))
+    return sum(
+        1 for m in net.modules()
+        if isinstance(m, tuple(_VARIANT_CLASSES.values()))
+    )

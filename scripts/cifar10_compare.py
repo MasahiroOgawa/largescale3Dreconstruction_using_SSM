@@ -47,7 +47,7 @@ CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR10_STD = (0.2470, 0.2435, 0.2616)
 CIFAR10_TRAIN_N = 50_000
 
-VARIANTS = ("cnn", "vit_attn", "vit_mamba3")
+VARIANTS = ("cnn", "vit_attn", "vit_mamba3", "vit_mamba3_vssd")
 
 
 def set_seed(seed: int) -> None:
@@ -216,6 +216,13 @@ def build_model(variant: str, patch_size: int = 4, mamba_chunk_size: int | None 
             raise RuntimeError("install_mamba3 swapped 0 modules; backbone.blocks not found")
         chunk_str = "naive O(T²)" if mamba_chunk_size is None else f"chunked, chunk={mamba_chunk_size}"
         print(f"  [vit_mamba3] swapped {n_swapped} attention modules → Mamba3Attention ({chunk_str})")
+        return model
+    if variant == "vit_mamba3_vssd":
+        model = Classifier(ViTTiny(patch=patch_size), num_classes)
+        n_swapped = install_mamba3(model, which="backbone_only", variant="vssd")
+        if n_swapped == 0:
+            raise RuntimeError("install_mamba3 swapped 0 modules; backbone.blocks not found")
+        print(f"  [vit_mamba3_vssd] swapped {n_swapped} attention modules → Mamba3VSSDAdapter (NC-SSD)")
         return model
     raise ValueError(f"unknown variant: {variant}")
 
@@ -524,7 +531,8 @@ def evaluate_gate(results: dict) -> dict:
 
 def write_summary_md(out: Path, results: dict, args) -> None:
     label = {"cnn": "CNN (small ResNet)", "vit_attn": "ViT-Tiny + softmax",
-             "vit_mamba3": "ViT-Tiny + Mamba-3 SSD"}
+             "vit_mamba3": "ViT-Tiny + Mamba-3 SSD",
+             "vit_mamba3_vssd": "ViT-Tiny + Mamba-3 NC-SSD (VSSD)"}
     lines = [
         "# CIFAR-10 compare — summary",
         "",
@@ -537,7 +545,7 @@ def write_summary_md(out: Path, results: dict, args) -> None:
         "| Variant | Params (M) | Train Acc | Test Acc | Train s/epoch | Test lat (ms, B=128) | Peak MiB |",
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
-    for variant in ("cnn", "vit_attn", "vit_mamba3"):
+    for variant in ("cnn", "vit_attn", "vit_mamba3", "vit_mamba3_vssd"):
         if variant not in results:
             continue
         r = results[variant]

@@ -45,9 +45,11 @@ from .mask import build_cross_mask, build_three_term_mask, build_two_term_mask
 from .projections import AttentionProjections, BCNorm
 from .rope2d import RoPE2D
 from .self_attention import Mamba3SelfAttention
+from .vssd_attention import Mamba3VSSDAttention, vssd_forward
 
 __all__ = [
     "Mamba3SelfAttention",
+    "Mamba3VSSDAttention",
     "Mamba3CrossAttention",
     "RoPE2D",
     "AttentionProjections",
@@ -55,4 +57,5 @@ __all__ = [
     "build_two_term_mask",
     "build_three_term_mask",
     "build_cross_mask",
+    "vssd_forward",
 ]
