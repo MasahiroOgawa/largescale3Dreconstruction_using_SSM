@@ -8,3 +8,4 @@
 - [Never re-run a training that already produced its outputs](memory/feedback_never_rerun_training.md) — same recipe + seed + scene ⇒ reuse existing ckpts/eval logs; pass `--variants` to skip already-done variants
 - [Default loss form is original DA3, never Kendall-Gal](memory/feedback_da3_loss_default.md) — never pass `--use-kendall-gal` unless the user explicitly asks; CLI default is the paper form `c·|err| − λ·log(c)`
 - [Only notify on final output, not per step](memory/feedback_only_final_output.md) — for long runs, stay silent through intermediate events; respond at completion, real failure, or user query
+- [Avoid persistent `cd` in bash](memory/feedback_avoid_persistent_cd.md) — `cd <dir> && cmd` changes cwd for all later calls; use `make -C` or absolute paths instead
