@@ -176,6 +176,11 @@ Using only the objects above, we will:
         self/cross-attention blocks to build an image encoder; then
         combine several views via cross-view attention for the 3-D
         setting (Section~\ref{sec:images}).
+  \item Derive the \emph{non-causal SSD} (NC-SSD) of \cite{vssd}
+        as an algebraic alternative to bidirectional scans, and show
+        that it collapses the structured $T\times T$ mask $\bm{L}$ to
+        a single learned $T$-vector $\bm{m}$
+        (Section~\ref{sec:ncssd}).
 \end{enumerate}
 
 %% ================================================================
@@ -770,6 +775,241 @@ much larger than the query view, or is reused across many queries
 encoding).
 
 %% ================================================================
+\section{Non-Causal SSD and the VSSD Image Model}
+\label{sec:ncssd}
+%% ================================================================
+
+The bidirectional and multi-direction scans of \S\ref{sec:bidi}
+remove causality by \emph{repeating} the SSD kernel along several
+permutations of the token order. \cite{vssd} (VSSD, ICCV~2025)
+proposes an alternative that removes causality \emph{at the algebraic
+level}, so a single forward pass already yields a non-causal,
+position-independent operator. We derive their construction from the
+two-term recurrence \eqref{eq:rec2} using only the algebra of
+Section~\ref{sec:ssd}, then describe the resulting image block.
+
+\subsection{The reinterpretation of $A_t$}
+
+Recall \eqref{eq:rec2}, $\bm{h}_t = \alpha_t\,\bm{h}_{t-1}
++ \gamma_t\,\bm{B}_t\bm{x}_t$ with $\alpha_t = e^{\Delta_t A_t}\in
+(0,1)$ controlling \emph{how much of the previous state is retained}.
+\cite{vssd} observe that in the SSD form, $A_t$ is a learned,
+data-dependent scalar with no a priori meaning: one is equally free to
+make it modulate the \emph{current} contribution instead. Concretely,
+fix the previous-state multiplier to $1$ and divide the input weight
+by $A_t$:
+\begin{equation}\label{eq:nc-rec}
+  \bm{h}_t \;=\; \bm{h}_{t-1} \;+\; \tfrac{1}{A_t}\,\bm{B}_t\bm{x}_t,
+  \qquad \bm{h}_0 = \bm{0},
+\end{equation}
+which is \cite{vssd}~eq.~(7). Unrolling \eqref{eq:nc-rec} with
+$\bm{h}_0=\bm{0}$,
+\begin{equation}\label{eq:nc-unroll}
+  \bm{h}_t \;=\; \sum_{i=1}^{t} \tfrac{1}{A_i}\,\bm{B}_i\bm{x}_i.
+\end{equation}
+Compared with \eqref{eq:un-claim}, the multiplicative decay
+$\prod_{k=j+1}^{t}\alpha_k$ has been replaced by a flat $1$: a token's
+contribution to the state no longer depends on \emph{when} it
+arrives, only on its own coefficient $1/A_i$. The mechanism is now
+\emph{self-referential}: each token decides its own weight.
+
+\subsection{Bidirectional NC-SSD collapses to a global hidden state}
+
+The recurrence \eqref{eq:nc-unroll} is still causal in the sense that
+$\bm{h}_t$ sums only over $i\le t$. Run it once forward and once
+backward and sum, exactly as in \eqref{eq:bidi2}, defining
+$\bm{Z}_j := \bm{B}_j\bm{x}_j^\top \in \mathbb{R}^{N\times D}$ (the
+outer product appearing in \eqref{eq:Hrec}):
+\begin{align}
+  \bm{H}_i^{\,\to}        &= \sum_{j=1}^{i}\tfrac{1}{A_j}\bm{Z}_j, \\
+  \bm{H}_i^{\,\leftarrow} &= \sum_{j=i}^{L}\tfrac{1}{A_j}\bm{Z}_j, \\
+  \bm{H}_i^{\,\text{bi}}  &= \bm{H}_i^{\,\to} + \bm{H}_i^{\,\leftarrow} - \tfrac{1}{A_i}\bm{Z}_i
+                          \;=\; \sum_{j=1}^{L}\tfrac{1}{A_j}\bm{Z}_j. \label{eq:nc-bi}
+\end{align}
+The $-\tfrac{1}{A_i}\bm{Z}_i$ correction removes the double counting
+of $j=i$. The last equality is the key observation of
+\cite{vssd}: the bidirectional NC-SSD hidden state is
+\emph{independent of $i$}. Writing
+\begin{equation}\label{eq:nc-H}
+  \bm{H} \;:=\; \sum_{j=1}^{L}\tfrac{1}{A_j}\bm{Z}_j
+       \;=\; \sum_{j=1}^{L}\tfrac{1}{A_j}\,\bm{B}_j\,\bm{x}_j^\top
+       \;\in\;\mathbb{R}^{N\times D},
+\end{equation}
+every output token reads from the \emph{same} compressed context
+$\bm{H}$. \cite{vssd}~eq.~(8) further notes that the self-term
+$\tfrac{1}{A_i}\bm{Z}_i$ is redundant with the block's skip
+connection, so in practice one keeps the simpler global form
+\eqref{eq:nc-H} and skips the correction.
+
+\subsection{Closed form: $\bm{Y} = \bm{C}\bigl((\bm{B}\odot\bm{m})^\top\bm{X}\bigr)$}
+
+Let $\bm{m}\in\mathbb{R}^{L}$ with $m_j := 1/A_j$, and write $\bm{B}\odot\bm{m}$
+for the matrix whose $j$-th row is $m_j\,\bm{B}_j$ (i.e.\ $\bm{m}$
+broadcast along the $N$-axis). The output equation
+$\bm{y}_t = \bm{C}_t^\top\bm{H}$ stacks to
+\begin{equation}\label{eq:nc-Y}
+  \boxed{\;\bm{Y} \;=\; \bm{C}\,\bm{H} \;=\; \bm{C}\bigl((\bm{B}\odot\bm{m})^\top\bm{X}\bigr),\;}
+\end{equation}
+which is \cite{vssd}~eq.~(10). Shape check:
+$(\bm{B}\odot\bm{m})^\top\in\mathbb{R}^{N\times L}$, $\bm{X}\in
+\mathbb{R}^{L\times D}$, product is $\mathbb{R}^{N\times D}$, and
+$\bm{C}\in\mathbb{R}^{L\times N}$ times that is
+$\mathbb{R}^{L\times D}$, as required.
+
+Comparing \eqref{eq:nc-Y} with the SSD identity
+\eqref{eq:ssd-derived},
+\begin{equation}
+  \bm{Y}_{\text{SSD}} \;=\; \bigl(\bm{L}\odot\bm{C}\bm{B}^\top\bigr)\bm{X},
+  \qquad
+  \bm{Y}_{\text{NC-SSD}} \;=\; \bm{C}\bigl((\bm{B}\odot\bm{m})^\top\bm{X}\bigr),
+\end{equation}
+the $T\times T$ structured mask $\bm{L}$ has been replaced by a
+$T$-vector $\bm{m}$ that column-scales $\bm{B}$. The two operations
+are no longer of the same shape:
+\begin{itemize}
+  \item SSD pays $O(T^2 N)$ to form $\bm{L}\odot\bm{C}\bm{B}^\top$,
+        then $O(T^2 D)$ to multiply by $\bm{X}$, with state of size
+        $\bm{L}$ ($\Theta(T^2)$ if materialized).
+  \item NC-SSD pays $O(TND)$ to form $\bm{H}$, then $O(TND)$ for
+        $\bm{C}\bm{H}$, with state of size $\bm{H}\in\mathbb{R}^{N\times D}$
+        ($O(ND)$, \emph{independent of $T$}).
+\end{itemize}
+The price is uniformity: every query reads the same global summary
+$\bm{H}$, so the per-pair relative weight that $\bm{L}_{ij}$ encodes
+in SSD is gone. \cite{vssd} argues this is a correct trade for
+images, where no $1$-D distance is meaningful anyway.
+
+\paragraph{Practical note on parameterization.} \cite{vssd}~\S 3.2
+remarks that since $A_t$ and $1/A_t$ span the same range of values up
+to inversion, it is numerically simpler to learn $\bm{m}$ directly
+(equivalently, to learn $A$ via the existing projection
+\eqref{eq:projA} and then treat its output as $\bm{m}$). The two
+parameterizations differ only in the optimization geometry.
+
+\subsection{Relation to Mamba-3}\label{sec:ncssd-mamba3}
+
+VSSD is built on Mamba-2 (scalar $A$, two-term recurrence). The
+non-causality argument carries over to Mamba-3 unchanged: at the SSD
+level, both Mamba-2's \eqref{eq:L2} and Mamba-3's \eqref{eq:L3} have
+the same shape $\bm{Y} = (\bm{L}\odot\bm{C}\bm{B}^\top)\bm{X}$, and
+setting $\alpha_t \equiv 1$, $\gamma_t \mapsto 1/A_t$, $\beta_t \equiv 0$
+turns \eqref{eq:L3} into the rank-one mask $\bm{L}_{ij} = m_j$, which
+factors out of the Hadamard product:
+\begin{equation}
+  \bm{L}_{ij} = m_j
+  \;\Longrightarrow\;
+  \bm{L}\odot\bm{C}\bm{B}^\top
+     = \bm{C}\,(\bm{B}\odot\bm{m})^\top,
+\end{equation}
+recovering \eqref{eq:nc-Y}. The Mamba-3 extras compose cleanly on top
+of NC-SSD:
+\begin{itemize}
+  \item The RoPE trick of \S\ref{sec:rope} still applies: rotate
+        $\bm{B}_j, \bm{C}_i$ by $\bm{R}_{\le j}, \bm{R}_{\le i}$ before
+        \eqref{eq:nc-Y}, and the inner product
+        $\widetilde{\bm{C}}_i^\top \widetilde{\bm{B}}_j$ carries relative
+        positional information. With the 2-D factorization
+        \eqref{eq:rope2d}, this becomes the 2-D RoPE used by VSSD.
+  \item The MIMO extension of \S\ref{sec:mimo} carries over by
+        replicating \eqref{eq:nc-Y} per head: $\bm{Y}^{(i)} =
+        \bm{C}^{(i)}\bigl((\bm{B}^{(j)}\odot\bm{m})^\top\bm{X}^{(j)}\bigr)$,
+        summed over $j$.
+\end{itemize}
+The trapezoidal three-term form \eqref{eq:rec3} does \emph{not}
+survive the NC reduction: $\beta_t$ implements a two-band relative
+bias that fundamentally depends on $i,j$ separation, which the
+single-vector $\bm{m}$ cannot represent. VSSD-style NC-SSD is thus
+strictly a Mamba-2-style reduction of Mamba-3 — useful when the
+mask's expressivity is not needed (Section~\ref{sec:ncssd-when}).
+
+\subsection{Tensor-contraction algorithm}\label{sec:ncssd-tensor}
+
+\cite{vssd}~eq.~(9) writes \eqref{eq:nc-Y} as three einsum
+contractions, which matches the standard SSD kernel up to one
+collapsing step:
+\begin{align}
+  \bm{Z} &= \mathrm{contract}(LD, LN \to LND)(\bm{X}, \bm{B}), \label{eq:nc-Z}\\
+  \bm{H} &= \mathrm{contract}(L, LND \to ND)(\bm{m}, \bm{Z}), \label{eq:nc-H2}\\
+  \bm{Y} &= \mathrm{contract}(LN, ND \to LD)(\bm{C}, \bm{H}). \label{eq:nc-Y2}
+\end{align}
+Step~\eqref{eq:nc-Z} expands each token to its outer product
+$\bm{B}_j\bm{x}_j^\top$; step~\eqref{eq:nc-H2} reduces the $L$ axis
+into the single global state $\bm{H}$; step~\eqref{eq:nc-Y2} reads
+the state out per query. Compared with SSD's
+$\mathrm{contract}(LL, LDN \to ND)$ (\cite{vssd}~eq.~(9), top), the
+$LL$ mask has degenerated to an $L$-vector and the algorithm has no
+explicit $T\times T$ tensor at any point.
+
+\subsection{The VSSD image block}
+
+The NC-SSD operator \eqref{eq:nc-Y} replaces the SSD kernel inside an
+otherwise standard vision block. Following \cite{vssd}~\S 3.3:
+\begin{enumerate}
+  \item \textbf{Local Perception Unit (LPU)} \cite{vssd}: a depthwise
+        $3{\times}3$ convolution applied to the patch grid before the
+        NC-SSD and again before the FFN, injecting local 2-D
+        inductive bias on top of the global, position-independent
+        NC-SSD context.
+  \item \textbf{Depth-wise conv 1-D $\to$ 2-D.} The causal Conv1D
+        used inside Mamba-2 between the input and the SSD kernel is
+        replaced by a non-causal depth-wise Conv2D with kernel
+        size~$3$, consistent with the model being non-causal.
+  \item \textbf{2-D RoPE on $\bm{B},\bm{C}$.} The factored angle
+        \eqref{eq:rope2d} is applied to $\bm{C}_i$ and $\bm{B}_j$ before
+        the inner product in \eqref{eq:nc-Y}, restoring the spatial
+        relationship between patches that is otherwise lost in the
+        permutation-invariant global state $\bm{H}$. This is the
+        Mamba-3 RoPE trick of \S\ref{sec:rope} applied to the NC-SSD
+        kernel.
+  \item \textbf{FFN, residual, normalization.} A standard
+        Transformer-style FFN follows the NC-SSD; both the NC-SSD and
+        the FFN are wrapped in residual connections, matching the
+        ViT / Swin block layout rather than Mamba's pre-norm SwiGLU
+        layout.
+  \item \textbf{Hybrid with MSA in the last stage.} The four-stage
+        backbone uses NC-SSD blocks in stages~1--3 and standard
+        softmax MSA in the last stage. The rationale is that early
+        stages have many tokens, where the $O(T)$ scaling of NC-SSD
+        dominates; the last stage has few tokens but high-level
+        semantics, where the per-pair adaptivity of softmax MSA pays
+        off.
+  \item \textbf{Overlapped downsampling} between stages, in the
+        style of \cite{vssd}, replaces the non-overlapped patch
+        merging of VMamba.
+\end{enumerate}
+\paragraph{The vector $\bm{m}$ as a saliency map.} Because $\bm{m}\in
+\mathbb{R}^{L}$ acts as the only token-dependent weight in
+\eqref{eq:nc-Y}, it can be visualized as a 2-D heat map over the patch
+grid. Empirically \cite{vssd} report that $\bm{m}$ concentrates on
+the foreground object of the image — i.e.\ NC-SSD ends up learning a
+saliency-like weighting that the SSD mask $\bm{L}$ never makes
+explicit.
+
+\subsection{When to use NC-SSD versus bidirectional SSD}
+\label{sec:ncssd-when}
+
+\begin{center}
+\begin{tabular}{|l|l|l|}
+\hline
+ & \textbf{Bidirectional SSD} (\S\ref{sec:bidi}) & \textbf{NC-SSD} (this section)\\ \hline
+Mask state         & $O(T^2)$ (or banded fused kernel) & $O(ND)$ \\ \hline
+Compute per layer  & $O(T^2(N+D))\cdot k_{\text{scans}}$ & $O(TND)$ \\ \hline
+Per-pair adaptivity & $\bm{L}_{ij}$ and $\bm{C}_i^\top\bm{B}_j$ & $\bm{C}_i^\top\bm{B}_j$ only \\ \hline
+Position encoding   & decay in $|i-j|$ + RoPE   & RoPE only (decay collapses) \\ \hline
+Typical regime      & moderate $T$, structure-rich tokens & long $T$, vision-style tokens \\ \hline
+\end{tabular}
+\end{center}
+The two are not mutually exclusive: a hybrid stack can use NC-SSD in
+the early, high-resolution stages where $T$ dominates the cost, and
+bidirectional SSD (or softmax MSA, as in VSSD) in deeper stages where
+the mask's per-pair weighting matters. For our multi-view setting
+(\S\ref{sec:multiview}), NC-SSD also offers a free state-compressed
+cross-view block: each view's NC-SSD hidden state
+$\bm{H}^{(v)}\in\mathbb{R}^{N\times D}$ is already in the form that
+\eqref{eq:crossA-out} consumes, so cross-view attention reduces to
+$\bm{C}^{q\,\top}\sum_v \bm{H}^{(v)}$ with no additional kernel.
+
+%% ================================================================
 \section{End-to-End Summary}
 %% ================================================================
 
@@ -790,6 +1030,12 @@ Using only \eqref{eq:ssd-derived}, we have obtained:
         \eqref{eq:cvout}-style blocks and cross-view
         \eqref{eq:Lxview} blocks; or the compressed-state cross
         block \eqref{eq:crossA-out} when one side dominates.
+  \item \textbf{Non-causal SSD (VSSD):} reinterpret $A_t$ as a
+        current-token weight to obtain \eqref{eq:nc-Y},
+        $\bm{Y} = \bm{C}\bigl((\bm{B}\odot\bm{m})^\top\bm{X}\bigr)$,
+        which collapses the $T\times T$ mask $\bm{L}$ to a
+        $T$-vector $\bm{m}$, removes causality without multi-scan,
+        and yields the VSSD image block (Section~\ref{sec:ncssd}).
 \end{itemize}
 
 Every output formula above is a direct application of the single
