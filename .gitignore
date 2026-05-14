@@ -18,3 +18,17 @@ uv.lock
 
 .DS_Store
 .claude/
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.log
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# PDFs (papers + generated outputs; keep source .tex/.md/Makefile)
+*.pdf

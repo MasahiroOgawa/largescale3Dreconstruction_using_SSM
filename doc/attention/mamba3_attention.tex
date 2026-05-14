@@ -1,0 +1,812 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{array}
+\usepackage{bm}
+
+\title{Self-Attention and Cross-Attention via Mamba-3, and Their Application to Images}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note derives, step by step, how the Mamba-3 state space model
+(SSM) can be used as a drop-in replacement for both self-attention and
+cross-attention, and how the resulting attention blocks are assembled
+into an image model. We follow the notation of the Mamba-3 paper
+\cite{mamba3} so every equation can be
+checked against the source. The guiding principle is that every
+algebraic move is shown with its justification. A reader who knows
+matrix multiplication and elementary calculus should be able to follow
+the whole note without guessing.
+\end{abstract}
+
+\tableofcontents
+
+%% ================================================================
+\section{Preliminaries and Notation}
+%% ================================================================
+
+We summarize the symbols used throughout. The names match
+\cite{mamba3}, Section~2 and Section~3.
+
+\subsection{Sizes}
+
+\begin{itemize}
+  \item $T$: sequence length (number of tokens). For images we will
+        set $T = L = HW/P^2$ where $H,W$ are the image height and
+        width and $P$ is the patch size.
+  \item $D$: model (channel) dimension.
+  \item $N$: SSM state dimension (per SSM head).
+  \item $R$: MIMO rank (Mamba-3, \S 3.3). For SISO, $R=1$.
+\end{itemize}
+
+\subsection{Tokens and projections}
+
+\begin{itemize}
+  \item $\bm{X} \in \mathbb{R}^{T\times D}$ is the input sequence;
+        the $t$-th row $\bm{x}_t \in \mathbb{R}^{D}$ is one token.
+  \item $\bm{B}, \bm{C} \in \mathbb{R}^{T\times N}$ are data-dependent
+        projections; the $t$-th rows are $\bm{B}_t, \bm{C}_t \in
+        \mathbb{R}^{N}$.
+  \item $\Delta_t \in \mathbb{R}_{>0}$ is a data-dependent step size.
+  \item $A_t \in \mathbb{R}_{<0}$ is a data-dependent (in Mamba-3) or
+        data-independent (in Mamba-2) scalar that governs decay.
+  \item $\bm{h}_t \in \mathbb{R}^{N}$ is the hidden state at time $t$
+        (SISO; see \S\ref{sec:mimo} for MIMO).
+  \item $\bm{Y} \in \mathbb{R}^{T\times D}$ is the output sequence.
+\end{itemize}
+
+In terms of an input token $\bm{x}_t$, the learned projections are
+\begin{align}
+  \bm{B}_t       &= \bm{W}_B\,\bm{x}_t  & \bm{W}_B &\in \mathbb{R}^{N\times D}, \label{eq:projB}\\
+  \bm{C}_t       &= \bm{W}_C\,\bm{x}_t  & \bm{W}_C &\in \mathbb{R}^{N\times D}, \label{eq:projC}\\
+  \Delta_t       &= \mathrm{Softplus}(\bm{w}_\Delta^\top \bm{x}_t)
+                                         & \bm{w}_\Delta &\in \mathbb{R}^{D}, \label{eq:projD}\\
+  A_t            &= -\mathrm{Softplus}(\bm{w}_A^\top \bm{x}_t)
+                                         & \bm{w}_A &\in \mathbb{R}^{D} \text{ (optional data-dep.)}. \label{eq:projA}
+\end{align}
+Here $\mathrm{Softplus}$ is the smooth, strictly positive activation
+\begin{equation}\label{eq:softplus}
+  \mathrm{Softplus}(z) := \log\bigl(1 + e^{z}\bigr),
+  \qquad \mathrm{Softplus}:\mathbb{R}\to\mathbb{R}_{>0},
+\end{equation}
+so \eqref{eq:projD} guarantees $\Delta_t > 0$ and \eqref{eq:projA}
+guarantees $A_t < 0$, which is what the discretization in
+\eqref{eq:abc} requires for $\alpha_t = e^{\Delta_t A_t} \in (0,1)$.
+
+The value projection that we will feed into the SSM is
+\begin{equation}\label{eq:projV}
+  \bm{v}_t = \mathrm{SiLU}(\bm{W}_V\,\bm{x}_t),
+  \qquad \bm{W}_V \in \mathbb{R}^{D\times D},
+\end{equation}
+where $\mathrm{SiLU}$ (a.k.a.\ Swish) is the smooth, self-gated activation
+\begin{equation}\label{eq:silu}
+  \mathrm{SiLU}(z) := z\,\sigma(z) = \frac{z}{1 + e^{-z}},
+  \qquad
+  \sigma(z) := \frac{1}{1 + e^{-z}},
+\end{equation}
+applied element-wise to the vector $\bm{W}_V\bm{x}_t \in \mathbb{R}^{D}$.
+
+\subsection{RMSNorm and BCNorm}
+\label{sec:bcnorm}
+
+Mamba-3 normalizes the key/query projections $\bm{B}_t,\bm{C}_t$ before
+using them in the SSD kernel. The underlying primitive is
+\emph{RMSNorm} \cite{rmsnorm}, which rescales a vector by its
+root-mean-square (no mean subtraction, unlike LayerNorm):
+\begin{equation}\label{eq:rmsnorm}
+  \mathrm{RMSNorm}(\bm{u}) := \frac{\bm{u}}{\sqrt{\tfrac{1}{N}\sum_{i=1}^{N} u_i^{2} + \varepsilon}}\;\odot\;\bm{g},
+  \qquad \bm{u}\in\mathbb{R}^{N},
+\end{equation}
+where $\bm{g}\in\mathbb{R}^{N}$ is a learnable per-channel gain,
+$\varepsilon>0$ is a small constant, and $\odot$ is the Hadamard
+product. The output has unit RMS up to the learned gain, which
+stabilizes the inner products $\bm{C}_i^\top\bm{B}_j$ that appear in
+\eqref{eq:ssd}.
+
+\emph{BCNorm} (\cite{mamba3} \S 3.4) is simply RMSNorm applied
+independently to $\bm{B}_t$ and $\bm{C}_t$, followed by a learnable
+channel-wise bias:
+\begin{equation}\label{eq:bcnorm}
+  \bm{B}_t \leftarrow \mathrm{RMSNorm}(\bm{B}_t) + \bm{b}_B,
+  \qquad
+  \bm{C}_t \leftarrow \mathrm{RMSNorm}(\bm{C}_t) + \bm{b}_C,
+  \qquad \bm{b}_B,\bm{b}_C \in \mathbb{R}^{N}.
+\end{equation}
+We will write ``apply BCNorm'' as shorthand for the substitution
+\eqref{eq:bcnorm}; each occurrence of $\bm{B}_t,\bm{C}_t$ in later
+equations is understood to be the post-BCNorm version when the
+algorithm calls for it.
+
+\subsection{Recurrence, parallel form, and decay factors}
+
+Mamba-3 uses the \emph{exponential-trapezoidal} discrete recurrence of
+\cite{mamba3} eq.~(5)–(6):
+\begin{equation}\label{eq:rec3}
+  \bm{h}_t = \alpha_t\,\bm{h}_{t-1}
+            + \beta_t\,\bm{B}_{t-1}\bm{x}_{t-1}
+            + \gamma_t\,\bm{B}_t\bm{x}_t,
+  \qquad
+  \bm{y}_t = \bm{C}_t^\top\bm{h}_t,
+\end{equation}
+with the three data-dependent scalars
+\begin{equation}\label{eq:abc}
+  \alpha_t := e^{\Delta_t A_t},
+  \qquad
+  \beta_t  := (1 - \lambda_t)\,\Delta_t\,e^{\Delta_t A_t},
+  \qquad
+  \gamma_t := \lambda_t\,\Delta_t,
+\end{equation}
+where $\lambda_t \in [0,1]$ is a learned, data-dependent convex weight.
+Setting $\lambda_t \equiv 1$ recovers Mamba-2's two-term recurrence
+\begin{equation}\label{eq:rec2}
+  \bm{h}_t = \alpha_t\,\bm{h}_{t-1} + \gamma_t\,\bm{B}_t\,\bm{x}_t,
+  \qquad
+  \bm{y}_t = \bm{C}_t^\top\,\bm{h}_t,
+\end{equation}
+which is \cite{mamba3} eq.~(1). Mamba-3's \emph{parallel} form
+(\cite{mamba3} eq.~(2)) reads
+\begin{equation}\label{eq:ssd}
+  \bm{Y} = \bigl(\bm{L}\odot\bm{C}\bm{B}^\top\bigr)\bm{X},
+\end{equation}
+with $\odot$ the Hadamard product and $\bm{L}\in\mathbb{R}^{T\times T}$
+a structured lower-triangular mask that we derive explicitly in
+Section~\ref{sec:ssd}. This single equation is the bridge between
+recurrences and attention: the next section is devoted to explaining
+exactly why.
+
+\subsection{What this note actually does}
+
+Using only the objects above, we will:
+
+\begin{enumerate}
+  \item Derive \eqref{eq:ssd} from \eqref{eq:rec2} and
+        \eqref{eq:rec3}, and read it as \emph{linear attention with a
+        learned mask} (Section~\ref{sec:ssd}).
+  \item Plug real projections into \eqref{eq:ssd} to get a Mamba-3
+        self-attention block (Section~\ref{sec:self}).
+  \item Repeat for two different sequences and obtain Mamba-3 cross-
+        attention, in two flavours: state-compressed (cheap,
+        constant-memory) and token-level (exact SSD analogue of
+        softmax cross-attention) (Section~\ref{sec:cross}).
+  \item Patchify an image, make the scan bidirectional, and use the
+        self/cross-attention blocks to build an image encoder; then
+        combine several views via cross-view attention for the 3-D
+        setting (Section~\ref{sec:images}).
+\end{enumerate}
+
+%% ================================================================
+\section{Why SSD $\equiv$ linear attention (the duality, derived)}
+\label{sec:ssd}
+%% ================================================================
+
+We derive \eqref{eq:ssd} directly from the recurrence. Work entirely
+with the two-term form \eqref{eq:rec2} first; the three-term form
+\eqref{eq:rec3} is a corollary (\S\ref{sec:trap}).
+
+\subsection{Unrolling the two-term recurrence}
+
+Starting from $\bm{h}_0 = \bm{0}$ and applying \eqref{eq:rec2} once:
+\begin{equation}\label{eq:un1}
+  \bm{h}_1 = \alpha_1\,\bm{h}_0 + \gamma_1\,\bm{B}_1\bm{x}_1
+           = \gamma_1\,\bm{B}_1\bm{x}_1.
+\end{equation}
+Apply it once more:
+\begin{align}
+  \bm{h}_2 &= \alpha_2\,\bm{h}_1 + \gamma_2\,\bm{B}_2\bm{x}_2 \nonumber \\
+           &= \alpha_2\,\gamma_1\,\bm{B}_1\bm{x}_1
+             + \gamma_2\,\bm{B}_2\bm{x}_2. \label{eq:un2}
+\end{align}
+By induction on $t$ we claim
+\begin{equation}\label{eq:un-claim}
+  \bm{h}_t \;=\; \sum_{j=1}^{t}
+     \underbrace{\Bigl(\prod_{k=j+1}^{t}\alpha_k\Bigr)}_{=:\,a_{t\leftarrow j}}
+     \gamma_j\,\bm{B}_j\bm{x}_j,
+\end{equation}
+where by convention an empty product equals $1$ (so
+$a_{t\leftarrow t} = 1$).
+
+\emph{Proof of the induction step.} Assume \eqref{eq:un-claim} at
+time $t-1$. Substitute into \eqref{eq:rec2}:
+\begin{align}
+  \bm{h}_t
+   &= \alpha_t\,\bm{h}_{t-1} + \gamma_t\,\bm{B}_t\bm{x}_t \\
+   &= \alpha_t \sum_{j=1}^{t-1}
+        \Bigl(\prod_{k=j+1}^{t-1}\alpha_k\Bigr)\gamma_j\bm{B}_j\bm{x}_j
+        + \gamma_t\,\bm{B}_t\bm{x}_t \\
+   &= \sum_{j=1}^{t-1}
+        \Bigl(\prod_{k=j+1}^{t}\alpha_k\Bigr)\gamma_j\bm{B}_j\bm{x}_j
+        + \gamma_t\,\bm{B}_t\bm{x}_t
+        \qquad\text{(absorb $\alpha_t$ into the product)}\\
+   &= \sum_{j=1}^{t}
+        \Bigl(\prod_{k=j+1}^{t}\alpha_k\Bigr)\gamma_j\bm{B}_j\bm{x}_j.
+\end{align}
+The last equality uses the empty-product convention for $j=t$. This
+proves \eqref{eq:un-claim}.
+
+\subsection{From state to output}
+
+Plug \eqref{eq:un-claim} into the output equation
+$\bm{y}_t = \bm{C}_t^\top\bm{h}_t$:
+\begin{align}
+  \bm{y}_t
+   &= \bm{C}_t^\top \sum_{j=1}^{t}
+        a_{t\leftarrow j}\,\gamma_j\,\bm{B}_j\bm{x}_j \\
+   &= \sum_{j=1}^{t}
+        a_{t\leftarrow j}\,\gamma_j\,
+        \underbrace{\bm{C}_t^\top \bm{B}_j}_{\text{scalar}}\;\bm{x}_j
+        \qquad\text{(linearity of $\bm{C}_t^\top(\cdot)$)} \label{eq:yout} \\
+   &= \sum_{j=1}^{t}
+        \underbrace{\bigl(a_{t\leftarrow j}\,\gamma_j\bigr)}_{=:\,L_{tj}}
+        \bigl(\bm{C}_t^\top \bm{B}_j\bigr)\,\bm{x}_j. \label{eq:yout-L}
+\end{align}
+The key observation is that $\bm{x}_j$ is a vector while
+$\bm{C}_t^\top\bm{B}_j$ is a scalar; we are free to reorder the
+factors.
+
+\subsection{Matrix form: $\bm{Y} = (\bm{L}\odot \bm{C}\bm{B}^\top)\bm{X}$}
+
+Define the lower-triangular matrix
+\begin{equation}\label{eq:L2}
+  L_{tj} \;=\;
+  \begin{cases}
+     \gamma_j\displaystyle\prod_{k=j+1}^{t}\alpha_k & j \le t,\\[4pt]
+     0 & j > t.
+  \end{cases}
+\end{equation}
+Equivalently,
+\begin{equation}\label{eq:Lmat}
+  \bm{L} \;=\;
+  \begin{bmatrix}
+     1    &      &       &      \\
+     \alpha_2 & 1 &       &      \\
+     \alpha_3\alpha_2 & \alpha_3 & 1 &   \\
+     \vdots & & \ddots & \\
+     \prod_{k=2}^{T}\alpha_k & \cdots & \alpha_T & 1
+  \end{bmatrix}\cdot\mathrm{diag}(\gamma_1,\dots,\gamma_T),
+\end{equation}
+which is the Mamba-2 mask of \cite{mamba3} eq.~(3). Using
+\eqref{eq:yout-L} row by row,
+\begin{equation}\label{eq:rowform}
+  \bm{y}_t \;=\; \sum_{j=1}^{T} L_{tj}\,\bigl(\bm{C}_t^\top \bm{B}_j\bigr)\,\bm{x}_j
+         \;=\; \sum_{j=1}^{T}
+                \bigl[\,\bm{L}\odot\bm{C}\bm{B}^\top\,\bigr]_{tj}\,\bm{x}_j.
+\end{equation}
+(Terms with $j>t$ vanish because $L_{tj}=0$.) Stacking over $t$,
+\begin{equation}\label{eq:ssd-derived}
+  \boxed{\;\bm{Y} \;=\; \bigl(\bm{L}\odot \bm{C}\bm{B}^\top\bigr)\bm{X}.\;}
+\end{equation}
+This is exactly \eqref{eq:ssd} (\cite{mamba3} eq.~(2)).
+
+\subsection{Reading the SSD identity as linear attention}
+
+Define the standard attention quantities
+\begin{equation}
+  \bm{Q}_t := \bm{C}_t,\qquad \bm{K}_j := \bm{B}_j,\qquad \bm{V}_j := \bm{x}_j.
+\end{equation}
+Then \eqref{eq:ssd-derived} is
+\begin{equation}\label{eq:attn}
+  \bm{Y} \;=\; \bigl(\bm{L}\odot \bm{Q}\bm{K}^\top\bigr)\bm{V},
+\end{equation}
+which is \emph{linear attention} (no softmax, no row normalization),
+with a data-dependent, structured mask $\bm{L}$. Compare to standard
+softmax self-attention
+$\bm{Y} = \mathrm{softmax}(\bm{Q}\bm{K}^\top / \sqrt{d})\,\bm{V}$:
+\begin{itemize}
+  \item Standard attention computes a dense $T\times T$ similarity
+        matrix $\bm{Q}\bm{K}^\top$ and row-normalizes it by softmax.
+  \item Mamba-3 SSD computes the same $\bm{Q}\bm{K}^\top$, then
+        multiplies it elementwise by a learned mask $\bm{L}$ whose
+        off-diagonal entries decay geometrically in $|t-j|$.
+  \item The decay factor $\prod_{k=j+1}^{t}\alpha_k$ plays the role of
+        a relative-position bias: tokens separated by large
+        $\sum_{k}\Delta_k |A_k|$ contribute exponentially less.
+\end{itemize}
+
+\subsection{Trapezoidal three-term form}\label{sec:trap}
+
+The same derivation goes through for \eqref{eq:rec3}. We show only
+the new piece: the mask acquires an extra two-band contribution.
+Substitute \eqref{eq:rec3} once,
+\begin{align}
+  \bm{h}_t
+   &= \alpha_t\,\bm{h}_{t-1}
+     + \beta_t\,\bm{B}_{t-1}\bm{x}_{t-1}
+     + \gamma_t\,\bm{B}_t\bm{x}_t.
+\end{align}
+Iterating (compare \eqref{eq:un-claim}) gives
+\begin{equation}\label{eq:un3}
+  \bm{h}_t = \sum_{j=1}^{t}
+     \Bigl(\prod_{k=j+1}^{t}\alpha_k\Bigr)\!\bigl(\gamma_j\,\bm{B}_j\bm{x}_j
+                                               + \beta_j\,\bm{B}_{j-1}\bm{x}_{j-1}\bigr),
+\end{equation}
+where the $\beta_j$ term contributes to the state via
+$\bm{B}_{j-1}\bm{x}_{j-1}$. Plugging into
+$\bm{y}_t = \bm{C}_t^\top\bm{h}_t$ and collecting coefficients of
+$\bm{B}_j\bm{x}_j$ (note the index shift for the $\beta$ term), one
+obtains
+\begin{equation}\label{eq:L3}
+  L_{tj} \;=\; \Bigl(\prod_{k=j+1}^{t}\alpha_k\Bigr)\gamma_j
+            \;+\; \Bigl(\prod_{k=j+2}^{t}\alpha_k\Bigr)\beta_{j+1}
+            \quad \text{for } j\le t,
+\end{equation}
+with the usual empty-product convention. In matrix form this is
+\cite{mamba3} eq.~(7): $\bm{L}$ is the product of a
+1-semiseparable matrix (whose $(t,j)$ entry is
+$\prod_{k=j+1}^{t}\alpha_k$) and a two-band matrix
+$\mathrm{diag}(\gamma_0,\dots,\gamma_T) + \mathrm{subdiag}(\beta_1,\dots,\beta_T)$.
+Equations \eqref{eq:rowform}–\eqref{eq:ssd-derived} are unchanged.
+
+\paragraph{Boundary conditions of the $\beta$ band.} The second term in
+\eqref{eq:L3} references $\beta_{j+1}$. For the left endpoint, the
+recurrence \eqref{eq:rec3} at $t=1$ uses $\beta_1 \bm{B}_0\bm{x}_0$
+with $\bm{B}_0, \bm{x}_0$ out of range; we therefore adopt the
+convention $\beta_1 := 0$, or equivalently drop this term when
+$t=1$. Consistently, $\beta_1$ never appears in \eqref{eq:L3}: the
+second term at $j=0$ would need $\beta_1$, but $j\ge 1$ by indexing.
+For the right endpoint, at $j=t$ the expression $\beta_{j+1}=\beta_{t+1}$
+is undefined; we set $\beta_{T+1} := 0$ so the second term vanishes
+at $j=t$, leaving $L_{tt} = \gamma_t$ as expected. Any implementation
+that pads $\beta$ with zeros on both ends and builds the second band
+only for the strictly lower triangle ($j<t$) honours both conventions
+automatically. An off-by-one in this shift is silently masked by the
+test $\lambda_t\equiv 1$ (which zeroes $\beta$ identically) and must
+therefore be caught by an independent test with $\lambda_t \in (0,1)$.
+
+%% ================================================================
+\section{Self-Attention via Mamba-3}
+\label{sec:self}
+%% ================================================================
+
+We now instantiate the duality \eqref{eq:ssd-derived} as a concrete
+self-attention block for a single sequence
+$\bm{X}\in\mathbb{R}^{T\times D}$.
+
+\subsection{Per-token projections}
+
+For each $t\in\{1,\dots,T\}$ compute
+\begin{align}
+  \bm{B}_t &= \bm{W}_B\,\bm{x}_t        & &\text{(key)} \\
+  \bm{C}_t &= \bm{W}_C\,\bm{x}_t        & &\text{(query)} \\
+  \Delta_t &= \mathrm{Softplus}(\bm{w}_\Delta^\top\bm{x}_t) & &\text{(step size)}\\
+  A_t &= -\mathrm{Softplus}(\bm{w}_A^\top\bm{x}_t) \text{ or const.} & &\text{(decay)} \\
+  \lambda_t &= \sigma(\bm{w}_\lambda^\top\bm{x}_t)\in[0,1] & &\text{(trapezoidal weight)} \\
+  \bm{v}_t &= \mathrm{SiLU}(\bm{W}_V\,\bm{x}_t)         & &\text{(value)}
+\end{align}
+Form $\alpha_t,\beta_t,\gamma_t$ from \eqref{eq:abc}. Optionally apply
+\textbf{BCNorm} (RMSNorm on $\bm{B}_t,\bm{C}_t$; \cite{mamba3}
+\S 3.4) and learnable channel-wise biases $\bm{b}_B, \bm{b}_C$ before
+using them.
+
+\subsection{Self-attention output}
+
+Assemble $\bm{B},\bm{C}\in\mathbb{R}^{T\times N}$ and
+$\bm{V}\in\mathbb{R}^{T\times D}$ (rows $\bm{v}_t$) and the mask
+$\bm{L}$ from \eqref{eq:L2} or \eqref{eq:L3}. The self-attention
+output is
+\begin{equation}\label{eq:self-out}
+  \bm{Y}_{\text{self}} \;=\; \bigl(\bm{L}\odot\bm{C}\bm{B}^\top\bigr)\bm{V},
+\end{equation}
+or, entrywise,
+\begin{equation}\label{eq:self-entry}
+  \bm{y}_i^{\text{self}} \;=\; \sum_{j=1}^{i} L_{ij}\,(\bm{C}_i^\top \bm{B}_j)\,\bm{v}_j.
+\end{equation}
+Because $L_{ij}=0$ for $j>i$, the attention is \emph{causal}: token
+$i$ sees tokens $1,\dots,i$. We remove this causality in
+Section~\ref{sec:images} by running a second pass in the reverse
+direction.
+
+\subsection{Complex-valued SSM / RoPE trick: attention with learned RoPE}
+\label{sec:rope}
+
+Mamba-3 promotes $\bm{A}$ from a real scalar to a block-diagonal
+matrix of $2{\times}2$ rotations
+\begin{equation}\label{eq:Rdef}
+  \bm{R}_t = \mathrm{Block}\bigl(\{R(\Delta_t\bm{\theta}_t[i])\}_{i=1}^{N/2}\bigr),
+  \qquad
+  R(\phi) = \begin{bmatrix}\cos\phi & -\sin\phi\\ \sin\phi & \cos\phi\end{bmatrix},
+\end{equation}
+and Proposition~4 of \cite{mamba3} shows that this is equivalent
+to applying data-dependent rotary embeddings to $\bm{B}$ and $\bm{C}$.
+Writing $\bm{R}_{\le t} := \prod_{i=0}^{t}\bm{R}_i^\top$, the complex
+recurrence is
+\begin{equation}\label{eq:complex-rec}
+  \bm{h}_t = \alpha_t\,\bm{h}_{t-1}
+            + \beta_t\,\bm{R}_{\le t-1}\,\bm{B}_{t-1}\,\bm{x}_{t-1}
+            + \gamma_t\,\bm{R}_{\le t}\,\bm{B}_{t}\,\bm{x}_{t},
+\qquad
+  \bm{y}_t = (\bm{R}_{\le t}\,\bm{C}_t)^\top\,\bm{h}_t.
+\end{equation}
+Following the same unrolling as in Section~\ref{sec:ssd}, the
+analogue of \eqref{eq:self-entry} becomes
+\begin{equation}\label{eq:self-rope}
+  \bm{y}_i^{\text{self}}
+     \;=\; \sum_{j=1}^{i} L_{ij}\,
+            \bigl(\widetilde{\bm{C}}_i^{\,\top}\widetilde{\bm{B}}_j\bigr)\,\bm{v}_j,
+  \qquad
+  \widetilde{\bm{C}}_i := \bm{R}_{\le i}\,\bm{C}_i,\quad
+  \widetilde{\bm{B}}_j := \bm{R}_{\le j}\,\bm{B}_j.
+\end{equation}
+That is, \textbf{Mamba-3 self-attention is linear attention with a
+structured mask $\bm{L}$ and a \emph{data-dependent} rotary embedding}
+applied to the $\bm{B}$ (key) and $\bm{C}$ (query) projections,
+exactly the Transformer's RoPE but with angles learned per token
+rather than fixed to $10000^{-2i/N}$.
+
+\subsection{MIMO extension}\label{sec:mimo}
+
+Mamba-3's MIMO variant (\cite{mamba3} \S 3.3, eqs.~(12)–(14))
+stacks $R$ parallel SSMs that share the scalar gates $\alpha_t,\Delta_t$
+but carry independent $\bm{B}_t^{(j)},\bm{C}_t^{(i)},\bm{x}_t^{(j)}$.
+The head-level output is
+\begin{equation}
+  \bm{y}_t^{(i)} \;=\; \sum_{j=0}^{R-1}\mathrm{SSM}\bigl(\alpha,\Delta,\bm{B}^{(j)},\bm{C}^{(i)},\bm{x}^{(j)}\bigr)_t,
+\end{equation}
+i.e.\ $R^2$ SISO calls in parallel. Using \eqref{eq:ssd-derived} on
+each, the MIMO self-attention output is
+\begin{equation}\label{eq:mimo-self}
+  \bm{Y}^{(i)} \;=\; \sum_{j=0}^{R-1}
+     \bigl(\bm{L}\odot \bm{C}^{(i)}\bm{B}^{(j)\top}\bigr)\bm{X}^{(j)},
+  \quad i=0,\dots,R-1.
+\end{equation}
+This is exactly multi-head linear attention with shared mask.
+
+%% ================================================================
+\section{Cross-Attention via Mamba-3}
+\label{sec:cross}
+%% ================================================================
+
+For cross-attention we have two token sequences: a \emph{query}
+sequence $\bm{X}^{q}\in\mathbb{R}^{T_q\times D}$ and a \emph{key/value}
+(context) sequence $\bm{X}^{kv}\in\mathbb{R}^{T_{kv}\times D}$.
+
+\subsection{Projections for the two sides}
+
+Query side:
+\begin{equation}\label{eq:cross-proj-q}
+  \bm{C}_i^{q} = \bm{W}_C\,\bm{x}_i^{q},
+  \quad i=1,\dots,T_q,
+\end{equation}
+that is, only the \emph{query} projection is taken from the query
+side. Key/value side:
+\begin{align}
+  \bm{B}_j^{kv} &= \bm{W}_B\,\bm{x}_j^{kv}, \\
+  \Delta_j^{kv} &= \mathrm{Softplus}(\bm{w}_\Delta^\top \bm{x}_j^{kv}), \\
+  A_j^{kv}      &= -\mathrm{Softplus}(\bm{w}_A^\top \bm{x}_j^{kv})\;\text{or const.}, \\
+  \bm{v}_j^{kv} &= \mathrm{SiLU}(\bm{W}_V\,\bm{x}_j^{kv}),
+  \quad j=1,\dots,T_{kv}.
+\end{align}
+Decay scalars $\alpha_j^{kv}$ etc.\ are computed as in \eqref{eq:abc}
+but using the $kv$-side $\Delta_j^{kv}, A_j^{kv}$.
+
+\subsection{Variant A: state-compressed cross-attention (constant memory)}
+\label{sec:crossA}
+
+Run the Mamba-3 recurrence \eqref{eq:rec2} on the $kv$-side with
+\emph{outer-product} accumulation, treating $\bm{v}_j^{kv}$ as the
+input instead of $\bm{x}_j^{kv}$. Define a matrix-valued hidden state
+$\bm{H}_j \in \mathbb{R}^{N\times D}$ by
+\begin{equation}\label{eq:Hrec}
+  \bm{H}_j \;=\; \alpha_j^{kv}\,\bm{H}_{j-1}
+                + \gamma_j^{kv}\,\bm{B}_j^{kv}\,\bm{v}_j^{kv\,\top},
+  \qquad \bm{H}_0 = \bm{0}.
+\end{equation}
+By the exact same unrolling as in \eqref{eq:un-claim} we obtain
+\begin{equation}\label{eq:Hclose}
+  \bm{H}_{T_{kv}} \;=\; \sum_{j=1}^{T_{kv}}
+      \Bigl(\prod_{k=j+1}^{T_{kv}}\alpha_k^{kv}\Bigr)
+      \gamma_j^{kv}\,\bm{B}_j^{kv}\,\bm{v}_j^{kv\,\top}
+  \;=:\; \bm{h}_{\text{ref}} \in \mathbb{R}^{N\times D}.
+\end{equation}
+This $\bm{h}_{\text{ref}}$ is the \emph{compressed context}: it
+condenses the entire $kv$-sequence into a single $N\times D$ matrix.
+For each query $\bm{C}_i^q$, the output is obtained by a single
+left-multiplication:
+\begin{equation}\label{eq:crossA-out}
+  \boxed{\;\bm{y}_i^{\text{cross-A}} \;=\; \bm{C}_i^{q\,\top}\,\bm{h}_{\text{ref}} \;\in \mathbb{R}^{D}.\;}
+\end{equation}
+Shape check: $\bm{C}_i^{q\,\top}\in\mathbb{R}^{1\times N}$ times
+$\bm{h}_{\text{ref}}\in\mathbb{R}^{N\times D}$ gives
+$\mathbb{R}^{1\times D}$, i.e.\ a $D$-vector.
+
+\textbf{Cost.} Once $\bm{h}_{\text{ref}}$ is built in $O(T_{kv}ND)$
+time, answering all $T_q$ queries costs $O(T_q ND)$. Memory for the
+``KV cache'' is constant in $T_{kv}$ (it is exactly
+$\bm{h}_{\text{ref}}\in\mathbb{R}^{N\times D}$). This is the
+analogue of the recurrent KV cache.
+
+\subsection{Variant B: token-level cross-attention (exact SSD)}
+\label{sec:crossB}
+
+To allow every query token to see every $kv$ token independently,
+keep the full similarity matrix. Build an $T_q\times T_{kv}$ mask
+\begin{equation}\label{eq:Lcross}
+  L^{\text{cross}}_{ij} \;=\; \gamma_j^{kv}\,
+        \Bigl(\prod_{k=j+1}^{T_{kv}}\alpha_k^{kv}\Bigr),
+\end{equation}
+whose $j$-th column is the same decay profile as in \eqref{eq:L2}, but
+now the matrix is \emph{not triangular} because queries do not live on
+the same time axis as keys. The cross-attention output is
+\begin{equation}\label{eq:crossB-out}
+  \boxed{\;\bm{Y}^{\text{cross-B}} \;=\; \bigl(\bm{L}^{\text{cross}}\odot\bm{C}^{q}\bm{B}^{kv\,\top}\bigr)\bm{V}^{kv},\;}
+\end{equation}
+or, entrywise,
+\begin{equation}\label{eq:crossB-entry}
+  \bm{y}_i^{\text{cross-B}} \;=\; \sum_{j=1}^{T_{kv}} L^{\text{cross}}_{ij}\,
+           \bigl(\bm{C}_i^{q\,\top}\bm{B}_j^{kv}\bigr)\,\bm{v}_j^{kv}.
+\end{equation}
+Compare with softmax cross-attention
+$\bm{Y} = \mathrm{softmax}(\bm{C}^q\bm{B}^{kv\,\top})\,\bm{V}^{kv}$:
+\eqref{eq:crossB-out} replaces softmax row normalization with an
+elementwise, structured, learned mask. With the trivial mask
+$L^{\text{cross}}_{ij}\equiv 1$ we obtain ordinary linear cross-
+attention $\bm{C}^q\bm{B}^{kv\,\top}\bm{V}^{kv}$.
+
+\paragraph{End-of-sequence bias in $\bm{L}^{\text{cross}}$.} Note that
+\eqref{eq:Lcross} does not depend on $i$: every query row is the same
+column-decay profile. Concretely, $L^{\text{cross}}_{i,T_{kv}}=\gamma_{T_{kv}}$
+while $L^{\text{cross}}_{i,1}=\gamma_1\prod_{k=2}^{T_{kv}}\alpha_k$ is
+exponentially small once $T_{kv}$ is large. This encodes a strong
+\emph{recency bias toward the end of the $kv$ sequence}: every query
+already prefers the last $kv$ tokens before any data-dependent
+similarity $\bm{C}^q_i{}^\top\bm{B}^{kv}_j$ is applied. This is the
+right inductive bias when the $kv$ sequence has a natural causal order
+(decoder-style cross-attention), but it is arbitrary when the $kv$
+sequence is a permutation-invariant set — most notably, when it comes
+from an image patch grid. The bias becomes the order chosen by the
+raster scan.
+
+\paragraph{Bidirectional cross-attention for permutation-invariant $kv$.}
+When the $kv$ stream has no preferred order, replace
+$\bm{L}^{\text{cross}}$ by the symmetrised mask
+\begin{equation}\label{eq:Lcross-bi}
+  L^{\text{cross},\leftrightarrow}_{ij}
+     \;=\; \gamma_j\Bigl[\prod_{k=j+1}^{T_{kv}}\alpha_k
+                         \;+\; \prod_{k=1}^{j-1}\alpha_k\Bigr],
+\end{equation}
+which is obtained by summing \eqref{eq:Lcross} with its reverse-order
+counterpart, analogously to \eqref{eq:bidi2}. The two products coincide
+at the centre of the $kv$ sequence and decay symmetrically toward both
+endpoints, eliminating the raster-order preference while preserving the
+linear-complexity structure. For images this is the natural cross-
+attention mask to pair with the bidirectional self-attention of
+Section~\ref{sec:bidi}.
+
+\subsection{Which variant to use}
+
+\begin{center}
+\begin{tabular}{|l|l|l|}
+\hline
+ & \textbf{Variant A} (state-compressed) & \textbf{Variant B} (token-level)\\ \hline
+State size        & $\mathcal{O}(ND)$             & $\mathcal{O}(T_q T_{kv})$ (or streamed) \\ \hline
+Compute          & $\mathcal{O}((T_{kv}+T_q)ND)$ & $\mathcal{O}(T_q T_{kv}(N+D))$ \\ \hline
+Query adaptivity & Only via $\bm{C}_i^q$         & Via full $\bm{C}_i^{q\top}\bm{B}_j^{kv}$ \\ \hline
+Typical use      & Long context / large $T_{kv}$ & Short cross-attention / ablations \\ \hline
+\end{tabular}
+\end{center}
+
+Both variants can be augmented with the RoPE trick of
+\S\ref{sec:rope}: apply the rotation $\bm{R}_{\le i}^{(q)}$ to each
+query $\bm{C}_i^q$ and $\bm{R}_{\le j}^{(kv)}$ to each key
+$\bm{B}_j^{kv}$ before the inner product. This injects relative
+positional information into cross-attention.
+
+%% ================================================================
+\section{Applying Mamba-3 to Images}
+\label{sec:images}
+%% ================================================================
+
+We now assemble the self- and cross-attention blocks into an image
+model.
+
+\subsection{Patchification}
+
+Given an image $\bm{I}\in\mathbb{R}^{H\times W\times 3}$, choose a
+patch size $P$ and define $L = (H/P)(W/P)$ patches
+$\bm{p}_{r,c}\in\mathbb{R}^{3P^2}$ for
+$r\in\{1,\dots,H/P\},\,c\in\{1,\dots,W/P\}$. Project with a shared
+linear map:
+\begin{equation}\label{eq:patch-embed}
+  \bm{x}_{r,c} \;=\; \bm{W}_{\text{emb}}\,\bm{p}_{r,c} + \bm{b}_{\text{emb}},
+  \qquad \bm{W}_{\text{emb}}\in\mathbb{R}^{D\times 3P^2}.
+\end{equation}
+Flattening in row-major order gives a token sequence
+$\bm{x}_1,\dots,\bm{x}_L$. The same block works for $N_v$ views
+stacked as $N_v L$ tokens.
+
+\subsection{Why a plain causal scan fails on images}
+
+Applying \eqref{eq:self-entry} directly to the flattened sequence
+gives
+\begin{equation}
+  \bm{y}_i^{\text{self}} = \sum_{j=1}^{i} L_{ij}\,(\bm{C}_i^\top\bm{B}_j)\,\bm{v}_j,
+\end{equation}
+i.e.\ each patch only sees patches \emph{earlier in raster order}.
+A patch at the top-right thus never reads from the bottom-left — half
+the image is missing. An image has no natural causal direction, so
+this asymmetry is harmful.
+
+\subsection{Bidirectional and multi-direction scans}
+\label{sec:bidi}
+
+Fix a permutation $\pi$ of $\{1,\dots,L\}$. Let
+$\mathrm{SSD}_\pi(\bm{X})$ mean: permute rows by $\pi$, apply
+\eqref{eq:ssd-derived}, permute back. Because SSD's only source of
+order is the mask $\bm{L}$, every permutation gives a different,
+still-valid SSM scan.
+
+\paragraph{Two-direction (forward + reverse).} With the identity
+permutation $\pi_\to$ and its reverse $\pi_\leftarrow$,
+\begin{equation}\label{eq:bidi2}
+  \bm{Y}^{\text{bi}}
+   \;=\; \mathrm{SSD}_{\pi_\to}(\bm{X}) + \mathrm{SSD}_{\pi_\leftarrow}(\bm{X}).
+\end{equation}
+Unrolling: for any pair $(i,j)$, either $j\le i$ (covered by the
+forward pass) or $j>i$ (covered by the reverse pass), so every pair
+of tokens contributes exactly once, with a mask value depending on
+$|i-j|$ rather than on the sign of $i-j$. This turns causal SSD into
+bidirectional linear attention on the raster order, matching the
+bidirectional Mamba variants used in the literature.
+
+\paragraph{Four-direction (raster + reverse + column-major + reverse).}
+For 2-D structure, also scan along columns. Let $\pi^\downarrow$ scan
+column-by-column top-to-bottom and $\pi^\uparrow$ its reverse. Then
+\begin{equation}\label{eq:bidi4}
+  \bm{Y}^{\text{4-dir}}
+   = \mathrm{SSD}_{\pi_\to}(\bm{X}) + \mathrm{SSD}_{\pi_\leftarrow}(\bm{X})
+   + \mathrm{SSD}_{\pi^\downarrow}(\bm{X}) + \mathrm{SSD}_{\pi^\uparrow}(\bm{X}).
+\end{equation}
+Each summand uses the same learned weights; only the token order
+changes, so \eqref{eq:bidi4} adds no parameters. This mirrors the
+four scans of Vision-Mamba / V-Mamba realized under the Mamba-3 SSD
+kernel.
+
+\paragraph{Equivalence to a symmetric mask.} Writing
+\eqref{eq:bidi2} entrywise,
+\begin{equation}\label{eq:bidi-sym}
+  \bm{y}_i^{\text{bi}} = \sum_{j=1}^{L} \widetilde{L}_{ij}\,
+       (\bm{C}_i^\top\bm{B}_j)\,\bm{v}_j,
+  \quad
+  \widetilde{L}_{ij} = L_{ij}^{\to} + L_{ij}^{\leftarrow},
+\end{equation}
+where $L^\to$ is \eqref{eq:L2} and $L^\leftarrow$ is the same matrix
+built on the reversed sequence. $\widetilde{L}$ is \emph{symmetric} in
+$i,j$: the forward pass covers $j\le i$, the reverse pass covers
+$j\ge i$, and with the diagonal counted twice the bidirectional
+self-attention has no preferred direction.
+
+\subsection{2-D positional encoding via the complex SSM}
+\label{sec:rope2d}
+
+To encode row and column positions, use the RoPE trick of
+\S\ref{sec:rope} with a \emph{factored} angle schedule. For the
+$n$-th channel of the state, split into independent row and column
+angles
+\begin{equation}\label{eq:rope2d}
+  \theta_{r,c}[n] = \theta^{\text{row}}[n]\cdot r + \theta^{\text{col}}[n]\cdot c,
+  \qquad n = 1,\dots,N/2,
+\end{equation}
+where $\theta^{\text{row}},\theta^{\text{col}}$ are learned or fixed
+frequency vectors. Replace $\bm{\theta}_t$ in \eqref{eq:Rdef} by
+$\theta_{r,c}$ for the patch at $(r,c)$. The resulting
+$\widetilde{\bm{C}}_i = \bm{R}_{\le i}\bm{C}_i$ and
+$\widetilde{\bm{B}}_j$ now carry a 2-D rotary position encoding
+inside the SSD inner product \eqref{eq:self-rope}.
+
+\subsection{Image self-attention layer}
+
+Putting the pieces together, one Mamba-3 self-attention layer for
+images is:
+
+\medskip
+\noindent\textbf{Algorithm (Mamba-3 image self-attention layer).}
+\begin{enumerate}
+  \item Input tokens $\bm{X}\in\mathbb{R}^{L\times D}$ for one image
+        (already patch-embedded).
+  \item Compute per-token $\bm{B}_t,\bm{C}_t,\Delta_t,A_t,\lambda_t,\bm{v}_t$
+        via \eqref{eq:projB}–\eqref{eq:projV}.
+  \item Apply BCNorm and add learnable biases $\bm{b}_B,\bm{b}_C$
+        (\cite{mamba3}~\S 3.4).
+  \item Apply 2-D RoPE: $\bm{B}_t\leftarrow \bm{R}_{\le t}\bm{B}_t$,
+        $\bm{C}_t\leftarrow \bm{R}_{\le t}\bm{C}_t$
+        with $\bm{R}$ from \eqref{eq:rope2d}.
+  \item Build masks $\bm{L}^{\to},\bm{L}^{\leftarrow}$ from
+        \eqref{eq:L2} (or \eqref{eq:L3} for the trapezoidal
+        variant) using $\alpha_t,\beta_t,\gamma_t$.
+  \item Compute $\bm{Y}^\to = (\bm{L}^\to\odot\bm{C}\bm{B}^\top)\bm{V}$
+        and $\bm{Y}^\leftarrow$ on the reversed order; optionally
+        also $\bm{Y}^\downarrow,\bm{Y}^\uparrow$.
+  \item Sum across scans to get
+        $\bm{Y}^{\text{self}}\in\mathbb{R}^{L\times D}$.
+  \item Apply the usual post-processing (output projection +
+        SwiGLU MLP block + residual), exactly as in a Mamba-3 /
+        Llama block (\cite{mamba3}~Fig.~2).
+\end{enumerate}
+
+\subsection{Multi-view cross-attention for 3-D applications}
+\label{sec:multiview}
+
+For multi-view inputs (e.g.\ \cite{depthanything3}, Fig.~2),
+stack the tokens of $N_v$ views into
+$\bm{X}\in\mathbb{R}^{N_v L \times D}$. Let $V(i)\in\{1,\dots,N_v\}$
+denote the view index of token $i$.
+
+\paragraph{Within-view layer.} Apply the self-attention layer of the
+previous subsection \emph{per view}: i.e.\ the mask is
+$L_{ij}^{\text{in}} = L_{ij}\cdot\mathbb{I}[V(i)=V(j)]$, so tokens
+only interact inside their own view. This is block-diagonal
+bidirectional SSD.
+
+\paragraph{Cross-view layer.} Treat one view at a time as the
+\emph{query} side and all other views as the \emph{key/value} side.
+Build
+\begin{equation}\label{eq:Lxview}
+  L_{ij}^{\text{cv}}
+    \;=\; L^{\text{cross}}_{ij}\cdot \mathbb{I}[V(i)\neq V(j)],
+\end{equation}
+with $L^{\text{cross}}$ from \eqref{eq:Lcross} (where the ``time'' axis
+is a learned ordering of views, e.g.\ a canonical ``reference view
+first'' order). The output is
+\begin{equation}\label{eq:cvout}
+  \bm{Y}^{\text{cv}} \;=\; \bigl(\bm{L}^{\text{cv}}\odot\bm{C}\bm{B}^\top\bigr)\bm{V}.
+\end{equation}
+Alternating within-view and cross-view layers realizes the same
+design as \cite{depthanything3} Fig.~2 (``within-view
+self-attention'' and ``cross-view self-attention''), but with softmax
+attention replaced by the Mamba-3 SSD kernel, inheriting its linear
+complexity in the token count.
+
+\paragraph{Two-view cross-attention (asymmetric).} For the special
+case of a query image and a reference image, use Variant~A of
+Section~\ref{sec:crossA}: build
+$\bm{h}_{\text{ref}}\in\mathbb{R}^{N\times D}$ from the reference
+tokens once, and answer each query token in $O(ND)$. This is the
+natural ``Mamba-3 cross-attention'' block when the reference view is
+much larger than the query view, or is reused across many queries
+(e.g.\ a novel-view-synthesis decoder reading from a shared scene
+encoding).
+
+%% ================================================================
+\section{End-to-End Summary}
+%% ================================================================
+
+Using only \eqref{eq:ssd-derived}, we have obtained:
+
+\begin{itemize}
+  \item \textbf{Self-attention:} \eqref{eq:self-out} and, with
+        learned RoPE, \eqref{eq:self-rope}. Multi-head via
+        \eqref{eq:mimo-self}.
+  \item \textbf{Cross-attention:} Variant~A \eqref{eq:crossA-out}
+        (cheap, compressed KV) and Variant~B \eqref{eq:crossB-out}
+        (exact).
+  \item \textbf{Image encoder:} patchify + bidirectional /
+        multi-direction SSD self-attention
+        (\eqref{eq:bidi2},\eqref{eq:bidi4}) with 2-D RoPE
+        \eqref{eq:rope2d}.
+  \item \textbf{Multi-view encoder:} alternating within-view
+        \eqref{eq:cvout}-style blocks and cross-view
+        \eqref{eq:Lxview} blocks; or the compressed-state cross
+        block \eqref{eq:crossA-out} when one side dominates.
+\end{itemize}
+
+Every output formula above is a direct application of the single
+identity
+\begin{equation*}
+  \bm{Y} = (\bm{L}\odot\bm{C}\bm{B}^\top)\bm{X},
+\end{equation*}
+which we derived from the Mamba-3 recurrence in
+Section~\ref{sec:ssd}. The choices made by a specific architecture
+amount to (i) which tokens supply $\bm{B},\bm{C},\bm{X}$ (self vs
+cross vs multi-view), and (ii) which structured mask $\bm{L}$ is used
+(causal vs bidirectional vs block-diagonal vs view-masked). Mamba-3's
+exponential-trapezoidal rule \eqref{eq:L3} and RoPE trick
+\eqref{eq:complex-rec} then give the mask and the query/key its final,
+expressive form.
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}
