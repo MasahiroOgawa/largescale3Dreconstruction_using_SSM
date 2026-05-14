@@ -106,7 +106,15 @@ def _run_eval(out_dir: Path, ckpt_step: int, scene: str, args) -> int:
     log_path = out_dir / f"eval_ckpt_{ckpt_step}_eth3d_{scene}.log"
     print(f"\n$ {' '.join(cmd)}\n  → {log_path}", flush=True)
     with log_path.open("w") as logf:
-        return subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT, cwd=REPO).returncode
+        try:
+            return subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT,
+                                  cwd=REPO, timeout=args.eval_timeout).returncode
+        except subprocess.TimeoutExpired:
+            logf.write(f"\n\n[eval] killed after {args.eval_timeout}s timeout — "
+                       f"hung in Umeyama align or TSDF retry loop on degenerate depth\n")
+            print(f"[multi-scene] {log_path.name} timed out after {args.eval_timeout}s, "
+                  f"moving on", flush=True)
+            return -1
 
 
 _MEAN_RE = re.compile(
@@ -189,6 +197,10 @@ def main() -> None:
     ap.add_argument("--max-images", type=int, default=12)
     ap.add_argument("--test-every", type=int, default=100,
                     help="In-training test-loss diagnostic interval (steps).")
+    ap.add_argument("--eval-timeout", type=int, default=600,
+                    help="Per-(ckpt, scene) eval timeout in seconds. Kills hung "
+                    "evals (e.g. Umeyama RANSAC loops on degenerate predictions) "
+                    "so the orchestrator can move on.")
     ap.add_argument("--skip-train", action="store_true")
     args = ap.parse_args()
 
