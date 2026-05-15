@@ -370,6 +370,53 @@ We now instantiate the duality \eqref{eq:ssd-derived} as a concrete
 self-attention block for a single sequence
 $\bm{X}\in\mathbb{R}^{T\times D}$.
 
+\paragraph{Why this is essentially a relabelling exercise.}
+The SSD identity \eqref{eq:ssd-derived} already has the shape of
+attention. Place the two formulas side by side:
+\[
+  \underbrace{\bm{Y} = \bigl(\bm{L}\odot\bm{C}\bm{B}^\top\bigr)\bm{V}}_{\text{Mamba-3 SSD}}
+  \qquad\Longleftrightarrow\qquad
+  \underbrace{\bm{Y} = \mathrm{softmax}\!\bigl(\bm{Q}\bm{K}^\top/\sqrt{d}\bigr)\bm{V}}_{\text{softmax attention}}.
+\]
+Reading off the substitution that matches the shapes,
+\[
+  \bm{Q} \;\leftarrow\; \bm{C},\qquad
+  \bm{K} \;\leftarrow\; \bm{B},\qquad
+  \bm{V} \;\leftarrow\; \mathrm{SiLU}(\bm{W}_V\bm{x}),
+\]
+i.e.\ the \emph{query} projection becomes $\bm{C}$, the \emph{key}
+projection becomes $\bm{B}$, and the \emph{value} projection is the
+usual learned $\bm{W}_V$ output (with the SiLU pre-gate from
+\eqref{eq:projV}; note this is the projected value, not the raw input
+$\bm{x}$). The only structural difference from softmax attention is
+that row normalisation $\mathrm{softmax}(\cdot/\sqrt{d})$ has been
+replaced by an element-wise multiplication by the learned, structured
+mask $\bm{L}$. That is the whole operator: pick the right
+$\bm{Q}/\bm{K}/\bm{V}$, build $\bm{L}$ from the per-token scalars,
+multiply.
+
+\paragraph{The trapezoidal three-term form does not change this shape.}
+A reasonable worry: Mamba-3's three-term recurrence \eqref{eq:rec3}
+adds a $\beta_t$ band that mixes adjacent tokens, so does the output
+formula still factor as $\bm{Y} = (\bm{L}\odot\bm{C}\bm{B}^\top)\bm{V}$?
+It does — only the \emph{contents} of $\bm{L}$ change.
+\S\ref{sec:trap} derived this already: collecting coefficients of
+$\bm{B}_j\bm{x}_j$ in the unrolled three-term state gives
+\eqref{eq:L3},
+\[
+  L_{tj} = \Bigl(\prod_{k=j+1}^{t}\alpha_k\Bigr)\gamma_j
+  \;+\; \Bigl(\prod_{k=j+2}^{t}\alpha_k\Bigr)\beta_{j+1},
+\]
+i.e.\ \emph{two} contributions per $(t,j)$ cell instead of one. The
+Mamba-2 two-term mask \eqref{eq:L2} is exactly the special case
+$\beta\equiv 0$ (equivalently $\lambda_t\equiv 1$). Plugging this
+richer $L_{tj}$ into the same row formula \eqref{eq:rowform}
+reproduces $\bm{Y} = (\bm{L}\odot\bm{C}\bm{B}^\top)\bm{V}$ unchanged;
+only the mask gets an extra band. Consequence for an implementer:
+Mamba-3 self-attention reuses every line of code that handles
+Mamba-2 SSD, with the single change of swapping the mask builder
+from a two-term to a three-term constructor.
+
 \subsection{Per-token projections}
 
 For each $t\in\{1,\dots,T\}$ compute
@@ -467,6 +514,46 @@ This is exactly multi-head linear attention with shared mask.
 For cross-attention we have two token sequences: a \emph{query}
 sequence $\bm{X}^{q}\in\mathbb{R}^{T_q\times D}$ and a \emph{key/value}
 (context) sequence $\bm{X}^{kv}\in\mathbb{R}^{T_{kv}\times D}$.
+
+\paragraph{Why cross-attention needs no new derivation.}
+Cross-attention reuses the same identity, just with two different
+sequences feeding the two sides instead of one. Place the two
+formulas side by side:
+\[
+  \underbrace{\bm{Y} = \bigl(\bm{L}^{\text{cross}}\odot\bm{C}^q\bm{B}^{kv\top}\bigr)\bm{V}^{kv}}_{\text{Mamba-3 cross-SSD}}
+  \qquad\Longleftrightarrow\qquad
+  \underbrace{\bm{Y} = \mathrm{softmax}\!\bigl(\bm{Q}\bm{K}^\top/\sqrt{d}\bigr)\bm{V}}_{\text{softmax cross-attention}},
+\]
+with the substitution
+\[
+  \bm{Q} \;\leftarrow\; \bm{C}^q, \quad
+  \bm{K} \;\leftarrow\; \bm{B}^{kv}, \quad
+  \bm{V} \;\leftarrow\; \mathrm{SiLU}(\bm{W}_V \bm{x}^{kv}).
+\]
+The reading rule: the \emph{query} projection comes from the
+query-side tokens $\bm{x}^{q}$, while \emph{both} the key and the
+value projections come from the kv-side tokens $\bm{x}^{kv}$.
+Nothing about the operator changes — only which sequence each
+projection reads from.
+
+\paragraph{Two things that do change relative to self-attention.}
+First, the mask $\bm{L}^{\text{cross}}$ \eqref{eq:Lcross} is
+rectangular ($T_q \times T_{kv}$) rather than triangular, because
+queries and keys live on different time axes and there is no notion
+of one token coming "before" another across the two streams.
+Second, the trapezoidal structure of \eqref{eq:L3} carries over to
+the kv axis when the kv side is itself produced by a Mamba-3
+recurrence (the typical case in Variant~B, \S\ref{sec:crossB}): each
+column of $\bm{L}^{\text{cross}}$ then has the same two-band decay
+profile as a self-SSD row, with the recency bias discussed in
+\S\ref{sec:crossB}. The output formula $\bm{Y} =
+(\bm{L}^{\text{cross}}\odot\bm{C}^q\bm{B}^{kv\top})\bm{V}^{kv}$ is
+\emph{unchanged}; only the geometry of $\bm{L}$ and which tokens
+supply $\bm{C}, \bm{B}, \bm{V}$ are different. Consequence for an
+implementer: cross-attention reuses every line of code that handles
+self-SSD, with two changes — feed $\bm{C}$ from the query sequence
+and $\bm{B}, \bm{V}$ from the kv sequence, and swap the
+triangular mask builder for the rectangular \texttt{cross} mask.
 
 \subsection{Projections for the two sides}
 
