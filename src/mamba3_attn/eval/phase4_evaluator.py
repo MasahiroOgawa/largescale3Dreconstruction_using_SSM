@@ -70,7 +70,8 @@ class SceneMetrics:
 
 
 def build_patched_api(ckpt_path: str | None, device: str = "cuda", state_dim: int = 64,
-                      patched: bool = True, swap_layers: list[int] | None = None):
+                      patched: bool = True, swap_layers: list[int] | None = None,
+                      variant: str | None = None):
     """Load DA3-SMALL → optionally install_mamba3 → optionally load ckpt → return api.
 
     Combinations supported:
@@ -81,14 +82,28 @@ def build_patched_api(ckpt_path: str | None, device: str = "cuda", state_dim: in
       - `swap_layers=[k]`               : per-layer ablation; only listed flat
                                            layer indices are swapped to mamba3.
                                            Topology must match the trained ckpt.
+      - `variant`                        : "mamba3" (full SSD) or "vssd" (NC-SSD).
+                                           When None and a ckpt is given, auto-detected
+                                           from the ckpt's saved cfg (train_super.py
+                                           writes cfg["variant"]); otherwise defaults
+                                           to "mamba3" for backward compatibility.
     """
-    api = load_da3(DEFAULT_HF_MODEL, device=device)
-    if patched:
-        install_mamba3(api.model, which="all", state_dim=state_dim,
-                       use_fused_kernel=True, chunk_size=128,
-                       layer_indices=swap_layers)
+    state = None
     if ckpt_path is not None:
         state = torch.load(ckpt_path, map_location=device, weights_only=False)
+        if variant is None:
+            ckpt_cfg = state.get("cfg") if isinstance(state, dict) else None
+            if isinstance(ckpt_cfg, dict) and "variant" in ckpt_cfg:
+                variant = ckpt_cfg["variant"]
+    if variant is None:
+        variant = "mamba3"
+
+    api = load_da3(DEFAULT_HF_MODEL, device=device)
+    if patched:
+        install_mamba3(api.model, which="all", variant=variant, state_dim=state_dim,
+                       use_fused_kernel=True, chunk_size=128,
+                       layer_indices=swap_layers)
+    if state is not None:
         api.model.load_state_dict(state["model"])
     api = api.to(device)
     api.model.eval()
@@ -568,6 +583,10 @@ def main() -> None:
                     help="Explicit comma-separated (dataset:scene) list to evaluate, e.g. "
                     "'eth3d:terrains,eth3d:facade'. Overrides EVAL_SPLIT_ETH3D / hiroom / "
                     "7scenes default test sets. Used by PLAN §15.59.8 random scene split.")
+    ap.add_argument("--variant", choices=["mamba3", "vssd"], default=None,
+                    help="Mamba-3 variant override. When omitted and a --ckpt is given, "
+                    "auto-detected from the ckpt's saved cfg['variant']. Pass explicitly "
+                    "for warm-start (no-ckpt) evals or to override a stale ckpt cfg.")
     args = ap.parse_args()
 
     if args.scene_overfit is not None:
@@ -597,7 +616,8 @@ def main() -> None:
     src = args.ckpt if args.ckpt is not None else "DA3-SMALL pretrained (no ckpt)"
     print(f"\n[phase4] loading {label_main} from {src}")
     student = build_patched_api(args.ckpt, device=args.device, state_dim=args.state_dim,
-                                patched=not args.no_patch, swap_layers=args.swap_layer)
+                                patched=not args.no_patch, swap_layers=args.swap_layer,
+                                variant=args.variant)
 
     student_rows: list[SceneMetrics] = []
     for ds, sc in scenes:
