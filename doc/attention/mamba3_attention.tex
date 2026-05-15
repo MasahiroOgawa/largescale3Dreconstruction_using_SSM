@@ -374,7 +374,7 @@ $\bm{X}\in\mathbb{R}^{T\times D}$.
 The SSD identity \eqref{eq:ssd-derived} already has the shape of
 attention. Place the two formulas side by side:
 \[
-  \underbrace{\bm{Y} = \bigl(\bm{L}\odot\bm{C}\bm{B}^\top\bigr)\bm{V}}_{\text{Mamba-3 SSD}}
+  \underbrace{\bm{Y} = \bigl(\bm{L}\odot\bm{C}\bm{B}^\top\bigr)\bm{V}}_{\text{Mamba SSD (2 or 3)}}
   \qquad\Longleftrightarrow\qquad
   \underbrace{\bm{Y} = \mathrm{softmax}\!\bigl(\bm{Q}\bm{K}^\top/\sqrt{d}\bigr)\bm{V}}_{\text{softmax attention}}.
 \]
@@ -384,11 +384,15 @@ Reading off the substitution that matches the shapes,
   \bm{K} \;\leftarrow\; \bm{B},\qquad
   \bm{V} \;\leftarrow\; \mathrm{SiLU}(\bm{W}_V\bm{x}),
 \]
-i.e.\ the \emph{query} projection becomes $\bm{C}$, the \emph{key}
-projection becomes $\bm{B}$, and the \emph{value} projection is the
-usual learned $\bm{W}_V$ output (with the SiLU pre-gate from
-\eqref{eq:projV}; note this is the projected value, not the raw input
-$\bm{x}$). The only structural difference from softmax attention is
+i.e.\ the \emph{query} projection becomes $\bm{C}$ and the \emph{key}
+projection becomes $\bm{B}$. The value projection $\bm{V} =
+\mathrm{SiLU}(\bm{W}_V\bm{x})$ is the same learned $\bm{W}_V$ that
+softmax attention uses; it is part of the SSD-as-attention reading
+generally (the $\bm{X}$ in the raw identity \eqref{eq:ssd-derived} is
+the input, and any attention block needs a learned value), and so is
+not specific to Mamba-3 — Mamba-2 SSD-as-attention takes the same
+shape \eqref{eq:rec2}–\eqref{eq:ssd-derived} with $\bm{V}$ in place of
+$\bm{X}$. The only structural difference from softmax attention is
 that row normalisation $\mathrm{softmax}(\cdot/\sqrt{d})$ has been
 replaced by an element-wise multiplication by the learned, structured
 mask $\bm{L}$. That is the whole operator: pick the right
