@@ -32,7 +32,7 @@ class RoPE2D(nn.Module):
         x1, x2 = x[..., : d // 2], x[..., d // 2 :]
         return torch.cat((-x2, x1), dim=-1)
 
-    def _apply(self, tokens: Tensor, positions: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
+    def _apply_rope(self, tokens: Tensor, positions: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
         # positions: (B, T) long; tokens: (B, H, T, d)
         cos_e = torch.nn.functional.embedding(positions, cos)[:, None]
         sin_e = torch.nn.functional.embedding(positions, sin)[:, None]
@@ -56,6 +56,6 @@ class RoPE2D(nn.Module):
         cos, sin = self._freqs(feat, max_pos, tokens.device, tokens.dtype)
 
         y, x = tokens.chunk(2, dim=-1)
-        y = self._apply(y, positions[..., 0].long(), cos, sin)
-        x = self._apply(x, positions[..., 1].long(), cos, sin)
+        y = self._apply_rope(y, positions[..., 0].long(), cos, sin)
+        x = self._apply_rope(x, positions[..., 1].long(), cos, sin)
         return torch.cat((y, x), dim=-1)

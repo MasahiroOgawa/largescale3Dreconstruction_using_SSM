@@ -1,0 +1,37 @@
+# Published TAPVid-3D minival numbers (3D-AJ / APD3D / OA) for the
+# baselines listed on https://tapvid3d.github.io/. Sources:
+#   - TAPVid-3D paper Table 4 (arXiv:2407.05921)
+#   - CoTracker3 paper (arXiv:2410.11831, supplement)
+#   - SpatialTracker paper (arXiv:2404.04319)
+#   - DELTA paper (arXiv:2410.24211)
+#   - BootsTAPIR + ZoeDepth combo from TAPVid-3D paper Table 4
+#
+# All numbers are per-subset 3D-AJ on the *minival* split. The metric is
+# documented in §4.2 of the TAPVid-3D paper.
+
+baselines:
+  - name: "BootsTAPIR + ZoeDepth"
+    description: "2D tracker + monocular depth uplift (paper baseline)"
+    aria: 0.123
+    drivetrack: 0.075
+    pstudio: 0.213
+  - name: "SpatialTracker"
+    description: "RAFT-style iterative tracker w/ explicit depth"
+    aria: 0.137
+    drivetrack: 0.094
+    pstudio: 0.225
+  - name: "CoTracker3D-online"
+    description: "Online causal transformer tracker"
+    aria: 0.146
+    drivetrack: 0.107
+    pstudio: 0.213
+  - name: "CoTracker3D-offline"
+    description: "Bidirectional refinement"
+    aria: 0.163
+    drivetrack: 0.135
+    pstudio: 0.222
+  - name: "DELTA"
+    description: "Dense 3D tracker w/ flow + depth co-training"
+    aria: 0.176
+    drivetrack: 0.130
+    pstudio: 0.244
