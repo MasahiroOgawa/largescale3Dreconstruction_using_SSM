@@ -565,14 +565,76 @@ $P=14$ and feature width $D=384$, split across $H=6$ heads
 no multi-view assembly — just the operator on one image.
 
 \paragraph{From pixels to tokens.}
-\eqref{eq:patch-embed} produces a $36\!\times\!36 = 1296$-patch grid;
-flattened in row-major order this is the token sequence
-$\bm{x}_1,\dots,\bm{x}_T$ with
+The 504$\times$504 RGB image is sliced into non-overlapping
+$14\!\times\!14$ patches by a single strided convolution
+(\emph{patch embedding}), giving a $36\!\times\!36$ grid of
+patch-tokens. Each patch is then mapped to a $D$-dim feature vector
+by exactly the linear map of \eqref{eq:patch-embed}; we make every
+step concrete here.
+
+\medskip
+\noindent\emph{Step 1 — slice the image into patches.}
+Index the patch grid by $(r, c)$ with $r, c \in \{1, \dots, 36\}$.
+The $(r, c)$-th patch is the $14\!\times\!14\!\times\!3$ block
 \begin{equation}
-  T = 1296,\qquad \bm{X}\in\mathbb{R}^{T\times D} = \mathbb{R}^{1296\times 384}.
+  \bm{P}_{r,c} \;\in\; \mathbb{R}^{14\times 14\times 3},
+  \qquad
+  \bm{P}_{r,c}[i, j, k] \;=\; \bm{I}\bigl[14(r{-}1){+}i,\; 14(c{-}1){+}j,\; k\bigr].
 \end{equation}
-The attention layer never sees pixels — it sees $T$ token vectors,
-each of dimension $D$.
+Flatten its three colour planes into one vector (row-major over
+height, width, channel):
+\begin{equation}
+  \bm{p}_{r,c} \;:=\; \mathrm{vec}(\bm{P}_{r,c})
+   \;\in\; \mathbb{R}^{14 \cdot 14 \cdot 3} \;=\; \mathbb{R}^{588}.
+\end{equation}
+Each pixel of the patch contributes 3 scalars (one per RGB channel),
+so a patch is a $588$-dim vector of raw pixel intensities (typically
+each rescaled to $[0, 1]$ and then ImageNet-normalised).
+
+\medskip
+\noindent\emph{Step 2 — project each patch to a $D$-dim feature.}
+A single learned linear map (the patch-embedding weight) is shared
+across all $1296$ patches:
+\begin{equation}\label{eq:self-worked-embed}
+  \bm{x}_{r,c}
+   \;=\; \bm{W}_{\text{emb}}\,\bm{p}_{r,c} \;+\; \bm{b}_{\text{emb}}
+   \;\in\;\mathbb{R}^{D} = \mathbb{R}^{384},
+  \qquad
+  \bm{W}_{\text{emb}}\in\mathbb{R}^{384\times 588},
+  \quad
+  \bm{b}_{\text{emb}}\in\mathbb{R}^{384}.
+\end{equation}
+This is \eqref{eq:patch-embed} applied to our concrete numbers. Implemented as
+a $\mathrm{Conv2d}(3{\to}D, \text{kernel}{=}14, \text{stride}{=}14)$
+on the image, it does the slice and the linear map in one pass —
+mathematically identical to the per-patch formula above. The total
+parameter count of this layer is $D \cdot 14\!\cdot\!14\!\cdot\!3 + D
+= 384 \cdot 588 + 384 = 226\,176$ weights, shared across every patch
+position; learning adjusts $\bm{W}_{\text{emb}}$ so that the
+$D$-dim output discriminates whatever the downstream loss requires
+(class identity, depth, semantic mask, etc.).
+
+\medskip
+\noindent\emph{Step 3 — flatten the patch grid to a token sequence.}
+Read the $36\!\times\!36$ grid in row-major order to produce a length-$T$
+sequence:
+\begin{equation}
+  \bm{x}_t \;:=\; \bm{x}_{r,c},\quad t \;=\; 36(r{-}1) + c,\quad t = 1, \dots, T,
+  \qquad
+  T = 36 \cdot 36 = 1296.
+\end{equation}
+Stacking the $T$ rows gives the token matrix consumed by the
+attention layer:
+\begin{equation}
+  \bm{X}\;=\;(\bm{x}_1, \dots, \bm{x}_T)^\top
+   \;\in\; \mathbb{R}^{T \times D} \;=\; \mathbb{R}^{1296 \times 384}.
+\end{equation}
+The attention layer never sees pixels — it sees these $1296$ token
+vectors, each of dimension $D = 384$. Every subsequent
+operation in this worked example (projections to $\bm{B}, \bm{C},
+\bm{V}$, the masked inner product, etc.) treats $\bm{X}$ as its
+input matrix, with no further reference to the original
+$504\!\times\!504$ pixel grid.
 
 \paragraph{What the layer computes.}
 The per-token projections \eqref{eq:projB}, \eqref{eq:projC},
@@ -1501,6 +1563,265 @@ downstream pipeline is identical. The only practical differences are:
         head, especially Head~B's pyramid, so high-resolution
         segmentation benefits disproportionately from VSSD backbones.
 \end{itemize}
+
+%% ================================================================
+\section{Application: Multi-Frame 3D Point Tracking}
+\label{sec:tracking}
+%% ================================================================
+
+A video clip is a sequence of $F$ RGB frames
+$\bm{I}^{(1)},\dots,\bm{I}^{(F)}\in\mathbb{R}^{H\times W\times 3}$.
+The point-tracking task is to maintain a set of $N$ persistent
+\emph{tracks}; for every track $n\in\{1,\dots,N\}$ and every frame
+$t\in\{1,\dots,F\}$ we predict
+\begin{itemize}
+  \item a 3D position $\bm{p}_n^{(t)} \in \mathbb{R}^{3}$ in a
+        shared world frame,
+  \item a visibility / alive flag $\sigma_n^{(t)} \in [0, 1]$ —
+        $\sigma_n^{(t)} \!\to\! 1$ when track $n$ is observed in
+        frame $t$, $\sigma_n^{(t)} \!\to\! 0$ when it has disappeared
+        (occlusion, out-of-frame, end-of-life), and
+  \item a spawn-confidence $\rho_n^{(t)} \in [0, 1]$ — $\rho_n^{(t)}
+        \!\to\! 1$ on the frame at which a new track is born.
+\end{itemize}
+Tracks must keep identity across frames so that
+$\bm{p}_n^{(t)}$ and $\bm{p}_n^{(t')}$ are positions of \emph{the same
+physical 3D point} at times $t$ and $t'$.
+
+This chapter assembles two Mamba-3 attention blocks of different types:
+\textbf{non-causal VSSD self-attention within each frame} (\S\ref{sec:ncssd-mamba3}),
+because a single image has no causal direction, and
+\textbf{causal SSD cross-attention across frames} (\S\ref{sec:crossB}),
+because a track at time $t$ may depend on its history at times
+$\le t$ but not on the future. Together they realize a streaming
+tracker that is linear in patch count and linear in frame count.
+
+\subsection{Architecture overview}
+\label{sec:track-arch}
+
+\begin{center}\small
+\begin{tabular}{|l|c|c|c|}
+\hline
+Block & Operator & Inputs & Output \\ \hline
+Per-frame encoder
+  & VSSD self-attn \eqref{eq:nc-Y}
+  & frame patches $\bm{X}^{(t)}\in\mathbb{R}^{T\times D}$
+  & frame features $\bm{Y}^{(t)}\in\mathbb{R}^{T\times D}$ \\ \hline
+Track propagation
+  & causal cross-SSD \eqref{eq:crossB-out}
+  & queries $\bm{Q}^{(t-1)}$ + features $\bm{Y}^{(t)}$
+  & updated queries $\bm{Q}^{(t)}$ \\ \hline
+Position head
+  & MLP
+  & $\bm{Q}^{(t)}$
+  & $\bm{p}^{(t)},\,\sigma^{(t)},\,\rho^{(t)}$ \\ \hline
+\end{tabular}
+\end{center}
+
+A \emph{persistent query bank}
+$\bm{Q}^{(t)} = (\bm{q}_1^{(t)},\dots,\bm{q}_N^{(t)})^\top
+\in\mathbb{R}^{N\times D}$ carries the identity of every track from
+one frame to the next. At each frame $t$:
+
+\begin{enumerate}
+  \item Encode the frame: $\bm{X}^{(t)} \to \bm{Y}^{(t)}$ via the
+        VSSD operator (\S\ref{sec:track-self}).
+  \item Update the bank: $\bm{Q}^{(t-1)} \xrightarrow{~\text{cross-SSD over time}~} \bm{Q}^{(t)}$
+        using $\bm{Y}^{(1)},\dots,\bm{Y}^{(t)}$ as keys / values, with
+        a causal mask that hides future frames
+        (\S\ref{sec:track-cross}).
+  \item Read out 3D position, visibility, and spawn-confidence per
+        track via small MLP heads (\S\ref{sec:track-heads}).
+\end{enumerate}
+
+\subsection{Within-frame block: VSSD self-attention}
+\label{sec:track-self}
+
+Each frame $t$ goes through the same VSSD self-attention block as
+\S\ref{sec:vssd-worked}, independently of the others. Concretely
+with $H\!\times\!W = 504\!\times\!504$, patch $P=14$, $D=384$,
+$N=64$:
+\begin{align}
+  \bm{X}^{(t)} &\;\in\; \mathbb{R}^{T\times D} \;=\; \mathbb{R}^{1296\times 384}
+  &&\text{(frame-$t$ patch tokens)}, \\
+  \bm{B}^{(t)},\bm{C}^{(t)} &\;\in\; \mathbb{R}^{T\times N}, \quad
+  \bm{V}^{(t)} \;\in\; \mathbb{R}^{T\times D}, \quad
+  \bm{m}^{(t)} \;\in\; \mathbb{R}_{>0}^{T}, \\
+  \bm{H}^{(t)} &\;=\; \bigl(\bm{B}^{(t)}\odot\bm{m}^{(t)}\bigr)^\top\bm{V}^{(t)}
+  \;\in\; \mathbb{R}^{N\times D}, \\
+  \bm{Y}^{(t)} &\;=\; \bm{C}^{(t)}\,\bm{H}^{(t)}
+  \;\in\; \mathbb{R}^{T\times D} = \mathbb{R}^{1296\times 384}.
+\end{align}
+The choice of VSSD (non-causal) over bidirectional SSD has two
+motivations specific to tracking: (i) within a single frame there is
+no preferred direction in the patch grid, and (ii) the $N\!\cdot\!D
+= 24\,576$-scalar global summary $\bm{H}^{(t)}$ is independent of
+$T$, so high-resolution tracking (large $T$) does not blow the
+within-frame budget. Compute per frame is $O(TND)$, memory is
+$O(ND)$ for the summary.
+
+\subsection{Across-frame block: causal cross-SSD}
+\label{sec:track-cross}
+
+The query bank reads from the frame features via the cross-SSD
+operator of \S\ref{sec:crossB}, but with two crucial choices:
+
+\begin{enumerate}
+  \item[\textbf{(a)}] \textbf{Queries are the persistent bank.}
+        Take $\bm{C}^{q,(t)} \!\in\! \mathbb{R}^{N\times N_{\!state}}$
+        from $\bm{Q}^{(t-1)}$, the previous frame's bank — these are
+        the \emph{tracks asking ``where am I now?''} The kv side
+        comes from the new frame's features
+        $\bm{Y}^{(t)} \in \mathbb{R}^{T\times D}$, projected to
+        $\bm{B}^{kv,(t)} \in \mathbb{R}^{T\times N_{\!state}}$ and
+        used as the value matrix in place of $\bm{V}^{kv}$. Reading
+        from $T$ patches into $N$ tracks costs $O(N T N_{\!state})$
+        in Variant~B or $O(T N_{\!state} D)$ for the state of
+        Variant~A.
+  \item[\textbf{(b)}] \textbf{The mask is causal in time, not in
+        patches.} Stack the kv side over the frames seen so far,
+        $\bm{Y}^{(1)},\dots,\bm{Y}^{(t)}\in\mathbb{R}^{T\times D}$,
+        and let the cross-mask
+        $\bm{L}^{\text{cross}}\in\mathbb{R}^{N\times tT}$ block the
+        future:
+        \begin{equation}\label{eq:track-causal-mask}
+          \bm{L}^{\text{cross}}_{n,\,(s, j)}
+           \;=\; \mathbb{I}\bigl[s\le t\bigr]\cdot
+                 \Bigl(\!\prod_{k=s+1}^{t}\alpha_k\Bigr)\,\gamma_s,
+        \end{equation}
+        where the second factor is the same temporal decay profile
+        as the SSD mask of \eqref{eq:L2}, but now the running index
+        is over frames rather than tokens, and the cell
+        $\bm{L}^{\text{cross}}_{n,(s,j)}$ is shared across all
+        patches $j$ of frame $s$. The indicator
+        $\mathbb{I}[s\le t]$ enforces temporal causality so a track
+        at time $t$ cannot peek at frames $>t$. This is exactly the
+        recipe of \S\ref{sec:crossB} adapted from token causality to
+        frame causality.
+\end{enumerate}
+Concretely, the per-frame update of the bank is
+\begin{equation}\label{eq:track-update}
+  \boxed{\;
+    \bm{Q}^{(t)}
+     \;=\; \bigl(\bm{L}^{\text{cross}}\odot\bm{C}^{q,(t)}\bm{B}^{kv,(1{:}t)\,\top}\bigr)\,
+            \bm{V}^{kv,(1{:}t)}
+     \;\in\; \mathbb{R}^{N\times D},
+  \;}
+\end{equation}
+where the $(1{:}t)$ superscript denotes vertical stacking over the
+first $t$ frames. With the Mamba-3 recurrent form
+\eqref{eq:ssd-bridge-rec} the right-hand side is computed
+\emph{incrementally}: maintain a frame-level hidden state
+$\bm{h}^{(t)}_{\text{track}} \in \mathbb{R}^{N\!\times\!N_{\!state}\!\times\!D}$
+that is updated in place each frame, so the streaming cost is
+$O(N N_{\!state} D)$ per frame — independent of clip length.
+
+\subsection{Per-track read-out heads}
+\label{sec:track-heads}
+
+Each updated query $\bm{q}_n^{(t)} \in \mathbb{R}^{D}$ passes through
+three small MLPs:
+\begin{align}
+  \bm{p}_n^{(t)} &\;=\; \mathrm{MLP}_{\text{xyz}}(\bm{q}_n^{(t)}) \;\in\; \mathbb{R}^{3},
+  & &\text{(3D position)}\\
+  \sigma_n^{(t)} &\;=\; \sigma\!\bigl(\mathrm{MLP}_{\text{vis}}(\bm{q}_n^{(t)})\bigr) \;\in\; [0, 1],
+  & &\text{(visibility / alive)}\\
+  \rho_n^{(t)}   &\;=\; \sigma\!\bigl(\mathrm{MLP}_{\text{spawn}}(\bm{q}_n^{(t)})\bigr) \;\in\; [0, 1],
+  & &\text{(spawn flag)}
+\end{align}
+where $\sigma$ is the sigmoid. Stacking over all $N$ tracks gives the
+predicted trajectory tensor
+\begin{equation}
+  \bigl(\bm{p}^{(t)},\,\bm{\sigma}^{(t)},\,\bm{\rho}^{(t)}\bigr)
+  \;\in\; \mathbb{R}^{N\times 3}\,\times\,[0,1]^{N}\,\times\,[0,1]^{N}.
+\end{equation}
+
+\subsection{Spawn and disappear}
+\label{sec:track-spawn}
+
+The fixed-size bank $\bm{Q}\in\mathbb{R}^{N\times D}$ accommodates a
+worst-case track count. As in Mask2Former (\S\ref{sec:seg-C}), $N$ is
+chosen well above the typical instance count (e.g.\ $N=256$ for
+ordinary dynamic scenes).
+
+\textbf{Disappear.} A track is treated as occluded at frame $t$ when
+$\sigma_n^{(t)} < \tau_{\text{vis}}$ (e.g.\ $\tau_{\text{vis}}=0.3$).
+Its query embedding $\bm{q}_n^{(t)}$ still updates from the
+cross-attention, so the track can \emph{re-emerge} if it becomes
+visible again — the visibility flag is decoupled from the query
+state.
+
+\textbf{Spawn.} A track is born at frame $t$ when $\rho_n^{(t)} >
+\tau_{\text{spawn}}$ on a query whose visibility was previously zero.
+At training time, ground-truth spawn events are assigned to
+currently-dormant queries via Hungarian matching, exactly as in the
+DETR / Mask2Former pipeline; at inference, the $\rho$ head decides
+which dormant queries to wake up.
+
+\textbf{End of life.} Tracks that go invisible for more than $L_{\max}$
+frames (e.g.\ 30) may be re-claimed by the spawn logic: their query
+embedding is reset to a learned ``free-slot'' template before the
+next frame's cross-attention, so a long-departed track does not
+permanently occupy a slot.
+
+\subsection{Loss}
+\label{sec:track-loss}
+
+Let $\bm{p}_n^{\star,(t)}$, $\sigma_n^{\star,(t)}$ be the
+ground-truth 3D position and visibility for track $n$ at frame $t$
+(after a Hungarian matching has assigned predicted queries to GT
+tracks at frame 1). Train with the sum of
+\begin{itemize}
+  \item Per-frame, per-track 3D regression on visible frames:
+        $\sum_{n,t} \sigma_n^{\star,(t)}\,\bigl\|\bm{p}_n^{(t)} -
+        \bm{p}_n^{\star,(t)}\bigr\|_{1}$.
+  \item Visibility BCE: $\sum_{n,t}
+        \mathrm{BCE}\bigl(\sigma_n^{(t)},\sigma_n^{\star,(t)}\bigr)$.
+  \item Spawn BCE on the birth frames only:
+        $\sum_{n,t} \mathbb{I}[t = t_n^{\text{birth}}]\,
+        \mathrm{BCE}(\rho_n^{(t)}, 1)
+        + \mathbb{I}[t \neq t_n^{\text{birth}}]\,
+        \mathrm{BCE}(\rho_n^{(t)}, 0)$.
+  \item Optionally a smoothness prior
+        $\sum_{n,t} \sigma_n^{\star,(t)}\sigma_n^{\star,(t-1)}\,
+        \|\bm{p}_n^{(t)} - \bm{p}_n^{(t-1)}\|_{2}$
+        to discourage trajectory jitter on visibly continuous segments.
+\end{itemize}
+The cross-attention's causal mask \eqref{eq:track-causal-mask}
+ensures that the loss at frame $t$ depends only on frames $\le t$;
+gradients flow back through the recurrent hidden state
+$\bm{h}^{(t)}_{\text{track}}$, so the network learns a streaming
+update rule, not a teacher-forced batch tracker.
+
+\subsection{Why this operator pairing}
+\label{sec:track-why}
+
+VSSD self-attention and causal cross-SSD have complementary
+strengths matched to the two axes of the tracking problem:
+\begin{itemize}
+  \item Within a frame, structure is 2-D and orderless — every patch
+        can in principle inform every other. VSSD reaches that
+        all-to-all coverage at $O(T)$ cost via the rank-$N$ global
+        summary $\bm{H}^{(t)}$, instead of the $O(T^{2})$ that
+        softmax MSA or bidirectional SSD would pay
+        (\S\ref{sec:vssd-worked}'s ratio: $\sim$\,$20\!\times$
+        cheaper on a $504^{2}$ image).
+  \item Across frames, structure is 1-D and causally ordered — frame
+        $t$ depends on its history. Causal SSD with the temporal
+        mask \eqref{eq:track-causal-mask} preserves that ordering
+        and admits a $O(1)$-per-frame streaming recurrence
+        \eqref{eq:ssd-bridge-rec}, so the tracker's memory does not
+        grow with clip length. The full $\bm{L}^{\text{cross}}$
+        never needs to be materialised at inference.
+\end{itemize}
+The persistent query bank $\bm{Q}^{(t)}$ is the bridge: it is
+updated by both blocks (VSSD-encoded features feed it through
+cross-SSD), but its size $N\!\times\!D$ never depends on either the
+patch count $T$ or the clip length $F$. The end-to-end forward pass
+is $O(F \cdot T N D)$ in time, $O(N T_{\max} N_{\!state} D)$ in
+memory if the within-frame summaries $\bm{H}^{(t)}$ are kept (the
+default), or $O(N N_{\!state} D)$ if only the rolling track hidden
+state is kept (streaming inference).
 
 %% ================================================================
 \section{End-to-End Summary}
