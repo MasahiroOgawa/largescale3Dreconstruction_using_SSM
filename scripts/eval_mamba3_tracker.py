@@ -25,14 +25,12 @@ from mamba3_tracker.data.dataset import collate_tracking
 from mamba3_tracker.data.tapvid3d import SUBSETS, list_clips, load_clip
 from mamba3_tracker.eval.tapvid3d_eval import aggregate, compute_clip_metrics
 from mamba3_tracker.model.tracker import Mamba3Tracker
-from mamba3_tracker.train.loss import _hungarian_match_anchor
 
 
 def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
     cfg = state["cfg"]
     model = Mamba3Tracker(
         dim=cfg["dim"], num_heads=cfg["num_heads"], state_dim=cfg["state_dim"],
-        num_tracks=cfg["num_tracks"],
         level_sizes=tuple(cfg["level_sizes"]),
     ).to(device)
     model.load_state_dict(state["model"])
@@ -44,40 +42,47 @@ def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
 def _infer_clip(model, clip, device, amp_dtype, max_frames: int = 0) -> tuple[np.ndarray, np.ndarray]:
     """Return (pred_tracks_NT3, pred_visibility_NT) for one clip.
 
-    The model's `num_tracks` slot count is generally larger than the clip's
-    GT N_q. We slot-assign predictions to GT tracks via Hungarian matching
-    on the anchor frame after the forward pass.
+    v2: slot n is GT track n by construction (query-conditioned bank). The
+    model emits Δp relative to the query anchor; absolute prediction is
+    recovered as `p_query + Δp` using GT at the query frame.
     """
     F = int(clip.images.shape[0]) if max_frames in (0, None) else min(int(clip.images.shape[0]), max_frames)
-    images = clip.images[:F].unsqueeze(0).to(device)         # (1, F, 3, H, W)
-    with torch.autocast(device_type=device.type, dtype=amp_dtype):
-        pred = model(images)
+    images = clip.images[:F].clone()
+    H_orig, W_orig = images.shape[-2], images.shape[-1]
+    img_size = model.image_size
+    if H_orig != img_size or W_orig != img_size:
+        images = torch.nn.functional.interpolate(
+            images, size=(img_size, img_size),
+            mode="bilinear", align_corners=False,
+        )
+    images = images.unsqueeze(0).to(device)                  # (1, F, 3, S, S)
 
-    pred_xyz = pred.xyz[0].float().cpu()                    # (F, N_slots, 3)
-    pred_vis = torch.sigmoid(pred.vis_logits[0].float()).cpu()  # (F, N_slots)
-    N_slots = pred_xyz.shape[1]
+    # Scale query (x, y) to resized pixel space; clamp anchor frame to [0, F-1].
+    sx = img_size / float(W_orig)
+    sy = img_size / float(H_orig)
     N_q = clip.queries_xyt.shape[0]
+    queries = clip.queries_xyt.clone()
+    queries[:, 0] *= sx
+    queries[:, 1] *= sy
+    queries[:, 2] = queries[:, 2].clamp(max=F - 1)
+    queries = queries.unsqueeze(0).to(device)
+    qmask = torch.ones(1, N_q, dtype=torch.bool, device=device)
 
-    # GT per-track anchor: 3D position at that track's own anchor frame.
+    with torch.autocast(device_type=device.type, dtype=amp_dtype):
+        pred = model(images, queries, qmask)
+
+    delta = pred.xyz[0].float().cpu()                        # (F, N_q, 3)
+    pred_vis = torch.sigmoid(pred.vis_logits[0].float()).cpu()  # (F, N_q)
+
+    # Recover absolute predictions: p_n^(t) = p_n^query + Δp_n^(t).
     anchor_idx = clip.queries_xyt[:, 2].long().clamp(min=0, max=F - 1)
-    gt_anchor_xyz = torch.gather(
-        clip.tracks_XYZ[:F], dim=0, index=anchor_idx.view(1, N_q, 1).expand(1, N_q, 3),
+    gt_anchor_xyz = clip.tracks_XYZ[:F].gather(
+        dim=0, index=anchor_idx.view(1, N_q, 1).expand(1, N_q, 3),
     ).squeeze(0)                                             # (N_q, 3)
+    pred_abs = delta + gt_anchor_xyz.unsqueeze(0)            # (F, N_q, 3)
 
-    # Pick predictions at frame 0 for matching (consistent with training loss).
-    pred_anchor = pred_xyz[0]                                # (N_slots, 3)
-    gt_mask = torch.ones(1, N_q, dtype=torch.bool)
-    assign = _hungarian_match_anchor(
-        pred_anchor.unsqueeze(0), gt_anchor_xyz.unsqueeze(0), gt_mask,
-    )                                                        # (1, N_q)
-    slot_idx = assign[0]                                     # (N_q,)
-
-    matched_xyz = pred_xyz[:, slot_idx, :]                   # (F, N_q, 3)
-    matched_vis = pred_vis[:, slot_idx]                      # (F, N_q)
-
-    # tapvid eval expects (N, T, *) layout
-    pred_tracks_NT3 = matched_xyz.transpose(0, 1).numpy()    # (N_q, F, 3)
-    pred_vis_NT = matched_vis.transpose(0, 1).numpy()        # (N_q, F)
+    pred_tracks_NT3 = pred_abs.transpose(0, 1).numpy()
+    pred_vis_NT = pred_vis.transpose(0, 1).numpy()
     return pred_tracks_NT3, pred_vis_NT
 
 

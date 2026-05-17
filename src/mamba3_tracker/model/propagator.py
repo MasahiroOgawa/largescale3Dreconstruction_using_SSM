@@ -1,47 +1,92 @@
-"""Causal cross-frame propagator with coarse-to-fine pyramid refinement.
+"""Causal cross-frame propagator with query-conditioned bank initialisation.
 
-The persistent query bank `Q ∈ ℝ^(B, N, D)` represents tracked-point
-identities. At each frame `t` it is refined coarse-to-fine across the
-encoder's pyramid levels: a cross-SSD block at each level reads from that
-level's frame-t token grid and adds a residual update to Q.
+Each track slot `n` is bound at construction time to a user-supplied
+query `(x_n^q, y_n^q, t_n^q)`: a pixel location and an anchor frame
+index. The initial bank state `q_n^(0)` is the encoder's finest
+pyramid feature bilinear-sampled at that pixel and frame
+(`doc/attention/mamba3_attention.tex §8.3, eq. eq:track-bank-init`).
+This pins slot identity to a specific physical point, removing the
+slot-flipping problem of a free-floating learnable bank.
 
-Temporal causality is enforced by construction — the loop processes frames
-in order and only ever consumes the current frame's features. Track
-information from earlier frames is carried implicitly by the residual
-accumulation in `Q`, which serves as the Mamba-3 hidden state of §8.3 of
-`doc/attention/mamba3_attention.tex`.
-
-Output: per-(frame, track) feature `Q^(t) ∈ ℝ^(B, F, N, D)`.
+For each subsequent frame `t = 1..F-1`, the bank is refined
+coarse-to-fine across pyramid levels: a cross-SSD block at each level
+reads from that level's frame-t token grid and adds a residual update
+to `Q`. Per-frame loop carries temporal causality implicitly.
 """
 
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 from torch import Tensor, nn
+import torch.nn.functional as F
 
 from mamba3_attn.mamba3.cross_attention import Mamba3CrossAttention
 
 
 def _pyramid_to_flat_kv(level: Tensor) -> Tensor:
     """(B, D, h, w) → (B, h*w, D)."""
-    B, D, h, w = level.shape
     return level.flatten(2).transpose(1, 2)
 
 
+def _sample_query_features(
+    pyramid_finest: Tensor,    # (B, F, D, h, w) — the finest pyramid level
+    queries_xyt: Tensor,       # (B, N, 3) — (x, y, t) in input-image coords
+    query_mask: Tensor,        # (B, N) bool
+    image_size: int,
+) -> Tensor:
+    """Bilinear-sample the finest pyramid level at each query's (x, y, t).
+
+    Returns (B, N, D). Masked slots (`query_mask=False`) are returned as zeros.
+    Out-of-bound x/y are clamped to grid edges.
+    """
+    B, F_, D, h, w = pyramid_finest.shape
+    N = queries_xyt.shape[1]
+    device = pyramid_finest.device
+
+    # Scale (x, y) in pixel coords → feature-grid coords in [0, 1] then
+    # to torch.grid_sample's normalized [-1, 1].
+    px = queries_xyt[..., 0].clamp(0, image_size - 1) / max(image_size - 1, 1)  # (B, N)
+    py = queries_xyt[..., 1].clamp(0, image_size - 1) / max(image_size - 1, 1)
+    gx = px * 2.0 - 1.0
+    gy = py * 2.0 - 1.0
+    # grid_sample expects (..., 2) with (x, y) last
+    grid_xy = torch.stack([gx, gy], dim=-1)            # (B, N, 2)
+
+    out = torch.zeros(B, N, D, device=device, dtype=pyramid_finest.dtype)
+    for b in range(B):
+        n_keep = query_mask[b].nonzero(as_tuple=False).flatten()
+        if n_keep.numel() == 0:
+            continue
+        t_idx = queries_xyt[b, n_keep, 2].long().clamp(0, F_ - 1)   # (N_b,)
+        # Group by frame to avoid one grid_sample per query
+        for t_val in torch.unique(t_idx).tolist():
+            sel = n_keep[t_idx == t_val]                       # (N_t,)
+            if sel.numel() == 0:
+                continue
+            feat = pyramid_finest[b:b + 1, t_val]              # (1, D, h, w)
+            grid = grid_xy[b, sel].view(1, -1, 1, 2)            # (1, N_t, 1, 2)
+            sampled = F.grid_sample(
+                feat, grid, mode="bilinear",
+                padding_mode="border", align_corners=True,
+            )                                                   # (1, D, N_t, 1)
+            out[b, sel] = sampled.squeeze(-1).squeeze(0).transpose(0, 1)
+    return out
+
+
 class CausalCrossPropagator(nn.Module):
-    """Persistent query bank refined coarse-to-fine across pyramid levels.
+    """Query-conditioned bank refined coarse-to-fine across pyramid levels.
 
     For each frame `t` and each pyramid level `l` (coarse → fine), the update is
         Q ← Q + CrossAttn_l( LN(Q),  LN(Y^(t)_l) ).
     After the finest level, that frame's bank state Q is stored as Q^(t).
+
+    `bank_init` is now derived from the input queries (no longer a learnable
+    Parameter), so the slot count `N` is dynamic per batch / clip.
     """
 
     def __init__(
         self,
         dim: int = 384,
-        num_tracks: int = 512,
         num_pyramid_levels: int = 3,
         num_heads: int = 6,
         state_dim: int = 64,
@@ -50,14 +95,9 @@ class CausalCrossPropagator(nn.Module):
         if num_pyramid_levels < 1:
             raise ValueError("need at least 1 pyramid level")
         self.dim = dim
-        self.num_tracks = num_tracks
         self.num_pyramid_levels = num_pyramid_levels
 
-        self.bank_init = nn.Parameter(torch.randn(num_tracks, dim) * 0.02)
-        # Variant A (state-compressed): kv is collapsed to a single
-        # (H, N_state, head_dim) summary before the per-query read-out, so
-        # memory is independent of T_kv. Crucial for the pyramid: the finest
-        # level has T_kv = h·w which grows quadratically with resolution.
+        # Variant A (state-compressed): kv memory independent of T_kv.
         self.cross_levels = nn.ModuleList(
             [
                 Mamba3CrossAttention(
@@ -77,15 +117,18 @@ class CausalCrossPropagator(nn.Module):
     def forward(
         self,
         pyramid: list[Tensor],
-        initial_bank: Optional[Tensor] = None,
+        queries_xyt: Tensor,       # (B, N, 3) — (x, y, t)
+        query_mask: Tensor,        # (B, N) bool
+        image_size: int,
     ) -> Tensor:
         """
         Args:
             pyramid: list of `num_pyramid_levels` tensors, each (B, F, D, h_l, w_l).
                 Ordered coarse → fine.
-            initial_bank: optional (B, N, D) bank state to start from (for
-                streaming inference across multiple windows). Defaults to
-                `bank_init` broadcast to batch size.
+            queries_xyt: (B, N, 3) per-track queries in pixel coords + anchor frame.
+            query_mask: (B, N) True where the slot is a real query (False = padding).
+            image_size: side length of the (square) input image — used to map
+                pixel coords to feature-grid coords.
 
         Returns:
             Q_history: (B, F, N, D) — per-(frame, track) refined features.
@@ -96,13 +139,12 @@ class CausalCrossPropagator(nn.Module):
                 f"propagator was built for {self.num_pyramid_levels}"
             )
 
-        B = pyramid[0].shape[0]
         F_ = pyramid[0].shape[1]
 
-        if initial_bank is None:
-            Q = self.bank_init.unsqueeze(0).expand(B, -1, -1).contiguous()
-        else:
-            Q = initial_bank
+        # Bank init: sample the finest pyramid at each query's (x, y, t).
+        Q = _sample_query_features(
+            pyramid[-1], queries_xyt, query_mask, image_size=image_size,
+        )
 
         history: list[Tensor] = []
         for t in range(F_):

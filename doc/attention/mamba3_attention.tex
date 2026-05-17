@@ -1618,10 +1618,32 @@ Position head
 \end{tabular}
 \end{center}
 
-A \emph{persistent query bank}
+A \emph{query-conditioned bank}
 $\bm{Q}^{(t)} = (\bm{q}_1^{(t)},\dots,\bm{q}_N^{(t)})^\top
 \in\mathbb{R}^{N\times D}$ carries the identity of every track from
-one frame to the next. At each frame $t$:
+one frame to the next. Unlike a free-floating learnable bank, each
+slot $n$ is \emph{tied to a specific physical point} at construction
+time: given the user-supplied query
+$(x_n^{q}, y_n^{q}, t_n^{q})$ — a pixel location and an anchor frame
+— the initial bank state is obtained by bilinear-sampling the
+encoder's finest pyramid feature at that location:
+\begin{equation}\label{eq:track-bank-init}
+  \bm{q}_n^{(0)} \;=\; \mathrm{BilinearSample}\!\bigl(
+    \bm{Y}^{(t_n^{q})},\; \tfrac{x_n^{q}}{W}\cdot W_{\!grid},\;
+                          \tfrac{y_n^{q}}{H}\cdot H_{\!grid}\bigr)
+  \;\in\; \mathbb{R}^{D},
+\end{equation}
+where $W_{\!grid}\times H_{\!grid}$ is the finest pyramid level's
+spatial extent. This eliminates the slot-assignment ambiguity that
+otherwise arises when free-floating slots are matched to ground-truth
+tracks via Hungarian assignment: there, the matching flips between
+batches and the gradient signal becomes incoherent. With
+\eqref{eq:track-bank-init} the slot identity is fixed by the input,
+slot $n$ always means \emph{the trajectory of physical point
+$(x_n^{q}, y_n^{q}, t_n^{q})$}, and gradients accumulate coherently
+per slot.
+
+At each frame $t$:
 
 \begin{enumerate}
   \item Encode the frame: $\bm{X}^{(t)} \to \bm{Y}^{(t)}$ via the
@@ -1722,27 +1744,39 @@ $O(N N_{\!state} D)$ per frame — independent of clip length.
 Each updated query $\bm{q}_n^{(t)} \in \mathbb{R}^{D}$ passes through
 three small MLPs:
 \begin{align}
-  \bm{p}_n^{(t)} &\;=\; \mathrm{MLP}_{\text{xyz}}(\bm{q}_n^{(t)}) \;\in\; \mathbb{R}^{3},
-  & &\text{(3D position)}\\
+  \Delta\bm{p}_n^{(t)} &\;=\; \mathrm{MLP}_{\text{xyz}}(\bm{q}_n^{(t)}) \;\in\; \mathbb{R}^{3},
+  & &\text{(motion since query anchor)}\\
   \sigma_n^{(t)} &\;=\; \sigma\!\bigl(\mathrm{MLP}_{\text{vis}}(\bm{q}_n^{(t)})\bigr) \;\in\; [0, 1],
   & &\text{(visibility / alive)}\\
   \rho_n^{(t)}   &\;=\; \sigma\!\bigl(\mathrm{MLP}_{\text{spawn}}(\bm{q}_n^{(t)})\bigr) \;\in\; [0, 1],
   & &\text{(spawn flag)}
 \end{align}
-where $\sigma$ is the sigmoid. Stacking over all $N$ tracks gives the
-predicted trajectory tensor
+where $\sigma$ is the sigmoid. The position head predicts
+$\Delta\bm{p}_n^{(t)}$ — the motion of track $n$ at frame $t$ relative
+to its own query-anchor position — rather than absolute coordinates.
+A monocular model cannot recover the absolute metric scale of the
+scene from RGB alone, so any absolute-position prediction is
+identifiable only up to an unknown per-clip scale factor; predicting
+the relative trajectory side-steps that ambiguity entirely (the
+relative motion is well-defined given the camera and the trajectory
+shape). At inference, the absolute prediction is recovered as
+$\bm{p}_n^{(t)} = \bm{p}_n^{q} + \Delta\bm{p}_n^{(t)}$ using the query
+anchor position $\bm{p}_n^{q}$ (which the TAPVid-3D evaluator provides
+as the per-track GT position at the query frame).
+
+Stacking over all $N$ tracks gives the predicted trajectory tensor
 \begin{equation}
-  \bigl(\bm{p}^{(t)},\,\bm{\sigma}^{(t)},\,\bm{\rho}^{(t)}\bigr)
+  \bigl(\Delta\bm{p}^{(t)},\,\bm{\sigma}^{(t)},\,\bm{\rho}^{(t)}\bigr)
   \;\in\; \mathbb{R}^{N\times 3}\,\times\,[0,1]^{N}\,\times\,[0,1]^{N}.
 \end{equation}
 
 \subsection{Spawn and disappear}
 \label{sec:track-spawn}
 
-The fixed-size bank $\bm{Q}\in\mathbb{R}^{N\times D}$ accommodates a
-worst-case track count. As in Mask2Former (\S\ref{sec:seg-C}), $N$ is
-chosen well above the typical instance count (e.g.\ $N=256$ for
-ordinary dynamic scenes).
+With query-conditioned initialisation \eqref{eq:track-bank-init}, $N$
+equals the number of user-supplied queries — there is no fixed worst-
+case slot count to over-allocate, and no need for the Mask2Former-style
+``no-object'' class or Hungarian-spawn matching.
 
 \textbf{Disappear.} A track is treated as occluded at frame $t$ when
 $\sigma_n^{(t)} < \tau_{\text{vis}}$ (e.g.\ $\tau_{\text{vis}}=0.3$).
@@ -1751,42 +1785,87 @@ cross-attention, so the track can \emph{re-emerge} if it becomes
 visible again — the visibility flag is decoupled from the query
 state.
 
-\textbf{Spawn.} A track is born at frame $t$ when $\rho_n^{(t)} >
-\tau_{\text{spawn}}$ on a query whose visibility was previously zero.
-At training time, ground-truth spawn events are assigned to
-currently-dormant queries via Hungarian matching, exactly as in the
-DETR / Mask2Former pipeline; at inference, the $\rho$ head decides
-which dormant queries to wake up.
-
-\textbf{End of life.} Tracks that go invisible for more than $L_{\max}$
-frames (e.g.\ 30) may be re-claimed by the spawn logic: their query
-embedding is reset to a learned ``free-slot'' template before the
-next frame's cross-attention, so a long-departed track does not
-permanently occupy a slot.
+\textbf{Spawn / birth frame.} The query $(x_n^{q}, y_n^{q}, t_n^{q})$
+specifies when track $n$ is \emph{seeded}; the spawn-confidence head
+$\rho_n^{(t)}$ predicts when within the clip the underlying physical
+point first becomes visible, which the loss
+$\mathcal{L}_{\text{spawn}}$ supervises against
+$\mathbb{I}[t = t_n^{\text{birth}}]$. New physical points entering the
+scene after the clip's first frame are accommodated by adding a new
+query at the appropriate $(x, y, t)$; the bank then grows by one slot
+without retraining.
 
 \subsection{Loss}
 \label{sec:track-loss}
 
-Let $\bm{p}_n^{\star,(t)}$, $\sigma_n^{\star,(t)}$ be the
-ground-truth 3D position and visibility for track $n$ at frame $t$
-(after a Hungarian matching has assigned predicted queries to GT
-tracks at frame 1). Train with the sum of
+Because \eqref{eq:track-bank-init} pins slot $n$ to the query $(x_n^{q},
+y_n^{q}, t_n^{q})$, there is no slot-assignment freedom — slot $n$
+\emph{is} GT track $n$ by construction. No Hungarian matching is
+needed. Let $\bm{p}_n^{\star,(t)}$, $\sigma_n^{\star,(t)}$ be the
+ground-truth 3D position and visibility for that track at frame $t$,
+and let $\bm{p}_n^{q} := \bm{p}_n^{\star,(t_n^{q})}$ be the GT 3D
+position at the query anchor. The ground-truth motion is
+\begin{equation}\label{eq:track-delta-star}
+  \Delta\bm{p}_n^{\star,(t)} \;:=\; \bm{p}_n^{\star,(t)} - \bm{p}_n^{q},
+\end{equation}
+and the model's prediction $\Delta\bm{p}_n^{(t)}$ from
+\S\ref{sec:track-heads} is compared against this.
+
+\paragraph{Per-clip scale normalisation.}
+Different TAPVid-3D subsets span very different metric scales
+(pstudio / adt are 1--5\,m indoor scenes; drivetrack is 10--50\,m
+outdoor driving). An un-normalised L1 on $\Delta\bm{p}$ would make a
+drivetrack batch's gradient $\sim$10$\times$ larger than a pstudio
+batch's, swamping the optimisation. Following the TAPVid-3D
+evaluator's \texttt{scaling=`median'} convention, normalise both
+sides by a per-clip scale
+\begin{equation}\label{eq:track-scale}
+  s \;=\; \mathrm{median}\!\bigl(\|\bm{p}_n^{q}\|_2 \;:\; n \in \mathcal{N}\bigr)
+  \;+\; \varepsilon,
+\end{equation}
+where $\mathcal{N}$ ranges over the GT tracks in the clip and
+$\varepsilon$ is a small positive constant (e.g.\ $10^{-3}$\,m). The
+scaled position residual is then
+\begin{equation}\label{eq:track-resid}
+  \bm{r}_n^{(t)} \;:=\; \tfrac{1}{s}\bigl(\Delta\bm{p}_n^{(t)} - \Delta\bm{p}_n^{\star,(t)}\bigr).
+\end{equation}
+
+\paragraph{Loss terms.}
 \begin{itemize}
-  \item Per-frame, per-track 3D regression on visible frames:
-        $\sum_{n,t} \sigma_n^{\star,(t)}\,\bigl\|\bm{p}_n^{(t)} -
-        \bm{p}_n^{\star,(t)}\bigr\|_{1}$.
-  \item Visibility BCE: $\sum_{n,t}
-        \mathrm{BCE}\bigl(\sigma_n^{(t)},\sigma_n^{\star,(t)}\bigr)$.
-  \item Spawn BCE on the birth frames only:
-        $\sum_{n,t} \mathbb{I}[t = t_n^{\text{birth}}]\,
-        \mathrm{BCE}(\rho_n^{(t)}, 1)
-        + \mathbb{I}[t \neq t_n^{\text{birth}}]\,
-        \mathrm{BCE}(\rho_n^{(t)}, 0)$.
-  \item Optionally a smoothness prior
-        $\sum_{n,t} \sigma_n^{\star,(t)}\sigma_n^{\star,(t-1)}\,
-        \|\bm{p}_n^{(t)} - \bm{p}_n^{(t-1)}\|_{2}$
-        to discourage trajectory jitter on visibly continuous segments.
+  \item \textbf{Scale-normalised relative position L1} on visible frames:
+        \begin{equation}\label{eq:track-pos-loss}
+          \mathcal{L}_{\text{pos}} \;=\;
+          \frac{1}{Z_{\text{pos}}}
+          \sum_{n,t} \sigma_n^{\star,(t)} \,\|\bm{r}_n^{(t)}\|_{1},
+        \end{equation}
+        with normaliser $Z_{\text{pos}} = \sum_{n,t}
+        \sigma_n^{\star,(t)}$. The combined effect of
+        \eqref{eq:track-resid} and the median scale
+        \eqref{eq:track-scale} makes the loss \emph{dimensionless} and
+        clip-scale-invariant: every clip contributes a comparable
+        gradient regardless of indoor/outdoor scene metres.
+  \item \textbf{Visibility BCE}:
+        $\mathcal{L}_{\text{vis}} = \frac{1}{Z_{\text{q}}} \sum_{n,t}
+        \mathrm{BCE}\bigl(\sigma_n^{(t)},\sigma_n^{\star,(t)}\bigr)$
+        with $Z_{\text{q}}$ the count of valid (clip,track,frame) cells.
+  \item \textbf{Spawn BCE} on the first-visible frame:
+        $\mathcal{L}_{\text{spawn}} = \frac{1}{Z_{\text{q}}}
+        \sum_{n,t} \mathrm{BCE}\bigl(\rho_n^{(t)},
+        \mathbb{I}[t = t_n^{\text{birth}}]\bigr)$ where
+        $t_n^{\text{birth}} = \min\{t : \sigma_n^{\star,(t)} = 1\}$.
+  \item \textbf{Temporal smoothness} on the scaled relative trajectory:
+        $\mathcal{L}_{\text{smooth}} = \frac{1}{Z_{\text{sm}}}
+        \sum_{n,t}
+        \sigma_n^{\star,(t)}\sigma_n^{\star,(t-1)}
+        \,\|\tfrac{1}{s}(\Delta\bm{p}_n^{(t)} - \Delta\bm{p}_n^{(t-1)})\|_{2}$.
 \end{itemize}
+The total loss is
+$\mathcal{L} = \lambda_{\text{pos}}\mathcal{L}_{\text{pos}}
+            + \lambda_{\text{vis}}\mathcal{L}_{\text{vis}}
+            + \lambda_{\text{spawn}}\mathcal{L}_{\text{spawn}}
+            + \lambda_{\text{smooth}}\mathcal{L}_{\text{smooth}}$
+with default weights $(1,\,0.5,\,0.5,\,0.1)$.
+
 The cross-attention's causal mask \eqref{eq:track-causal-mask}
 ensures that the loss at frame $t$ depends only on frames $\le t$;
 gradients flow back through the recurrent hidden state

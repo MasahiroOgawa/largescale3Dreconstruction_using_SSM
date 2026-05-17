@@ -10,7 +10,7 @@ from typing import Iterable, Sequence
 import torch
 from torch.utils.data import Dataset
 
-from .tapvid3d import SUBSETS, TAPVidClip, list_clips, load_clip
+from .tapvid3d import SUBSETS, list_clips, load_clip
 
 
 @dataclass
@@ -43,11 +43,13 @@ class TAPVid3DDataset(Dataset):
         seed: int = 0,
         max_queries: int = 512,
         augment: bool = False,
+        image_size: int = 448,
     ) -> None:
         self.clip_paths = list(clip_paths)
         self.window_size = window_size
         self.max_queries = max_queries
         self.augment = augment
+        self.image_size = image_size
         self._rng = random.Random(seed)
 
     def __len__(self) -> int:
@@ -64,6 +66,23 @@ class TAPVid3DDataset(Dataset):
         images = clip.images[start:end].clone()
         tracks = clip.tracks_XYZ[start:end].clone()
         vis = clip.visibility[start:end].clone()
+        H_orig, W_orig = int(clip.H), int(clip.W)
+
+        # Resize every clip to a common (image_size, image_size) so collate
+        # can stack across subsets with different native resolutions
+        # (drivetrack 1280×1920, adt 512×512, pstudio 360×640). 3D GT tracks
+        # are in camera-frame metres and are unaffected by image resize.
+        # Query (x, y) coords ARE in pixel space, so they must be scaled to
+        # match the resized image (the propagator's bilinear-sample step in
+        # §8.3 of doc/attention/mamba3_attention.tex uses these to seed
+        # each track's initial bank slot).
+        sx = self.image_size / float(W_orig)
+        sy = self.image_size / float(H_orig)
+        if images.shape[-1] != self.image_size or images.shape[-2] != self.image_size:
+            images = torch.nn.functional.interpolate(
+                images, size=(self.image_size, self.image_size),
+                mode="bilinear", align_corners=False,
+            )
 
         if self.augment:
             images = _photometric_aug(images, self._rng)
@@ -92,6 +111,9 @@ class TAPVid3DDataset(Dataset):
             tracks = tracks[:, keep]
             vis = vis[:, keep]
         queries[:, 2] -= start
+        # Scale (x, y) into the resized image's pixel coords.
+        queries[:, 0] *= sx
+        queries[:, 1] *= sy
 
         return {
             "images": images,

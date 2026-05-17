@@ -49,13 +49,14 @@ def _validate(model, val_ds, loss_fn, device, amp_dtype, n_clips: int = 5) -> di
     totals: dict[str, list[float]] = defaultdict(list)
     for i in range(min(n_clips, len(val_ds))):
         batch = collate_tracking([val_ds[i]])
+        queries = batch.queries_xyt.to(device)
+        qmask = batch.query_mask.to(device)
         with torch.autocast(device_type=device.type, dtype=amp_dtype):
-            pred = model(batch.images.to(device))
+            pred = model(batch.images.to(device), queries, qmask)
         out = loss_fn(
             pred,
             batch.tracks_XYZ.to(device), batch.visibility.to(device),
-            batch.query_mask.to(device),
-            batch.queries_xyt[..., 2].long().to(device),
+            qmask, queries[..., 2].long(),
         )
         for k in ("total", "pos", "vis", "spawn", "smooth"):
             totals[k].append(float(getattr(out, k).item()))
@@ -78,8 +79,12 @@ def main() -> int:
     ap.add_argument("--log-every", type=int, default=25)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--weight-decay", type=float, default=0.05)
+    ap.add_argument("--grad-clip", type=float, default=1.0)
     ap.add_argument("--window", type=int, default=8)
     ap.add_argument("--batch", type=int, default=2)
+    ap.add_argument("--image-size", type=int, default=448,
+                    help="All clips are resized to (image_size, image_size) "
+                    "before collation. 448 = 32 patches × 14 patch size.")
     ap.add_argument("--num-tracks", type=int, default=256)
     ap.add_argument("--level-sizes", type=int, nargs="+", default=[32, 64])
     ap.add_argument("--num-heads", type=int, default=6)
@@ -107,9 +112,13 @@ def main() -> int:
           f"(subsets={args.subsets})")
 
     train_ds = TAPVid3DDataset(train_clips, window_size=args.window,
-                               augment=True, seed=args.seed, max_queries=args.num_tracks)
+                               augment=True, seed=args.seed,
+                               max_queries=args.num_tracks,
+                               image_size=args.image_size)
     val_ds = TAPVid3DDataset(val_clips, window_size=args.window,
-                             augment=False, seed=0, max_queries=args.num_tracks)
+                             augment=False, seed=0,
+                             max_queries=args.num_tracks,
+                             image_size=args.image_size)
     loader = DataLoader(
         train_ds, batch_size=args.batch, shuffle=True,
         num_workers=args.num_workers, collate_fn=collate_tracking,
@@ -118,7 +127,7 @@ def main() -> int:
 
     model = Mamba3Tracker(
         dim=args.dim, num_heads=args.num_heads, state_dim=args.state_dim,
-        num_tracks=args.num_tracks, level_sizes=tuple(args.level_sizes),
+        level_sizes=tuple(args.level_sizes),
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"[train] tracker params: {n_params:.2f}M, level_sizes={args.level_sizes}")
@@ -148,17 +157,22 @@ def main() -> int:
             loader_iter = iter(loader)
             batch = next(loader_iter)
 
+        queries = batch.queries_xyt.to(device, non_blocking=True)
+        qmask = batch.query_mask.to(device, non_blocking=True)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-            pred = model(batch.images.to(device, non_blocking=True))
+            pred = model(
+                batch.images.to(device, non_blocking=True),
+                queries, qmask,
+            )
         loss_out = loss_fn(
             pred,
             batch.tracks_XYZ.to(device, non_blocking=True),
             batch.visibility.to(device, non_blocking=True),
-            batch.query_mask.to(device, non_blocking=True),
-            batch.queries_xyt[..., 2].long().to(device, non_blocking=True),
+            qmask,
+            queries[..., 2].long(),
         )
         loss_out.total.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         optim.step()
         sched.step()
         optim.zero_grad(set_to_none=True)

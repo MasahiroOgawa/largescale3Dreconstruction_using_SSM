@@ -18,7 +18,6 @@ import torch
 
 from mamba3_tracker.data.tapvid3d import SUBSETS, list_clips, load_clip
 from mamba3_tracker.model.tracker import Mamba3Tracker
-from mamba3_tracker.train.loss import _hungarian_match_anchor
 from mamba3_tracker.viz.track_video import render_tracking_video
 
 
@@ -26,7 +25,7 @@ def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
     cfg = state["cfg"]
     model = Mamba3Tracker(
         dim=cfg["dim"], num_heads=cfg["num_heads"], state_dim=cfg["state_dim"],
-        num_tracks=cfg["num_tracks"], level_sizes=tuple(cfg["level_sizes"]),
+        level_sizes=tuple(cfg["level_sizes"]),
     ).to(device)
     model.load_state_dict(state["model"])
     model.eval()
@@ -36,26 +35,38 @@ def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
 @torch.no_grad()
 def _predict_and_match(model, clip, device, amp_dtype, max_frames: int) -> tuple[np.ndarray, np.ndarray]:
     F = int(clip.images.shape[0]) if not max_frames else min(int(clip.images.shape[0]), max_frames)
-    images = clip.images[:F].unsqueeze(0).to(device)
+    images = clip.images[:F].clone()
+    H_orig, W_orig = images.shape[-2], images.shape[-1]
+    img_size = model.image_size
+    if H_orig != img_size or W_orig != img_size:
+        images = torch.nn.functional.interpolate(
+            images, size=(img_size, img_size),
+            mode="bilinear", align_corners=False,
+        )
+    images = images.unsqueeze(0).to(device)
+
+    sx = img_size / float(W_orig)
+    sy = img_size / float(H_orig)
+    N_q = clip.queries_xyt.shape[0]
+    queries = clip.queries_xyt.clone()
+    queries[:, 0] *= sx
+    queries[:, 1] *= sy
+    queries[:, 2] = queries[:, 2].clamp(max=F - 1)
+    queries = queries.unsqueeze(0).to(device)
+    qmask = torch.ones(1, N_q, dtype=torch.bool, device=device)
+
     with torch.autocast(device_type=device.type, dtype=amp_dtype):
-        pred = model(images)
-    pred_xyz = pred.xyz[0].float().cpu()
+        pred = model(images, queries, qmask)
+    delta = pred.xyz[0].float().cpu()
     pred_vis = torch.sigmoid(pred.vis_logits[0].float()).cpu()
 
-    N_q = clip.queries_xyt.shape[0]
+    # Recover absolute predictions: p_t = p_query_gt + Δp_t.
     anchor_idx = clip.queries_xyt[:, 2].long().clamp(min=0, max=F - 1)
-    gt_anchor_xyz = torch.gather(
-        clip.tracks_XYZ[:F], dim=0,
-        index=anchor_idx.view(1, N_q, 1).expand(1, N_q, 3),
+    gt_anchor_xyz = clip.tracks_XYZ[:F].gather(
+        dim=0, index=anchor_idx.view(1, N_q, 1).expand(1, N_q, 3),
     ).squeeze(0)
-    pred_anchor = pred_xyz[0]
-    assign = _hungarian_match_anchor(
-        pred_anchor.unsqueeze(0), gt_anchor_xyz.unsqueeze(0),
-        torch.ones(1, N_q, dtype=torch.bool),
-    )[0]
-    matched_xyz = pred_xyz[:, assign, :]
-    matched_vis = pred_vis[:, assign]
-    return matched_xyz.transpose(0, 1).numpy(), matched_vis.transpose(0, 1).numpy()
+    abs_pred = delta + gt_anchor_xyz.unsqueeze(0)
+    return abs_pred.transpose(0, 1).numpy(), pred_vis.transpose(0, 1).numpy()
 
 
 def _frames_to_uint8(images_01: torch.Tensor) -> np.ndarray:
