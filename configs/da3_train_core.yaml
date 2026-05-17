@@ -1,0 +1,52 @@
+# DA3-style training corpus for VSSD-DA3 vs DA3-SMALL run (2026-05-16).
+#
+# Today this is intentionally lean — 10 ETH3D train scenes (all non-terrains)
+# with GT depth + intrinsics + extrinsics already on disk. The DA3 paper used
+# 22 datasets across 128 H100s × 200k steps; we down-scope to a single-GPU
+# 10k–20k step budget on the data we can load cleanly.
+#
+# When BlendedMVS / MegaDepth / DL3DV / HyperSim loaders land
+# (see scripts/download_da3_train.py DEFERRED_DATASETS), add their
+# (dataset, scene) tuples below.
+#
+# The training launcher reads `train_scenes` and `test_scenes` and forwards
+# them to `train_super.py --scenes ds:scene,... --test-scenes ds:scene,...`.
+
+corpus_name: da3_train_core_v1
+
+# Scene format: list of (dataset, scene_id) tuples. The split is held-out
+# scene-level: test scenes never appear in training. We hold out `terrains`
+# (the canonical DA3 paper eval scene) plus 2 more for cross-scene
+# generalisation signal.
+train_scenes:
+  - [eth3d, courtyard]
+  - [eth3d, facade]
+  - [eth3d, office]
+  - [eth3d, kicker]
+  - [eth3d, pipes]
+  - [eth3d, electro]
+  - [eth3d, playground]
+  - [eth3d, relief]
+
+test_scenes:
+  - [eth3d, terrains]
+  - [eth3d, delivery_area]
+  - [eth3d, relief_2]
+
+# Default training hyperparameters (PLAN §15.59.8 path 1: 10× LR drop to fight
+# the mamba3-from-random-init overfit observed at lr_attn=1e-4 on the same
+# scenes; carries over to VSSD since both share random-init Mamba-3
+# projections).
+defaults:
+  variant: vssd
+  steps: 10000
+  image_size: 504
+  n_views: 4
+  state_dim: 64
+  warmup_steps: 200
+  decay_steps: 1500
+  ckpt_every: 1000
+  lr_attn: 1.0e-5
+  lr_head: 5.0e-6
+  lr_other: 1.0e-6
+  test_every: 250

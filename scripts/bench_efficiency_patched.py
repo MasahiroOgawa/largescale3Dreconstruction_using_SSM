@@ -101,17 +101,44 @@ def build_da3_unpatched(device: str):
     return load_da3(DEFAULT_HF_MODEL, device=device)
 
 
-def build_da3_patched(device: str, state_dim: int, use_fused_kernel: bool):
+def build_da3_patched(device: str, state_dim: int, variant: str = "mamba3",
+                      use_fused_kernel: bool = True):
     api = load_da3(DEFAULT_HF_MODEL, device=device)
     install_mamba3(
-        api.model, which="all", state_dim=state_dim,
+        api.model, which="all", variant=variant, state_dim=state_dim,
         use_fused_kernel=use_fused_kernel, chunk_size=128,
     )
     return api.to(device)
 
 
+# Variant spec: cli_name → (display_label, build_fn_factory).
+# build_fn_factory(device_type, state_dim) returns a zero-arg callable that
+# constructs the api. Keeping it lazy lets measure_variant build, measure, and
+# free each model before the next variant constructs.
+VARIANT_SPECS: dict[str, tuple[str, callable]] = {
+    "da3_small": (
+        "DA3-SMALL (transformer)",
+        lambda dev, sd: (lambda: build_da3_unpatched(dev)),
+    ),
+    "mamba3_pt": (
+        "DA3-SMALL +Mamba-3 (PyTorch)",
+        lambda dev, sd: (lambda: build_da3_patched(dev, sd, variant="mamba3", use_fused_kernel=False)),
+    ),
+    "mamba3_triton": (
+        "DA3-SMALL +Mamba-3 (Triton kernel)",
+        lambda dev, sd: (lambda: build_da3_patched(dev, sd, variant="mamba3", use_fused_kernel=True)),
+    ),
+    "vssd": (
+        "DA3-SMALL +VSSD (NC-SSD)",
+        lambda dev, sd: (lambda: build_da3_patched(dev, sd, variant="vssd", use_fused_kernel=False)),
+    ),
+}
+
+DEFAULT_VARIANTS = ["da3_small", "mamba3_pt", "mamba3_triton", "vssd"]
+
+
 def run_grid(sizes: list[int], n_views_list: list[int], state_dim: int,
-             device: torch.device) -> list[dict]:
+             device: torch.device, variants: list[str]) -> list[dict]:
     rows: list[dict] = []
     for img_size in sizes:
         for n_views in n_views_list:
@@ -120,35 +147,14 @@ def run_grid(sizes: list[int], n_views_list: list[int], state_dim: int,
             T_total = n_views * tokens_per_view
             print(f"\n[bench] img={img_size}² S={n_views}  tokens/view={tokens_per_view}  cross-view T={T_total}")
 
-            r1 = measure_variant(
-                "DA3-SMALL (transformer)",
-                lambda: build_da3_unpatched(device.type),
-                x, device,
-            )
-            r1["tokens_per_view"] = tokens_per_view
-            r1["cross_view_T"] = T_total
-            rows.append(r1)
-            _print_row(r1)
-
-            r2 = measure_variant(
-                "DA3-SMALL +Mamba-3 (PyTorch)",
-                lambda: build_da3_patched(device.type, state_dim, use_fused_kernel=False),
-                x, device,
-            )
-            r2["tokens_per_view"] = tokens_per_view
-            r2["cross_view_T"] = T_total
-            rows.append(r2)
-            _print_row(r2)
-
-            r3 = measure_variant(
-                "DA3-SMALL +Mamba-3 (Triton kernel)",
-                lambda: build_da3_patched(device.type, state_dim, use_fused_kernel=True),
-                x, device,
-            )
-            r3["tokens_per_view"] = tokens_per_view
-            r3["cross_view_T"] = T_total
-            rows.append(r3)
-            _print_row(r3)
+            for name in variants:
+                label, factory = VARIANT_SPECS[name]
+                r = measure_variant(label, factory(device.type, state_dim), x, device)
+                r["tokens_per_view"] = tokens_per_view
+                r["cross_view_T"] = T_total
+                r["variant"] = name
+                rows.append(r)
+                _print_row(r)
 
             del x
             gc.collect()
@@ -168,70 +174,98 @@ def _print_row(r: dict) -> None:
           f"lat={r['latency_ms']:.1f}ms")
 
 
-def summary_ratios(rows: list[dict], sizes: list[int], n_views_list: list[int]) -> None:
+def summary_ratios(rows: list[dict], sizes: list[int], n_views_list: list[int],
+                   variants: list[str]) -> None:
     by_key: dict[tuple[int, int, str], dict] = {}
     for r in rows:
         by_key[(r["img_size"], r["n_views"], r["label"])] = r
 
+    baseline_label = VARIANT_SPECS["da3_small"][0]
+    challengers = [v for v in variants if v != "da3_small"]
+
     print("\n" + "=" * 80)
-    print("Apples-to-apples: DA3-SMALL +Mamba-3 (Triton) vs DA3-SMALL (transformer)")
+    print(f"Apples-to-apples: <variant> / DA3-SMALL (transformer) — mem ratio · lat ratio")
     print("=" * 80)
-    print(f"{'img':>5} {'S':>3} {'cross-T':>8} {'mem ratio':>10} {'lat ratio':>10}")
-    print("-" * 45)
+    head_cols = "".join(f"{VARIANT_SPECS[v][0][:22]:>24}" for v in challengers)
+    print(f"{'img':>5} {'S':>3} {'cross-T':>8} {head_cols}")
+    print("-" * (17 + 24 * len(challengers)))
     for img in sizes:
         for nv in n_views_list:
-            attn = by_key.get((img, nv, "DA3-SMALL (transformer)"))
-            ssd = by_key.get((img, nv, "DA3-SMALL +Mamba-3 (Triton kernel)"))
-            if not attn or not ssd:
+            attn = by_key.get((img, nv, baseline_label))
+            if not attn:
                 continue
             T = nv * (img // 14) ** 2
-            if attn.get("OOM") and ssd.get("OOM"):
-                tag = "both OOM"
-            elif attn.get("OOM"):
-                tag = f"attn OOM, mamba ok ({ssd['peak_MiB']:.0f}MiB / {ssd['latency_ms']:.0f}ms)"
-            elif ssd.get("OOM"):
-                tag = "mamba OOM"
-            else:
-                mem_r = ssd["peak_MiB"] / attn["peak_MiB"]
-                lat_r = ssd["latency_ms"] / attn["latency_ms"]
-                tag = f"{mem_r:>10.2f}× {lat_r:>10.2f}×"
-            print(f"{img:>5} {nv:>3} {T:>8}  {tag}")
+            cells: list[str] = []
+            for v in challengers:
+                row = by_key.get((img, nv, VARIANT_SPECS[v][0]))
+                if not row:
+                    cells.append(f"{'-':>24}")
+                elif attn.get("OOM") and row.get("OOM"):
+                    cells.append(f"{'both OOM':>24}")
+                elif attn.get("OOM"):
+                    cells.append(f"{'attn OOM, ok':>24}")
+                elif row.get("OOM"):
+                    cells.append(f"{'OOM':>24}")
+                else:
+                    mem_r = row["peak_MiB"] / attn["peak_MiB"]
+                    lat_r = row["latency_ms"] / attn["latency_ms"]
+                    cells.append(f"{mem_r:>10.2f}× {lat_r:>10.2f}×")
+            print(f"{img:>5} {nv:>3} {T:>8}{''.join(cells)}")
+
+
+_VARIANT_STYLE: dict[str, tuple[str, str]] = {
+    "da3_small": ("o-", "tab:blue"),
+    "mamba3_pt": ("s--", "tab:orange"),
+    "mamba3_triton": ("^-", "tab:green"),
+    "vssd": ("D-", "tab:red"),
+}
 
 
 def write_outputs(rows: list[dict], sizes: list[int], n_views_list: list[int],
-                  out_dir: Path) -> None:
+                  variants: list[str], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "efficiency.json").write_text(json.dumps(rows, indent=2))
 
     by_key: dict[tuple[int, int, str], dict] = {
         (r["img_size"], r["n_views"], r["label"]): r for r in rows
     }
-    md = ["# Efficiency comparison — DA3-SMALL transformer vs +Mamba-3\n",
+    baseline_label = VARIANT_SPECS["da3_small"][0]
+    challengers = [v for v in variants if v != "da3_small"]
+
+    def cell(r: dict | None) -> str:
+        if r is None:
+            return "-"
+        if r.get("OOM"):
+            return "**OOM**"
+        return f"{r['peak_MiB']:.0f} MiB / {r['latency_ms']:.0f} ms"
+
+    md = ["# Efficiency comparison — DA3-SMALL transformer vs Mamba-3 / VSSD\n",
           "\nFull-model forward (backbone + DPT head + cam_dec), B=1, GPU.\n",
-          "Apples-to-apples: same architecture, only attention modules differ.\n",
-          "\n| img | S | cross-T | DA3 transformer | +Mamba-3 (PyTorch) | +Mamba-3 (Triton) | mem ratio | lat ratio |\n",
-          "|---|---|---|---|---|---|---|---|\n"]
+          "Apples-to-apples: same architecture, only attention modules differ.\n\n"]
+    header = ["img", "S", "cross-T"] + [VARIANT_SPECS[v][0] for v in variants]
+    header += [f"mem×({v})" for v in challengers] + [f"lat×({v})" for v in challengers]
+    md.append("| " + " | ".join(header) + " |\n")
+    md.append("|" + "|".join("---" for _ in header) + "|\n")
     for img in sizes:
         for nv in n_views_list:
             T = nv * (img // 14) ** 2
-            attn = by_key.get((img, nv, "DA3-SMALL (transformer)"))
-            ssd_pt = by_key.get((img, nv, "DA3-SMALL +Mamba-3 (PyTorch)"))
-            ssd_tr = by_key.get((img, nv, "DA3-SMALL +Mamba-3 (Triton kernel)"))
-            def cell(r: dict | None) -> str:
-                if r is None:
-                    return "-"
-                if r.get("OOM"):
-                    return "**OOM**"
-                return f"{r['peak_MiB']:.0f} MiB / {r['latency_ms']:.0f} ms"
-            mem_r_str = lat_r_str = "-"
-            if attn and ssd_tr and not attn.get("OOM") and not ssd_tr.get("OOM"):
-                mem_r_str = f"{ssd_tr['peak_MiB'] / attn['peak_MiB']:.2f}×"
-                lat_r_str = f"{ssd_tr['latency_ms'] / attn['latency_ms']:.2f}×"
-            elif attn and attn.get("OOM") and ssd_tr and not ssd_tr.get("OOM"):
-                mem_r_str = "attn OOM"
-                lat_r_str = "—"
-            md.append(f"| {img} | {nv} | {T} | {cell(attn)} | {cell(ssd_pt)} | {cell(ssd_tr)} | {mem_r_str} | {lat_r_str} |\n")
-    md.append("\nMem/lat ratios = Triton-kernel Mamba-3 / DA3 transformer (lower is better for both).\n")
+            baseline = by_key.get((img, nv, baseline_label))
+            cells = [str(img), str(nv), str(T)]
+            cells += [cell(by_key.get((img, nv, VARIANT_SPECS[v][0]))) for v in variants]
+            for v in challengers:
+                row = by_key.get((img, nv, VARIANT_SPECS[v][0]))
+                if not baseline or not row or baseline.get("OOM") or row.get("OOM"):
+                    cells.append("—")
+                else:
+                    cells.append(f"{row['peak_MiB'] / baseline['peak_MiB']:.2f}×")
+            for v in challengers:
+                row = by_key.get((img, nv, VARIANT_SPECS[v][0]))
+                if not baseline or not row or baseline.get("OOM") or row.get("OOM"):
+                    cells.append("—")
+                else:
+                    cells.append(f"{row['latency_ms'] / baseline['latency_ms']:.2f}×")
+            md.append("| " + " | ".join(cells) + " |\n")
+    md.append("\nmem×/lat× ratios = <variant> / DA3-SMALL (transformer); lower is better.\n")
     (out_dir / "efficiency_table.md").write_text("".join(md))
 
     try:
@@ -242,12 +276,8 @@ def write_outputs(rows: list[dict], sizes: list[int], n_views_list: list[int],
         print("[bench] matplotlib not available; skipping plot")
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    labels_to_plot = [
-        ("DA3-SMALL (transformer)", "o-", "tab:blue"),
-        ("DA3-SMALL +Mamba-3 (PyTorch)", "s--", "tab:orange"),
-        ("DA3-SMALL +Mamba-3 (Triton kernel)", "^-", "tab:green"),
-    ]
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    labels_to_plot = [(VARIANT_SPECS[v][0], *_VARIANT_STYLE[v]) for v in variants]
     for img in sizes:
         for label, marker, color in labels_to_plot:
             xs, lats, mems = [], [], []
@@ -285,18 +315,21 @@ def main() -> None:
     ap.add_argument("--n-views", type=int, nargs="+", default=[4, 8, 12])
     ap.add_argument("--state-dim", type=int, default=64)
     ap.add_argument("--device", type=str, default="cuda")
+    ap.add_argument("--variants", nargs="+", default=DEFAULT_VARIANTS,
+                    choices=list(VARIANT_SPECS),
+                    help="Subset of variants to benchmark. Order is preserved in tables/plots.")
     ap.add_argument("--out-dir", type=Path, default=None,
                     help="If set, write efficiency_table.md, efficiency.json, "
                     "and efficiency_comparison.png under this directory.")
     args = ap.parse_args()
 
     device = torch.device(args.device)
-    print(f"\n[bench_efficiency_patched] DA3 full-model forward, B=1\n")
+    print(f"\n[bench_efficiency_patched] DA3 full-model forward, B=1, variants={args.variants}\n")
 
-    rows = run_grid(args.sizes, args.n_views, args.state_dim, device)
-    summary_ratios(rows, args.sizes, args.n_views)
+    rows = run_grid(args.sizes, args.n_views, args.state_dim, device, args.variants)
+    summary_ratios(rows, args.sizes, args.n_views, args.variants)
     if args.out_dir is not None:
-        write_outputs(rows, args.sizes, args.n_views, args.out_dir)
+        write_outputs(rows, args.sizes, args.n_views, args.variants, args.out_dir)
 
 
 if __name__ == "__main__":
