@@ -47,16 +47,14 @@ class TrackHeads(nn.Module):
             TrackerOutputs with xyz (B,F,N,3) and logits (B,F,N) each.
         """
         x = self.norm(q_history)
-        # Untrained-network outputs in bf16 can drift to ±inf early in
-        # training. Clamp xyz to a generous metric range (TAPVid-3D scenes
-        # are typically ≤30 m) and the logits to ±15 so BCEWithLogits stays
-        # finite. The clamp is a saturating non-linearity — gradients still
-        # flow until the clamp activates, then offending parameters get
-        # updated to bring outputs back in range.
-        xyz = torch.nan_to_num(self.xyz_head(x), nan=0.0, posinf=100.0, neginf=-100.0)
-        xyz = xyz.clamp(-100.0, 100.0)
-        vis_logits = torch.nan_to_num(self.vis_head(x).squeeze(-1),
-                                       nan=0.0, posinf=15.0, neginf=-15.0).clamp(-15.0, 15.0)
-        spawn_logits = torch.nan_to_num(self.spawn_head(x).squeeze(-1),
-                                         nan=0.0, posinf=15.0, neginf=-15.0).clamp(-15.0, 15.0)
-        return TrackerOutputs(xyz=xyz, vis_logits=vis_logits, spawn_logits=spawn_logits)
+        # No nan_to_num here — a previous attempt at "safety clamping" silently
+        # masked an upstream bf16 overflow and produced NaN parameters in every
+        # checkpoint from step ~250 onward. We'd rather a NaN crash the
+        # training immediately than corrupt 20k steps' worth of weights without
+        # warning. The training script's grad-NaN guard handles the
+        # numerical-instability case at the right layer.
+        return TrackerOutputs(
+            xyz=self.xyz_head(x),
+            vis_logits=self.vis_head(x).squeeze(-1),
+            spawn_logits=self.spawn_head(x).squeeze(-1),
+        )

@@ -97,12 +97,21 @@ class CausalCrossPropagator(nn.Module):
         self.dim = dim
         self.num_pyramid_levels = num_pyramid_levels
 
-        # Variant A (state-compressed): kv memory independent of T_kv.
+        # Variant B (token-level): the per-(query, kv_patch) inner product
+        # form, easier to inspect via attention maps for debugging. Note: in
+        # this codebase variants A and B are *mathematically equivalent*
+        # because the cross-mask `build_cross_mask` is rank-1 in the query
+        # axis (decay depends only on kv index j). The real "model collapses
+        # to zero motion" failure that initial debugging blamed on variant A
+        # was actually a NaN propagation caused by nan_to_num in the heads
+        # corrupting parameters via NaN gradients; see commit message and
+        # heads.py for the actual fix. Variant B costs O(T_q · T_kv) memory
+        # vs A's O(N_state · D); both are fine at our pyramid sizes (32², 64²).
         self.cross_levels = nn.ModuleList(
             [
                 Mamba3CrossAttention(
                     dim_q=dim, dim_kv=dim, num_heads=num_heads,
-                    state_dim=state_dim, variant="A",
+                    state_dim=state_dim, variant="B",
                 )
                 for _ in range(num_pyramid_levels)
             ]

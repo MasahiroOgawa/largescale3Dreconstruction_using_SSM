@@ -172,8 +172,19 @@ def main() -> int:
             queries[..., 2].long(),
         )
         loss_out.total.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        optim.step()
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+        # Skip the optimizer step on non-finite grads. Without this guard, a
+        # single NaN gradient corrupts every parameter (NaN + anything = NaN)
+        # and the rest of training silently runs on a dead model — exactly
+        # the failure mode the v2 30k run hit.
+        if not torch.isfinite(grad_norm):
+            print(f"[train] step {step:6d}: non-finite grad_norm={grad_norm.item()} — "
+                  f"skipping optimizer step", flush=True)
+        elif not torch.isfinite(loss_out.total):
+            print(f"[train] step {step:6d}: non-finite loss={loss_out.total.item()} — "
+                  f"skipping optimizer step", flush=True)
+        else:
+            optim.step()
         sched.step()
         optim.zero_grad(set_to_none=True)
 
