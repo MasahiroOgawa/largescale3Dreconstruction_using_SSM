@@ -1830,41 +1830,92 @@ scaled position residual is then
   \bm{r}_n^{(t)} \;:=\; \tfrac{1}{s}\bigl(\Delta\bm{p}_n^{(t)} - \Delta\bm{p}_n^{\star,(t)}\bigr).
 \end{equation}
 
-\paragraph{Loss terms.}
+\paragraph{Loss terms (v6 — Smooth-L1, magnitude, direction-cosine, 2-D reprojection).}
+A plain $\ell_1$ on the scaled residual gives the optimiser the same
+constant gradient $\pm 1/s$ whether the residual is 1\,cm or 1\,m. With
+many TAPVid-3D queries moving only a few cm per 8-frame window,
+``predict $\Delta\bm{p} \!\approx\! 0$'' is a competitive local minimum
+under $\ell_1$, and the model collapses there. v6 adds three terms that
+attack the zero-motion baseline and one that grounds the prediction in
+pixel space:
 \begin{itemize}
-  \item \textbf{Scale-normalised relative position L1} on visible frames:
+  \item \textbf{Scale-normalised Smooth-$\ell_1$ position} (Huber with
+        $\delta\!=\!1$) on visible frames:
         \begin{equation}\label{eq:track-pos-loss}
-          \mathcal{L}_{\text{pos}} \;=\;
-          \frac{1}{Z_{\text{pos}}}
-          \sum_{n,t} \sigma_n^{\star,(t)} \,\|\bm{r}_n^{(t)}\|_{1},
+          \mathcal{L}_{\text{pos}}
+            \;=\;
+            \frac{1}{Z_{\text{pos}}}\sum_{n,t}
+              \sigma_n^{\star,(t)}\,
+              \sum_{c\in\{x,y,z\}}
+              \mathrm{SmoothL1}\!\bigl(\bm{r}_n^{(t)}[c]\bigr),
         \end{equation}
-        with normaliser $Z_{\text{pos}} = \sum_{n,t}
-        \sigma_n^{\star,(t)}$. The combined effect of
-        \eqref{eq:track-resid} and the median scale
-        \eqref{eq:track-scale} makes the loss \emph{dimensionless} and
-        clip-scale-invariant: every clip contributes a comparable
-        gradient regardless of indoor/outdoor scene metres.
-  \item \textbf{Visibility BCE}:
-        $\mathcal{L}_{\text{vis}} = \frac{1}{Z_{\text{q}}} \sum_{n,t}
-        \mathrm{BCE}\bigl(\sigma_n^{(t)},\sigma_n^{\star,(t)}\bigr)$
-        with $Z_{\text{q}}$ the count of valid (clip,track,frame) cells.
-  \item \textbf{Spawn BCE} on the first-visible frame:
-        $\mathcal{L}_{\text{spawn}} = \frac{1}{Z_{\text{q}}}
-        \sum_{n,t} \mathrm{BCE}\bigl(\rho_n^{(t)},
-        \mathbb{I}[t = t_n^{\text{birth}}]\bigr)$ where
-        $t_n^{\text{birth}} = \min\{t : \sigma_n^{\star,(t)} = 1\}$.
-  \item \textbf{Temporal smoothness} on the scaled relative trajectory:
-        $\mathcal{L}_{\text{smooth}} = \frac{1}{Z_{\text{sm}}}
-        \sum_{n,t}
-        \sigma_n^{\star,(t)}\sigma_n^{\star,(t-1)}
-        \,\|\tfrac{1}{s}(\Delta\bm{p}_n^{(t)} - \Delta\bm{p}_n^{(t-1)})\|_{2}$.
+        with $Z_{\text{pos}} = \sum_{n,t}\sigma_n^{\star,(t)}$. Quadratic
+        near zero, linear far away $\Rightarrow$ small residuals receive
+        small gradient, so the optimiser stops wasting capacity reducing
+        already-small errors and focuses on the big-error tracks where
+        ``predict $0$'' is most wrong.
+  \item \textbf{Scaled magnitude penalty}:
+        \begin{equation}\label{eq:track-mag-loss}
+          \mathcal{L}_{\text{mag}}
+            \;=\;
+            \frac{1}{Z_{\text{pos}}}\sum_{n,t}
+              \sigma_n^{\star,(t)}
+              \Bigl(\tfrac{\|\Delta\bm{p}_n^{(t)}\| -
+                            \|\Delta\bm{p}_n^{\star,(t)}\|}{s}\Bigr)^{2}.
+        \end{equation}
+        Forces the predicted motion to have the right \emph{magnitude
+        ratio to scene scale}, which under a monocular camera is the
+        only magnitude information geometrically recoverable.
+  \item \textbf{Direction cosine}:
+        \begin{equation}\label{eq:track-dir-loss}
+          \mathcal{L}_{\text{dir}}
+            \;=\;
+            \frac{1}{Z_{\text{pos}}}\sum_{n,t}
+              \sigma_n^{\star,(t)}
+              \bigl(1 - \cos\!\bigl(\Delta\bm{p}_n^{(t)},
+                                     \Delta\bm{p}_n^{\star,(t)}\bigr)\bigr).
+        \end{equation}
+        Penalises wrong-direction motion regardless of magnitude. A
+        model that gets the direction right but under-shoots magnitude
+        is preferred over one that predicts the right magnitude in the
+        wrong direction.
+  \item \textbf{2-D pixel-space reprojection.} The TAPVid-3D queries are
+        natively 2-D pixel locations; supervising in pixel space gives
+        the model a geometric signal that is in-distribution with the
+        input image and that has \emph{no} scale ambiguity:
+        \begin{align}
+          \hat{\bm{p}}_n^{(t)} &= \bm{p}_n^{q} + \Delta\bm{p}_n^{(t)},
+          \quad
+          \hat{\bm{u}}\hat{\bm{v}}_n^{(t)} = \pi\!\bigl(\hat{\bm{p}}_n^{(t)}, \bm{K}\bigr),
+          \notag\\
+          \mathcal{L}_{\text{reproj}}
+            &= \frac{1}{Z_{\text{pos}}\,W_{\text{img}}}\sum_{n,t}
+                 \sigma_n^{\star,(t)}\,
+                 \sum_{c\in\{u,v\}}
+                 \mathrm{SmoothL1}\!\bigl(
+                   \hat{\bm{u}}\hat{\bm{v}}_n^{(t)}[c] - \bm{u}\bm{v}_n^{\star,(t)}[c]
+                 \bigr),
+          \label{eq:track-reproj-loss}
+        \end{align}
+        where $\pi(\cdot, \bm{K})$ is pinhole projection through the
+        per-clip intrinsics and $W_{\text{img}}$ is the image side
+        length used for training (normalises the pixel residual to
+        $\sim\![0, 1]$).
+  \item \textbf{Visibility BCE}, \textbf{spawn BCE}, and \textbf{temporal
+        smoothness} unchanged from \S\,v5.
 \end{itemize}
 The total loss is
-$\mathcal{L} = \lambda_{\text{pos}}\mathcal{L}_{\text{pos}}
-            + \lambda_{\text{vis}}\mathcal{L}_{\text{vis}}
-            + \lambda_{\text{spawn}}\mathcal{L}_{\text{spawn}}
-            + \lambda_{\text{smooth}}\mathcal{L}_{\text{smooth}}$
-with default weights $(1,\,0.5,\,0.5,\,0.1)$.
+\begin{equation}
+  \mathcal{L}
+    = \lambda_{\text{pos}}\mathcal{L}_{\text{pos}}
+    + \lambda_{\text{mag}}\mathcal{L}_{\text{mag}}
+    + \lambda_{\text{dir}}\mathcal{L}_{\text{dir}}
+    + \lambda_{\text{reproj}}\mathcal{L}_{\text{reproj}}
+    + \lambda_{\text{vis}}\mathcal{L}_{\text{vis}}
+    + \lambda_{\text{spawn}}\mathcal{L}_{\text{spawn}}
+    + \lambda_{\text{smooth}}\mathcal{L}_{\text{smooth}},
+\end{equation}
+with default weights $(1,\,0.5,\,0.5,\,1,\,0.5,\,0.5,\,0.1)$.
 
 The cross-attention's causal mask \eqref{eq:track-causal-mask}
 ensures that the loss at frame $t$ depends only on frames $\le t$;

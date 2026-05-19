@@ -115,12 +115,21 @@ class TAPVid3DDataset(Dataset):
         queries[:, 0] *= sx
         queries[:, 1] *= sy
 
+        # Scale K to the resized-image pixel coords too, so the 2D
+        # reprojection loss can compare predicted/GT pixel coords directly
+        # (v6 addition; see src/mamba3_tracker/train/loss.py).
+        K = clip.K.clone()
+        K[0, 0] *= sx
+        K[1, 1] *= sy
+        K[0, 2] *= sx
+        K[1, 2] *= sy
+
         return {
             "images": images,
             "queries_xyt": queries,
             "tracks_XYZ": tracks,
             "visibility": vis,
-            "K": clip.K,
+            "K": K,
             "clip_id": clip.clip_id,
             "subset": clip.subset,
         }

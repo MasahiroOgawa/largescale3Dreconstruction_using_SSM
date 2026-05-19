@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 import time
 from collections import defaultdict
@@ -43,6 +42,9 @@ def _save_ckpt(out_dir: Path, step: int, model, optim, cfg: dict) -> Path:
     return path
 
 
+_LOSS_KEYS = ("total", "pos", "mag", "dir", "reproj", "vis", "spawn", "smooth")
+
+
 @torch.no_grad()
 def _validate(model, val_ds, loss_fn, device, amp_dtype, n_clips: int = 5) -> dict:
     model.eval()
@@ -57,9 +59,12 @@ def _validate(model, val_ds, loss_fn, device, amp_dtype, n_clips: int = 5) -> di
             pred,
             batch.tracks_XYZ.to(device), batch.visibility.to(device),
             qmask, queries[..., 2].long(),
+            batch.K.to(device),
         )
-        for k in ("total", "pos", "vis", "spawn", "smooth"):
-            totals[k].append(float(getattr(out, k).item()))
+        for k in _LOSS_KEYS:
+            v = getattr(out, k, None)
+            if v is not None:
+                totals[k].append(float(v.item()))
     model.train()
     return {k: sum(v) / len(v) for k, v in totals.items()}
 
@@ -170,6 +175,7 @@ def main() -> int:
             batch.visibility.to(device, non_blocking=True),
             qmask,
             queries[..., 2].long(),
+            batch.K.to(device, non_blocking=True),
         )
         loss_out.total.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -193,13 +199,18 @@ def main() -> int:
             dt = time.perf_counter() - t0
             print(f"[train] step {step:6d}/{args.steps}  "
                   f"loss={loss_out.total.item():.4f}  "
-                  f"pos={loss_out.pos.item():.4f}  vis={loss_out.vis.item():.4f}  "
+                  f"pos={loss_out.pos.item():.4f}  mag={loss_out.mag.item():.4f}  "
+                  f"dir={loss_out.dir.item():.4f}  reproj={loss_out.reproj.item():.4f}  "
+                  f"vis={loss_out.vis.item():.4f}  "
                   f"spawn={loss_out.spawn.item():.4f}  smooth={loss_out.smooth.item():.4f}  "
                   f"lr={lr:.2e}  elapsed={dt:.0f}s", flush=True)
             history.append({
                 "step": step, "lr": lr,
                 "loss": float(loss_out.total.item()),
                 "pos": float(loss_out.pos.item()),
+                "mag": float(loss_out.mag.item()),
+                "dir": float(loss_out.dir.item()),
+                "reproj": float(loss_out.reproj.item()),
                 "vis": float(loss_out.vis.item()),
                 "spawn": float(loss_out.spawn.item()),
                 "smooth": float(loss_out.smooth.item()),
@@ -208,8 +219,11 @@ def main() -> int:
         if step > 0 and step % args.val_every == 0:
             v = _validate(model, val_ds, loss_fn, device, amp_dtype)
             print(f"[train] step {step:6d}  VAL  total={v['total']:.4f}  "
-                  f"pos={v['pos']:.4f}  vis={v['vis']:.4f}  "
-                  f"spawn={v['spawn']:.4f}  smooth={v['smooth']:.4f}", flush=True)
+                  f"pos={v.get('pos', 0):.4f}  mag={v.get('mag', 0):.4f}  "
+                  f"dir={v.get('dir', 0):.4f}  reproj={v.get('reproj', 0):.4f}  "
+                  f"vis={v.get('vis', 0):.4f}  "
+                  f"spawn={v.get('spawn', 0):.4f}  smooth={v.get('smooth', 0):.4f}",
+                  flush=True)
             history.append({"step": step, "val": v})
 
         if step > 0 and step % args.ckpt_every == 0:

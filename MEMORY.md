@@ -10,3 +10,5 @@
 - [Only notify on final output, not per step](memory/feedback_only_final_output.md) — for long runs, stay silent through intermediate events; respond at completion, real failure, or user query
 - [Avoid persistent `cd` in bash](memory/feedback_avoid_persistent_cd.md) — `cd <dir> && cmd` changes cwd for all later calls; use `make -C` or absolute paths instead
 - [DA3 bench: num_fusion_workers=1 + 22 GB systemd scope](memory/feedback_da3_bench_num_fusion_workers.md) — single fusion proc still OOMs at 28 GB, cascades to tmux death without cgroup isolation
+- [No auto-render tracking videos](memory/feedback_no_auto_render.md) — render only when user asks; use latest `ckpt_*.pt`; if none exists, wait
+- [Tracker ablation v6→v7→v8](memory/feedback_tracker_ablation_v6v7v8.md) — one set of fixes per run; implement→train→eval→commit before the next; per-run delta is the paper's ablation row
