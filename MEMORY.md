@@ -12,3 +12,5 @@
 - [DA3 bench: num_fusion_workers=1 + 22 GB systemd scope](memory/feedback_da3_bench_num_fusion_workers.md) — single fusion proc still OOMs at 28 GB, cascades to tmux death without cgroup isolation
 - [No auto-render tracking videos](memory/feedback_no_auto_render.md) — render only when user asks; use latest `ckpt_*.pt`; if none exists, wait
 - [Tracker ablation v6→v7→v8](memory/feedback_tracker_ablation_v6v7v8.md) — one set of fixes per run; implement→train→eval→commit before the next; per-run delta is the paper's ablation row
+- [Wrap tracker training in systemd-run scope](memory/feedback_tracker_train_systemd_scope.md) — `systemd-run --user --scope -p MemoryMax=18G`; defence-in-depth for systemd-oomd PSI pressure
+- [TAPVid loader: decode window only, no persistent_workers](memory/feedback_tapvid_dataloader_window_only.md) — `load_clip(path, frames=(s,e))` + `persistent_workers=False`; the actual fix for v7's RAM leak that systemd-oomd killed twice

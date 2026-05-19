@@ -10,7 +10,7 @@ from typing import Iterable, Sequence
 import torch
 from torch.utils.data import Dataset
 
-from .tapvid3d import SUBSETS, list_clips, load_clip
+from .tapvid3d import SUBSETS, list_clips, load_clip, peek_clip_F
 
 
 @dataclass
@@ -56,16 +56,23 @@ class TAPVid3DDataset(Dataset):
         return len(self.clip_paths)
 
     def __getitem__(self, idx: int) -> dict:
-        clip = load_clip(self.clip_paths[idx])
-        if self.window_size is not None and self.window_size < clip.F:
-            start = self._rng.randint(0, clip.F - self.window_size)
+        # Pick the window first, then decode only those JPEG frames. Decoding
+        # the whole clip up-front and slicing afterwards burns ~566 MB per
+        # drivetrack __getitem__ call (1280×1920×3 float32 × 24 frames) and
+        # leaks into PyTorch's caching allocator when persistent_workers=True,
+        # which is what killed v7 via systemd-oomd at ~step 200.
+        path = self.clip_paths[idx]
+        F_total = peek_clip_F(path)
+        if self.window_size is not None and self.window_size < F_total:
+            start = self._rng.randint(0, F_total - self.window_size)
             end = start + self.window_size
         else:
-            start, end = 0, clip.F
+            start, end = 0, F_total
 
-        images = clip.images[start:end].clone()
-        tracks = clip.tracks_XYZ[start:end].clone()
-        vis = clip.visibility[start:end].clone()
+        clip = load_clip(path, frames=(start, end))
+        images = clip.images
+        tracks = clip.tracks_XYZ
+        vis = clip.visibility
         H_orig, W_orig = int(clip.H), int(clip.W)
 
         # Resize every clip to a common (image_size, image_size) so collate

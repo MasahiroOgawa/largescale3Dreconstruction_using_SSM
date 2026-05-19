@@ -124,10 +124,14 @@ def main() -> int:
                              augment=False, seed=0,
                              max_queries=args.num_tracks,
                              image_size=args.image_size)
+    # `persistent_workers=False` so the worker process is torn down each epoch
+    # and PyTorch's caching allocator inside it is freed. With `True`, the
+    # worker held decoded clip residue across all 30k steps and crossed
+    # systemd-oomd's PSI threshold around step 200 (v7 first/second launches).
     loader = DataLoader(
         train_ds, batch_size=args.batch, shuffle=True,
         num_workers=args.num_workers, collate_fn=collate_tracking,
-        pin_memory=True, persistent_workers=args.num_workers > 0,
+        pin_memory=True, persistent_workers=False,
     )
 
     model = Mamba3Tracker(

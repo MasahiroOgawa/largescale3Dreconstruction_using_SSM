@@ -87,14 +87,40 @@ def _infer_subset(path: Path) -> str:
     return "unknown"
 
 
-def load_clip(path: str | Path) -> TAPVidClip:
-    """Load one TAPVid-3D clip from a `.npz` file."""
+def peek_clip_F(path: str | Path) -> int:
+    """Return F (number of frames) without decoding any JPEG."""
+    path = Path(path).expanduser().resolve()
+    with np.load(path, allow_pickle=True) as d:
+        return int(d["images_jpeg_bytes"].shape[0])
+
+
+def load_clip(
+    path: str | Path,
+    frames: tuple[int, int] | None = None,
+) -> TAPVidClip:
+    """Load one TAPVid-3D clip from a `.npz` file.
+
+    If `frames=(start, end)` is given, only those frames are JPEG-decoded
+    and `tracks_XYZ` / `visibility` are sliced to match. This avoids
+    materialising the full clip in RAM — drivetrack clips are 1280×1920
+    float32 (~28 MB per frame), so a 24-frame clip is ~670 MB even when
+    we only need 8 frames. The query list (`queries_xyt`) is NOT sliced;
+    its `t` axis still refers to original-clip frame indices and the
+    caller shifts it.
+    """
     path = Path(path).expanduser().resolve()
     d = np.load(path, allow_pickle=True)
-    images = _decode_jpeg_frames(d["images_jpeg_bytes"])
+    jpeg_arr = d["images_jpeg_bytes"]
+    if frames is not None:
+        s, e = frames
+        jpeg_arr = jpeg_arr[s:e]
+        tracks = torch.from_numpy(np.asarray(d["tracks_XYZ"][s:e])).float()
+        vis = torch.from_numpy(np.asarray(d["visibility"][s:e])).bool()
+    else:
+        tracks = torch.from_numpy(d["tracks_XYZ"]).float()
+        vis = torch.from_numpy(d["visibility"]).bool()
+    images = _decode_jpeg_frames(jpeg_arr)
     queries = torch.from_numpy(d["queries_xyt"]).float()
-    tracks = torch.from_numpy(d["tracks_XYZ"]).float()
-    vis = torch.from_numpy(d["visibility"]).bool()
     K = _build_K(d["fx_fy_cx_cy"])
     return TAPVidClip(
         images=images,
