@@ -1,0 +1,938 @@
+[
+  {
+    "average_jaccard": 0.009113149847094801,
+    "average_pts_within_thresh": 0.009113149847094801,
+    "occlusion_accuracy": 0.7630581039755352,
+    "clip_id": "basketball_1"
+  },
+  {
+    "average_jaccard": 0.008606060606060607,
+    "average_pts_within_thresh": 0.008606060606060607,
+    "occlusion_accuracy": 0.554060606060606,
+    "clip_id": "basketball_11"
+  },
+  {
+    "average_jaccard": 0.010168776371308016,
+    "average_pts_within_thresh": 0.010168776371308016,
+    "occlusion_accuracy": 0.7778481012658228,
+    "clip_id": "basketball_12"
+  },
+  {
+    "average_jaccard": 0.0027548209366391185,
+    "average_pts_within_thresh": 0.0027548209366391185,
+    "occlusion_accuracy": 0.775426997245179,
+    "clip_id": "basketball_13"
+  },
+  {
+    "average_jaccard": 0.002857142857142857,
+    "average_pts_within_thresh": 0.002857142857142857,
+    "occlusion_accuracy": 0.5829251700680272,
+    "clip_id": "basketball_14"
+  },
+  {
+    "average_jaccard": 0.006083333333333333,
+    "average_pts_within_thresh": 0.006083333333333333,
+    "occlusion_accuracy": 0.6961666666666667,
+    "clip_id": "basketball_16"
+  },
+  {
+    "average_jaccard": 0.0039015151515151515,
+    "average_pts_within_thresh": 0.0039015151515151515,
+    "occlusion_accuracy": 0.5196969696969697,
+    "clip_id": "basketball_17"
+  },
+  {
+    "average_jaccard": 0.0040100250626566416,
+    "average_pts_within_thresh": 0.0040100250626566416,
+    "occlusion_accuracy": 0.8305764411027569,
+    "clip_id": "basketball_18"
+  },
+  {
+    "average_jaccard": 0.005131578947368421,
+    "average_pts_within_thresh": 0.005131578947368421,
+    "occlusion_accuracy": 0.666359649122807,
+    "clip_id": "basketball_19"
+  },
+  {
+    "average_jaccard": 0.006666666666666667,
+    "average_pts_within_thresh": 0.006666666666666667,
+    "occlusion_accuracy": 0.7273370577281192,
+    "clip_id": "basketball_2"
+  },
+  {
+    "average_jaccard": 0.005585585585585586,
+    "average_pts_within_thresh": 0.005585585585585586,
+    "occlusion_accuracy": 0.8482882882882883,
+    "clip_id": "basketball_20"
+  },
+  {
+    "average_jaccard": 0.01046480743691899,
+    "average_pts_within_thresh": 0.01046480743691899,
+    "occlusion_accuracy": 0.8542895086321382,
+    "clip_id": "basketball_21"
+  },
+  {
+    "average_jaccard": 0.008122605363984674,
+    "average_pts_within_thresh": 0.008122605363984674,
+    "occlusion_accuracy": 0.8019923371647509,
+    "clip_id": "basketball_22"
+  },
+  {
+    "average_jaccard": 0.00603988603988604,
+    "average_pts_within_thresh": 0.00603988603988604,
+    "occlusion_accuracy": 0.6263817663817663,
+    "clip_id": "basketball_23"
+  },
+  {
+    "average_jaccard": 0.005863453815261044,
+    "average_pts_within_thresh": 0.005863453815261044,
+    "occlusion_accuracy": 0.8139357429718875,
+    "clip_id": "basketball_24"
+  },
+  {
+    "average_jaccard": 0.0036879432624113474,
+    "average_pts_within_thresh": 0.0036879432624113474,
+    "occlusion_accuracy": 0.7009042553191489,
+    "clip_id": "basketball_25"
+  },
+  {
+    "average_jaccard": 0.0018765432098765433,
+    "average_pts_within_thresh": 0.0018765432098765433,
+    "occlusion_accuracy": 0.7189135802469135,
+    "clip_id": "basketball_26"
+  },
+  {
+    "average_jaccard": 0.006572769953051643,
+    "average_pts_within_thresh": 0.006572769953051643,
+    "occlusion_accuracy": 0.8398435054773083,
+    "clip_id": "basketball_28"
+  },
+  {
+    "average_jaccard": 0.003913470993117011,
+    "average_pts_within_thresh": 0.003913470993117011,
+    "occlusion_accuracy": 0.7159882005899705,
+    "clip_id": "basketball_29"
+  },
+  {
+    "average_jaccard": 0.0031382978723404256,
+    "average_pts_within_thresh": 0.0031382978723404256,
+    "occlusion_accuracy": 0.8565070921985816,
+    "clip_id": "basketball_3"
+  },
+  {
+    "average_jaccard": 0.004378109452736319,
+    "average_pts_within_thresh": 0.004378109452736319,
+    "occlusion_accuracy": 0.7983084577114428,
+    "clip_id": "basketball_4"
+  },
+  {
+    "average_jaccard": 0.001625,
+    "average_pts_within_thresh": 0.001625,
+    "occlusion_accuracy": 0.721625,
+    "clip_id": "basketball_5"
+  },
+  {
+    "average_jaccard": 0.006233766233766234,
+    "average_pts_within_thresh": 0.006233766233766234,
+    "occlusion_accuracy": 0.5096969696969696,
+    "clip_id": "basketball_6"
+  },
+  {
+    "average_jaccard": 0.011673944687045124,
+    "average_pts_within_thresh": 0.011673944687045124,
+    "occlusion_accuracy": 0.7228529839883552,
+    "clip_id": "basketball_7"
+  },
+  {
+    "average_jaccard": 0.0007547169811320754,
+    "average_pts_within_thresh": 0.0007547169811320754,
+    "occlusion_accuracy": 0.6120251572327045,
+    "clip_id": "basketball_9"
+  },
+  {
+    "average_jaccard": 0.014986666666666667,
+    "average_pts_within_thresh": 0.014986666666666667,
+    "occlusion_accuracy": 0.8050133333333334,
+    "clip_id": "boxes_1"
+  },
+  {
+    "average_jaccard": 0.01391304347826087,
+    "average_pts_within_thresh": 0.01391304347826087,
+    "occlusion_accuracy": 0.8623429951690821,
+    "clip_id": "boxes_11"
+  },
+  {
+    "average_jaccard": 0.007791986359761296,
+    "average_pts_within_thresh": 0.007791986359761296,
+    "occlusion_accuracy": 0.8211764705882353,
+    "clip_id": "boxes_12"
+  },
+  {
+    "average_jaccard": 0.02415929203539823,
+    "average_pts_within_thresh": 0.02415929203539823,
+    "occlusion_accuracy": 0.7522123893805309,
+    "clip_id": "boxes_13"
+  },
+  {
+    "average_jaccard": 0.0034108527131782944,
+    "average_pts_within_thresh": 0.0034108527131782944,
+    "occlusion_accuracy": 0.9055426356589147,
+    "clip_id": "boxes_14"
+  },
+  {
+    "average_jaccard": 0.0037199582027168236,
+    "average_pts_within_thresh": 0.0037199582027168236,
+    "occlusion_accuracy": 0.8936886102403344,
+    "clip_id": "boxes_16"
+  },
+  {
+    "average_jaccard": 0.019229480737018426,
+    "average_pts_within_thresh": 0.019229480737018426,
+    "occlusion_accuracy": 0.870251256281407,
+    "clip_id": "boxes_17"
+  },
+  {
+    "average_jaccard": 0.015111111111111112,
+    "average_pts_within_thresh": 0.015111111111111112,
+    "occlusion_accuracy": 0.8657373737373737,
+    "clip_id": "boxes_18"
+  },
+  {
+    "average_jaccard": 0.00430188679245283,
+    "average_pts_within_thresh": 0.00430188679245283,
+    "occlusion_accuracy": 0.7959496855345912,
+    "clip_id": "boxes_19"
+  },
+  {
+    "average_jaccard": 0.002138047138047138,
+    "average_pts_within_thresh": 0.002138047138047138,
+    "occlusion_accuracy": 0.7480639730639731,
+    "clip_id": "boxes_2"
+  },
+  {
+    "average_jaccard": 0.0023858214042263124,
+    "average_pts_within_thresh": 0.0023858214042263124,
+    "occlusion_accuracy": 0.8493660531697341,
+    "clip_id": "boxes_20"
+  },
+  {
+    "average_jaccard": 0.013217391304347827,
+    "average_pts_within_thresh": 0.013217391304347827,
+    "occlusion_accuracy": 0.8892753623188406,
+    "clip_id": "boxes_21"
+  },
+  {
+    "average_jaccard": 0.011767337807606264,
+    "average_pts_within_thresh": 0.011767337807606264,
+    "occlusion_accuracy": 0.8199776286353467,
+    "clip_id": "boxes_22"
+  },
+  {
+    "average_jaccard": 0.011244323342415985,
+    "average_pts_within_thresh": 0.011244323342415985,
+    "occlusion_accuracy": 0.9209445958219801,
+    "clip_id": "boxes_23"
+  },
+  {
+    "average_jaccard": 0.0044832605531295484,
+    "average_pts_within_thresh": 0.0044832605531295484,
+    "occlusion_accuracy": 0.8669723435225619,
+    "clip_id": "boxes_24"
+  },
+  {
+    "average_jaccard": 0.013756294058408862,
+    "average_pts_within_thresh": 0.013756294058408862,
+    "occlusion_accuracy": 0.8536354481369587,
+    "clip_id": "boxes_25"
+  },
+  {
+    "average_jaccard": 0.009343434343434343,
+    "average_pts_within_thresh": 0.009343434343434343,
+    "occlusion_accuracy": 0.9486868686868687,
+    "clip_id": "boxes_27"
+  },
+  {
+    "average_jaccard": 0.004252873563218391,
+    "average_pts_within_thresh": 0.004252873563218391,
+    "occlusion_accuracy": 0.6595402298850574,
+    "clip_id": "boxes_28"
+  },
+  {
+    "average_jaccard": 0.012044943820224719,
+    "average_pts_within_thresh": 0.012044943820224719,
+    "occlusion_accuracy": 0.8954756554307116,
+    "clip_id": "boxes_29"
+  },
+  {
+    "average_jaccard": 0.01423474178403756,
+    "average_pts_within_thresh": 0.01423474178403756,
+    "occlusion_accuracy": 0.8006197183098591,
+    "clip_id": "boxes_3"
+  },
+  {
+    "average_jaccard": 0.002619047619047619,
+    "average_pts_within_thresh": 0.002619047619047619,
+    "occlusion_accuracy": 0.8283928571428572,
+    "clip_id": "boxes_4"
+  },
+  {
+    "average_jaccard": 0.0035775862068965518,
+    "average_pts_within_thresh": 0.0035775862068965518,
+    "occlusion_accuracy": 0.8601436781609195,
+    "clip_id": "boxes_5"
+  },
+  {
+    "average_jaccard": 0.006567901234567901,
+    "average_pts_within_thresh": 0.006567901234567901,
+    "occlusion_accuracy": 0.8598024691358025,
+    "clip_id": "boxes_6"
+  },
+  {
+    "average_jaccard": 0.01016574585635359,
+    "average_pts_within_thresh": 0.01016574585635359,
+    "occlusion_accuracy": 0.6805893186003683,
+    "clip_id": "boxes_7"
+  },
+  {
+    "average_jaccard": 0.013696969696969697,
+    "average_pts_within_thresh": 0.013696969696969697,
+    "occlusion_accuracy": 0.930060606060606,
+    "clip_id": "boxes_8"
+  },
+  {
+    "average_jaccard": 0.02495114006514658,
+    "average_pts_within_thresh": 0.02495114006514658,
+    "occlusion_accuracy": 0.7677741585233442,
+    "clip_id": "boxes_9"
+  },
+  {
+    "average_jaccard": 0.012982456140350877,
+    "average_pts_within_thresh": 0.012982456140350877,
+    "occlusion_accuracy": 0.6322169059011165,
+    "clip_id": "football_1"
+  },
+  {
+    "average_jaccard": 0.004761904761904762,
+    "average_pts_within_thresh": 0.004761904761904762,
+    "occlusion_accuracy": 0.6846857142857142,
+    "clip_id": "football_11"
+  },
+  {
+    "average_jaccard": 0.02003384094754653,
+    "average_pts_within_thresh": 0.02003384094754653,
+    "occlusion_accuracy": 0.7450761421319797,
+    "clip_id": "football_12"
+  },
+  {
+    "average_jaccard": 0.005846994535519126,
+    "average_pts_within_thresh": 0.005846994535519126,
+    "occlusion_accuracy": 0.7020765027322404,
+    "clip_id": "football_13"
+  },
+  {
+    "average_jaccard": 0.008903508771929825,
+    "average_pts_within_thresh": 0.008903508771929825,
+    "occlusion_accuracy": 0.8090350877192982,
+    "clip_id": "football_16"
+  },
+  {
+    "average_jaccard": 0.00556701030927835,
+    "average_pts_within_thresh": 0.00556701030927835,
+    "occlusion_accuracy": 0.6209621993127148,
+    "clip_id": "football_17"
+  },
+  {
+    "average_jaccard": 0.011863517060367455,
+    "average_pts_within_thresh": 0.011863517060367455,
+    "occlusion_accuracy": 0.7922834645669291,
+    "clip_id": "football_18"
+  },
+  {
+    "average_jaccard": 0.008086785009861933,
+    "average_pts_within_thresh": 0.008086785009861933,
+    "occlusion_accuracy": 0.8377120315581854,
+    "clip_id": "football_19"
+  },
+  {
+    "average_jaccard": 0.004064171122994653,
+    "average_pts_within_thresh": 0.004064171122994653,
+    "occlusion_accuracy": 0.6885918003565062,
+    "clip_id": "football_2"
+  },
+  {
+    "average_jaccard": 0.009910514541387024,
+    "average_pts_within_thresh": 0.009910514541387024,
+    "occlusion_accuracy": 0.7872930648769575,
+    "clip_id": "football_20"
+  },
+  {
+    "average_jaccard": 0.014991869918699188,
+    "average_pts_within_thresh": 0.014991869918699188,
+    "occlusion_accuracy": 0.7401626016260162,
+    "clip_id": "football_21"
+  },
+  {
+    "average_jaccard": 0.007869918699186991,
+    "average_pts_within_thresh": 0.007869918699186991,
+    "occlusion_accuracy": 0.7590569105691057,
+    "clip_id": "football_22"
+  },
+  {
+    "average_jaccard": 0.01049808429118774,
+    "average_pts_within_thresh": 0.01049808429118774,
+    "occlusion_accuracy": 0.8889272030651341,
+    "clip_id": "football_23"
+  },
+  {
+    "average_jaccard": 0.00793859649122807,
+    "average_pts_within_thresh": 0.00793859649122807,
+    "occlusion_accuracy": 0.8401535087719298,
+    "clip_id": "football_24"
+  },
+  {
+    "average_jaccard": 0.0016129032258064516,
+    "average_pts_within_thresh": 0.0016129032258064516,
+    "occlusion_accuracy": 0.6644623655913978,
+    "clip_id": "football_25"
+  },
+  {
+    "average_jaccard": 0.00909090909090909,
+    "average_pts_within_thresh": 0.00909090909090909,
+    "occlusion_accuracy": 0.7159779614325069,
+    "clip_id": "football_28"
+  },
+  {
+    "average_jaccard": 0.007611111111111111,
+    "average_pts_within_thresh": 0.007611111111111111,
+    "occlusion_accuracy": 0.6169722222222223,
+    "clip_id": "football_29"
+  },
+  {
+    "average_jaccard": 0.005744234800838574,
+    "average_pts_within_thresh": 0.005744234800838574,
+    "occlusion_accuracy": 0.7810901467505241,
+    "clip_id": "football_3"
+  },
+  {
+    "average_jaccard": 0.007766323024054983,
+    "average_pts_within_thresh": 0.007766323024054983,
+    "occlusion_accuracy": 0.7798625429553264,
+    "clip_id": "football_4"
+  },
+  {
+    "average_jaccard": 0.010168350168350168,
+    "average_pts_within_thresh": 0.010168350168350168,
+    "occlusion_accuracy": 0.9003872053872054,
+    "clip_id": "football_5"
+  },
+  {
+    "average_jaccard": 0.005511111111111111,
+    "average_pts_within_thresh": 0.005511111111111111,
+    "occlusion_accuracy": 0.8447555555555556,
+    "clip_id": "football_6"
+  },
+  {
+    "average_jaccard": 0.009325153374233128,
+    "average_pts_within_thresh": 0.009325153374233128,
+    "occlusion_accuracy": 0.7056850715746421,
+    "clip_id": "football_7"
+  },
+  {
+    "average_jaccard": 0.0033986928104575162,
+    "average_pts_within_thresh": 0.0033986928104575162,
+    "occlusion_accuracy": 0.8298692810457516,
+    "clip_id": "football_8"
+  },
+  {
+    "average_jaccard": 0.004184914841849148,
+    "average_pts_within_thresh": 0.004184914841849148,
+    "occlusion_accuracy": 0.7255961070559611,
+    "clip_id": "football_9"
+  },
+  {
+    "average_jaccard": 0.010585106382978724,
+    "average_pts_within_thresh": 0.010585106382978724,
+    "occlusion_accuracy": 0.8196631205673759,
+    "clip_id": "juggle_1"
+  },
+  {
+    "average_jaccard": 0.013832020997375329,
+    "average_pts_within_thresh": 0.013832020997375329,
+    "occlusion_accuracy": 0.8688976377952756,
+    "clip_id": "juggle_11"
+  },
+  {
+    "average_jaccard": 0.017142857142857144,
+    "average_pts_within_thresh": 0.017142857142857144,
+    "occlusion_accuracy": 0.8942857142857142,
+    "clip_id": "juggle_12"
+  },
+  {
+    "average_jaccard": 0.004226950354609929,
+    "average_pts_within_thresh": 0.004226950354609929,
+    "occlusion_accuracy": 0.8344680851063829,
+    "clip_id": "juggle_13"
+  },
+  {
+    "average_jaccard": 0.008159722222222223,
+    "average_pts_within_thresh": 0.008159722222222223,
+    "occlusion_accuracy": 0.9361805555555556,
+    "clip_id": "juggle_14"
+  },
+  {
+    "average_jaccard": 0.026615646258503402,
+    "average_pts_within_thresh": 0.026615646258503402,
+    "occlusion_accuracy": 0.9334013605442177,
+    "clip_id": "juggle_16"
+  },
+  {
+    "average_jaccard": 0.013122529644268775,
+    "average_pts_within_thresh": 0.013122529644268775,
+    "occlusion_accuracy": 0.8108827404479578,
+    "clip_id": "juggle_17"
+  },
+  {
+    "average_jaccard": 0.016830601092896174,
+    "average_pts_within_thresh": 0.016830601092896174,
+    "occlusion_accuracy": 0.7871256830601093,
+    "clip_id": "juggle_18"
+  },
+  {
+    "average_jaccard": 0.009747747747747748,
+    "average_pts_within_thresh": 0.009747747747747748,
+    "occlusion_accuracy": 0.8685585585585586,
+    "clip_id": "juggle_19"
+  },
+  {
+    "average_jaccard": 0.008771084337349397,
+    "average_pts_within_thresh": 0.008771084337349397,
+    "occlusion_accuracy": 0.8570441767068273,
+    "clip_id": "juggle_2"
+  },
+  {
+    "average_jaccard": 0.014409503843466108,
+    "average_pts_within_thresh": 0.014409503843466108,
+    "occlusion_accuracy": 0.9272816212438854,
+    "clip_id": "juggle_20"
+  },
+  {
+    "average_jaccard": 0.022098466505246165,
+    "average_pts_within_thresh": 0.022098466505246165,
+    "occlusion_accuracy": 0.9021630347054076,
+    "clip_id": "juggle_21"
+  },
+  {
+    "average_jaccard": 0.011779448621553884,
+    "average_pts_within_thresh": 0.011779448621553884,
+    "occlusion_accuracy": 0.8114954051796157,
+    "clip_id": "juggle_22"
+  },
+  {
+    "average_jaccard": 0.01605812897366031,
+    "average_pts_within_thresh": 0.01605812897366031,
+    "occlusion_accuracy": 0.9232152588555859,
+    "clip_id": "juggle_23"
+  },
+  {
+    "average_jaccard": 0.005813449023861172,
+    "average_pts_within_thresh": 0.005813449023861172,
+    "occlusion_accuracy": 0.9445697758496023,
+    "clip_id": "juggle_24"
+  },
+  {
+    "average_jaccard": 0.002611683848797251,
+    "average_pts_within_thresh": 0.002611683848797251,
+    "occlusion_accuracy": 0.8896907216494845,
+    "clip_id": "juggle_25"
+  },
+  {
+    "average_jaccard": 0.0019253910950661852,
+    "average_pts_within_thresh": 0.0019253910950661852,
+    "occlusion_accuracy": 0.9458243080625752,
+    "clip_id": "juggle_26"
+  },
+  {
+    "average_jaccard": 0.018771929824561405,
+    "average_pts_within_thresh": 0.018771929824561405,
+    "occlusion_accuracy": 0.9141228070175439,
+    "clip_id": "juggle_27"
+  },
+  {
+    "average_jaccard": 0.011683006535947713,
+    "average_pts_within_thresh": 0.011683006535947713,
+    "occlusion_accuracy": 0.8950653594771242,
+    "clip_id": "juggle_28"
+  },
+  {
+    "average_jaccard": 0.008191403081914031,
+    "average_pts_within_thresh": 0.008191403081914031,
+    "occlusion_accuracy": 0.8649472830494729,
+    "clip_id": "juggle_29"
+  },
+  {
+    "average_jaccard": 0.009771689497716896,
+    "average_pts_within_thresh": 0.009771689497716896,
+    "occlusion_accuracy": 0.8092054794520548,
+    "clip_id": "juggle_3"
+  },
+  {
+    "average_jaccard": 0.003551673944687045,
+    "average_pts_within_thresh": 0.003551673944687045,
+    "occlusion_accuracy": 0.7699854439592431,
+    "clip_id": "juggle_4"
+  },
+  {
+    "average_jaccard": 0.003933477946493131,
+    "average_pts_within_thresh": 0.003933477946493131,
+    "occlusion_accuracy": 0.9212002892263196,
+    "clip_id": "juggle_5"
+  },
+  {
+    "average_jaccard": 0.009709639953542393,
+    "average_pts_within_thresh": 0.009709639953542393,
+    "occlusion_accuracy": 0.87068524970964,
+    "clip_id": "juggle_6"
+  },
+  {
+    "average_jaccard": 0.017305699481865285,
+    "average_pts_within_thresh": 0.017305699481865285,
+    "occlusion_accuracy": 0.7986355785837651,
+    "clip_id": "juggle_7"
+  },
+  {
+    "average_jaccard": 0.005303030303030303,
+    "average_pts_within_thresh": 0.005303030303030303,
+    "occlusion_accuracy": 0.8788131313131313,
+    "clip_id": "juggle_8"
+  },
+  {
+    "average_jaccard": 0.003732681336593317,
+    "average_pts_within_thresh": 0.003732681336593317,
+    "occlusion_accuracy": 0.848720456397718,
+    "clip_id": "juggle_9"
+  },
+  {
+    "average_jaccard": 0.005091863517060367,
+    "average_pts_within_thresh": 0.005091863517060367,
+    "occlusion_accuracy": 0.6292650918635171,
+    "clip_id": "softball_1"
+  },
+  {
+    "average_jaccard": 0.013592233009708738,
+    "average_pts_within_thresh": 0.013592233009708738,
+    "occlusion_accuracy": 0.8001294498381877,
+    "clip_id": "softball_11"
+  },
+  {
+    "average_jaccard": 0.009402173913043477,
+    "average_pts_within_thresh": 0.009402173913043477,
+    "occlusion_accuracy": 0.83125,
+    "clip_id": "softball_12"
+  },
+  {
+    "average_jaccard": 0.00523489932885906,
+    "average_pts_within_thresh": 0.00523489932885906,
+    "occlusion_accuracy": 0.6646979865771812,
+    "clip_id": "softball_13"
+  },
+  {
+    "average_jaccard": 0.002875816993464052,
+    "average_pts_within_thresh": 0.002875816993464052,
+    "occlusion_accuracy": 0.8190849673202615,
+    "clip_id": "softball_14"
+  },
+  {
+    "average_jaccard": 0.005931198102016607,
+    "average_pts_within_thresh": 0.005931198102016607,
+    "occlusion_accuracy": 0.6872597864768684,
+    "clip_id": "softball_16"
+  },
+  {
+    "average_jaccard": 0.0008854166666666666,
+    "average_pts_within_thresh": 0.0008854166666666666,
+    "occlusion_accuracy": 0.7466145833333333,
+    "clip_id": "softball_17"
+  },
+  {
+    "average_jaccard": 0.0030303030303030303,
+    "average_pts_within_thresh": 0.0030303030303030303,
+    "occlusion_accuracy": 0.737900432900433,
+    "clip_id": "softball_18"
+  },
+  {
+    "average_jaccard": 0.003913630229419703,
+    "average_pts_within_thresh": 0.003913630229419703,
+    "occlusion_accuracy": 0.6155465587044534,
+    "clip_id": "softball_19"
+  },
+  {
+    "average_jaccard": 0.005,
+    "average_pts_within_thresh": 0.005,
+    "occlusion_accuracy": 0.7609677419354839,
+    "clip_id": "softball_2"
+  },
+  {
+    "average_jaccard": 0.006902173913043479,
+    "average_pts_within_thresh": 0.006902173913043479,
+    "occlusion_accuracy": 0.6828985507246377,
+    "clip_id": "softball_20"
+  },
+  {
+    "average_jaccard": 0.009434832756632065,
+    "average_pts_within_thresh": 0.009434832756632065,
+    "occlusion_accuracy": 0.7270357554786621,
+    "clip_id": "softball_21"
+  },
+  {
+    "average_jaccard": 0.012459016393442624,
+    "average_pts_within_thresh": 0.012459016393442624,
+    "occlusion_accuracy": 0.8483788706739527,
+    "clip_id": "softball_22"
+  },
+  {
+    "average_jaccard": 0.007803790412486065,
+    "average_pts_within_thresh": 0.007803790412486065,
+    "occlusion_accuracy": 0.7948049052396878,
+    "clip_id": "softball_23"
+  },
+  {
+    "average_jaccard": 0.005181159420289855,
+    "average_pts_within_thresh": 0.005181159420289855,
+    "occlusion_accuracy": 0.7442210144927536,
+    "clip_id": "softball_24"
+  },
+  {
+    "average_jaccard": 0.008372615039281706,
+    "average_pts_within_thresh": 0.008372615039281706,
+    "occlusion_accuracy": 0.8065095398428732,
+    "clip_id": "softball_25"
+  },
+  {
+    "average_jaccard": 0.0027564102564102562,
+    "average_pts_within_thresh": 0.0027564102564102562,
+    "occlusion_accuracy": 0.5283974358974359,
+    "clip_id": "softball_26"
+  },
+  {
+    "average_jaccard": 0.009450549450549451,
+    "average_pts_within_thresh": 0.009450549450549451,
+    "occlusion_accuracy": 0.8556043956043956,
+    "clip_id": "softball_27"
+  },
+  {
+    "average_jaccard": 0.005148895292987512,
+    "average_pts_within_thresh": 0.005148895292987512,
+    "occlusion_accuracy": 0.6939097022094141,
+    "clip_id": "softball_28"
+  },
+  {
+    "average_jaccard": 0.0023703703703703703,
+    "average_pts_within_thresh": 0.0023703703703703703,
+    "occlusion_accuracy": 0.8007619047619048,
+    "clip_id": "softball_29"
+  },
+  {
+    "average_jaccard": 0.003357314148681055,
+    "average_pts_within_thresh": 0.003357314148681055,
+    "occlusion_accuracy": 0.8317346123101519,
+    "clip_id": "softball_3"
+  },
+  {
+    "average_jaccard": 0.004822695035460993,
+    "average_pts_within_thresh": 0.004822695035460993,
+    "occlusion_accuracy": 0.7146099290780142,
+    "clip_id": "softball_4"
+  },
+  {
+    "average_jaccard": 0.007458143074581431,
+    "average_pts_within_thresh": 0.007458143074581431,
+    "occlusion_accuracy": 0.7798782343987823,
+    "clip_id": "softball_5"
+  },
+  {
+    "average_jaccard": 0.003658536585365854,
+    "average_pts_within_thresh": 0.003658536585365854,
+    "occlusion_accuracy": 0.6805420054200542,
+    "clip_id": "softball_6"
+  },
+  {
+    "average_jaccard": 0.016105072463768116,
+    "average_pts_within_thresh": 0.016105072463768116,
+    "occlusion_accuracy": 0.7114130434782608,
+    "clip_id": "softball_7"
+  },
+  {
+    "average_jaccard": 0.012632696390658175,
+    "average_pts_within_thresh": 0.012632696390658175,
+    "occlusion_accuracy": 0.8644373673036093,
+    "clip_id": "softball_8"
+  },
+  {
+    "average_jaccard": 0.0016161616161616162,
+    "average_pts_within_thresh": 0.0016161616161616162,
+    "occlusion_accuracy": 0.7441873278236915,
+    "clip_id": "softball_9"
+  },
+  {
+    "average_jaccard": 0.006457789382071366,
+    "average_pts_within_thresh": 0.006457789382071366,
+    "occlusion_accuracy": 0.6192863359442994,
+    "clip_id": "tennis_1"
+  },
+  {
+    "average_jaccard": 0.0030323299888517278,
+    "average_pts_within_thresh": 0.0030323299888517278,
+    "occlusion_accuracy": 0.5529319955406912,
+    "clip_id": "tennis_11"
+  },
+  {
+    "average_jaccard": 0.006769865841073272,
+    "average_pts_within_thresh": 0.006769865841073272,
+    "occlusion_accuracy": 0.6539318885448916,
+    "clip_id": "tennis_12"
+  },
+  {
+    "average_jaccard": 0.00525879917184265,
+    "average_pts_within_thresh": 0.00525879917184265,
+    "occlusion_accuracy": 0.6037267080745342,
+    "clip_id": "tennis_13"
+  },
+  {
+    "average_jaccard": 0.0020630372492836677,
+    "average_pts_within_thresh": 0.0020630372492836677,
+    "occlusion_accuracy": 0.6586819484240688,
+    "clip_id": "tennis_14"
+  },
+  {
+    "average_jaccard": 0.005965811965811966,
+    "average_pts_within_thresh": 0.005965811965811966,
+    "occlusion_accuracy": 0.6322393162393163,
+    "clip_id": "tennis_16"
+  },
+  {
+    "average_jaccard": 0.0020657276995305163,
+    "average_pts_within_thresh": 0.0020657276995305163,
+    "occlusion_accuracy": 0.554303599374022,
+    "clip_id": "tennis_17"
+  },
+  {
+    "average_jaccard": 0.004759095378564405,
+    "average_pts_within_thresh": 0.004759095378564405,
+    "occlusion_accuracy": 0.5744542772861357,
+    "clip_id": "tennis_18"
+  },
+  {
+    "average_jaccard": 0.00618018018018018,
+    "average_pts_within_thresh": 0.00618018018018018,
+    "occlusion_accuracy": 0.5992612612612612,
+    "clip_id": "tennis_19"
+  },
+  {
+    "average_jaccard": 0.0028900709219858156,
+    "average_pts_within_thresh": 0.0028900709219858156,
+    "occlusion_accuracy": 0.7154432624113475,
+    "clip_id": "tennis_2"
+  },
+  {
+    "average_jaccard": 0.009312406576980568,
+    "average_pts_within_thresh": 0.009312406576980568,
+    "occlusion_accuracy": 0.6632286995515695,
+    "clip_id": "tennis_20"
+  },
+  {
+    "average_jaccard": 0.007363717605004468,
+    "average_pts_within_thresh": 0.007363717605004468,
+    "occlusion_accuracy": 0.6549061662198391,
+    "clip_id": "tennis_21"
+  },
+  {
+    "average_jaccard": 0.007382198952879581,
+    "average_pts_within_thresh": 0.007382198952879581,
+    "occlusion_accuracy": 0.6328446771378708,
+    "clip_id": "tennis_22"
+  },
+  {
+    "average_jaccard": 0.0046927374301675975,
+    "average_pts_within_thresh": 0.0046927374301675975,
+    "occlusion_accuracy": 0.6194972067039106,
+    "clip_id": "tennis_23"
+  },
+  {
+    "average_jaccard": 0.00460431654676259,
+    "average_pts_within_thresh": 0.00460431654676259,
+    "occlusion_accuracy": 0.65189448441247,
+    "clip_id": "tennis_24"
+  },
+  {
+    "average_jaccard": 0.001608662026295437,
+    "average_pts_within_thresh": 0.001608662026295437,
+    "occlusion_accuracy": 0.5987161639597834,
+    "clip_id": "tennis_25"
+  },
+  {
+    "average_jaccard": 0.003361986628462273,
+    "average_pts_within_thresh": 0.003361986628462273,
+    "occlusion_accuracy": 0.6525501432664756,
+    "clip_id": "tennis_26"
+  },
+  {
+    "average_jaccard": 0.0031007751937984496,
+    "average_pts_within_thresh": 0.0031007751937984496,
+    "occlusion_accuracy": 0.6533333333333333,
+    "clip_id": "tennis_27"
+  },
+  {
+    "average_jaccard": 0.00903061224489796,
+    "average_pts_within_thresh": 0.00903061224489796,
+    "occlusion_accuracy": 0.6466326530612245,
+    "clip_id": "tennis_28"
+  },
+  {
+    "average_jaccard": 0.001851851851851852,
+    "average_pts_within_thresh": 0.001851851851851852,
+    "occlusion_accuracy": 0.5511111111111111,
+    "clip_id": "tennis_29"
+  },
+  {
+    "average_jaccard": 0.005558312655086849,
+    "average_pts_within_thresh": 0.005558312655086849,
+    "occlusion_accuracy": 0.6060215053763441,
+    "clip_id": "tennis_3"
+  },
+  {
+    "average_jaccard": 0.003660714285714286,
+    "average_pts_within_thresh": 0.003660714285714286,
+    "occlusion_accuracy": 0.5958035714285714,
+    "clip_id": "tennis_4"
+  },
+  {
+    "average_jaccard": 0.009243085880640467,
+    "average_pts_within_thresh": 0.009243085880640467,
+    "occlusion_accuracy": 0.6642794759825328,
+    "clip_id": "tennis_5"
+  },
+  {
+    "average_jaccard": 0.005289421157684631,
+    "average_pts_within_thresh": 0.005289421157684631,
+    "occlusion_accuracy": 0.5274251497005988,
+    "clip_id": "tennis_6"
+  },
+  {
+    "average_jaccard": 0.006666666666666667,
+    "average_pts_within_thresh": 0.006666666666666667,
+    "occlusion_accuracy": 0.6483778966131908,
+    "clip_id": "tennis_7"
+  },
+  {
+    "average_jaccard": 0.0012138728323699422,
+    "average_pts_within_thresh": 0.0012138728323699422,
+    "occlusion_accuracy": 0.654971098265896,
+    "clip_id": "tennis_8"
+  },
+  {
+    "average_jaccard": 0.0053,
+    "average_pts_within_thresh": 0.0053,
+    "occlusion_accuracy": 0.5743166666666667,
+    "clip_id": "tennis_9"
+  }
+]
