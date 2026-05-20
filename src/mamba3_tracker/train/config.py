@@ -20,7 +20,7 @@ from typing import Any
 
 import yaml
 
-SUPPORTED_VERSIONS = ("v8",)
+SUPPORTED_VERSIONS = ("v8", "v9", "v10")
 
 
 def _deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:

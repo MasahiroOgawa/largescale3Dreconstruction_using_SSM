@@ -117,9 +117,17 @@ class CausalCrossPropagator(nn.Module):
 
     For each frame `t` and each iteration `i ∈ [0, N_ITER)`:
         for each pyramid level l (coarse → fine):
-            Q ← Q + Mamba3CrossAttn_l(LN(Q), LN(Y^(t)_l))
-                  + CorrelationCrossAttn_l(LN(Q), LN(Y^(t)_l))
+            Q ← LayerNorm_l( Q + Mamba3CrossAttn_l(LN(Q), LN(Y^(t)_l))
+                                + CorrelationCrossAttn_l(LN(Q), LN(Y^(t)_l)) )
     After all iterations at frame t, Q is stored as Q^(t).
+
+    The post-update LayerNorm is the v10 fix: without it, `Q`'s magnitude
+    accumulated across 192 additive updates (num_iters × levels × frames)
+    until each new residual was invisible against the running sum, and the
+    head saw a near-constant direction every frame → static tracks. With
+    LayerNorm bounding `Q` after every addition, each new residual has
+    visible influence on the direction, so per-frame predictions can
+    actually vary — and the position/velocity losses can do their job.
 
     The two cross-attention branches (Mamba-3 SSD + correlation) sum at
     each level — both contribute gradient. The correlation branch carries
@@ -164,6 +172,12 @@ class CausalCrossPropagator(nn.Module):
         self.kv_norms = nn.ModuleList(
             [nn.LayerNorm(dim) for _ in range(num_pyramid_levels)]
         )
+        # v10 post-update norm: bounds ‖Q‖ after each residual addition so
+        # the optimiser can't escape the loss by inflating cross-attention
+        # output magnitudes (the v7/v8/v9 failure mode).
+        self.out_norms = nn.ModuleList(
+            [nn.LayerNorm(dim) for _ in range(num_pyramid_levels)]
+        )
 
     def forward(
         self,
@@ -203,7 +217,7 @@ class CausalCrossPropagator(nn.Module):
                     q_tokens = self.q_norms[l](Q)
                     delta_ssd = self.ssd_levels[l](q_tokens, kv_tokens)
                     delta_corr = self.corr_levels[l](q_tokens, kv_tokens)
-                    Q = Q + delta_ssd + delta_corr
+                    Q = self.out_norms[l](Q + delta_ssd + delta_corr)
             history.append(Q)
 
         return torch.stack(history, dim=1)

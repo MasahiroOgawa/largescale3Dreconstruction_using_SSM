@@ -119,3 +119,59 @@ The memory plot is dramatic (transformer OOM at T~1k, mamba constant). The laten
 - `feedback_no_efficiency_only_paper.md`: the tracking-paper framing reaches accuracy parity with transformer-baseline trackers (CoTracker, TAPIR-3D) is the necessary bar. Efficiency advantage is the *additional* result on top.
 - `feedback_efficiency_and_accuracy_together.md`: every variant comparison reports both axes — same here. Tracking accuracy (e.g., AJ@5px, OA, F-score on TAP-Vid-3D) + latency/memory at increasing T.
 - `feedback_stay_close_to_da3_paper.md`: the tracking head is *additive* — DA3 encoder unchanged, just adds a temporal head. Same posture as before: don't deviate from DA3 internals; build on top.
+
+---
+
+## Findings from the v6–v10 implementation (2026-05-19 to 2026-05-20)
+
+What was actually built: a from-scratch tracker with the encoder/propagator/heads from §8 of `doc/attention/mamba3_attention.tex` (not the streaming SSD-per-query design above — see the implementation in `src/mamba3_tracker/`). The propagator carries one 384-dim "track memory" vector `Q[b, n, :]` per (clip, tracked-point), updated each frame by two cross-attention branches (`Mamba3CrossAttention` SSD + RAFT-style cosine `CorrelationCrossAttention`). v6 → v10 is the recorded ablation chain that landed on a load-bearing architectural lesson; results in `results/ablation/v{6,7,8}/`.
+
+### The story in one paragraph
+
+v6/v7/v8/v9 all hit the same visible symptom: **predicted tracks barely move on the rendered video** (a few-pixel oscillation at most). 3D-AJ numbers improved across variants (v6 0.005 → v7 0.044 → v8 0.049 on (pstudio + drivetrack) mean) but the qualitative videos stayed static. We chased it through three different loss redesigns (v6 multi-term, v7 + correlation arch, v8 velocity+position with Huber scale, v9a position weight raised to 1.0) before realising the loss wasn't the bottleneck.
+
+### The actual bug
+
+In `src/mamba3_tracker/model/propagator.py:198–206`, the per-frame update was
+
+```python
+for t in range(F_):
+    for _ in range(self.num_iters):                # 3
+        for l in range(self.num_pyramid_levels):   # 2
+            ...
+            Q = Q + delta_ssd + delta_corr         # ← unbounded accumulator
+    history.append(Q)
+```
+
+That's 6 residual additions per frame × 32 frames = 192 additions into `Q` with **no LayerNorm between them**. The optimiser, free to learn cross-attention weights of any magnitude, drove the deltas large enough that `Q`'s L2 norm reached **10⁵–10⁶** by the end of a clip (healthy networks: ~1–10). Because every per-frame delta also points in a similar direction (slow-motion scene → similar weighted-average of frame patches each frame), the *direction* of `Q` was dominated by the running accumulator: `cos(Q(t), Q(0)) ≈ 1.0` across all frames. The head's input LayerNorm scrubbed the magnitude away but couldn't restore directional variation, so the head saw the same direction every frame and output the same Δp̂ every frame.
+
+Diagnostic comparing the three trained checkpoints on one pstudio clip:
+
+|  | mean ‖Q‖ per frame | cos(Q(15), Q(0)) |
+|---|---|---|
+| v7 ckpt_30000 | 250,979 | 0.26 |
+| v8 ckpt_30000 | 3,626,264 | 0.9999 |
+| v9 ckpt_1000 | 774,423 | 0.9999 |
+
+v7 happened to converge with smaller `‖Q‖` and a little directional spread surviving → the "few pixels of motion" users saw. v8 and v9 saturated harder under their stronger per-frame loss gradients.
+
+### The v10 fix
+
+Add a post-update LayerNorm so `Q`'s magnitude is bounded after every residual addition:
+
+```python
+Q = self.out_norms[l](Q + delta_ssd + delta_corr)
+```
+
+This is standard transformer-block hygiene that the propagator was missing. With `Q` re-normalised, each new per-frame delta has *visible influence* on direction — the residual updates can do their job and the position/velocity losses can finally pull the prediction toward GT motion. At random init the patched model already produces clearly time-varying Δp̂ across frames where the old propagator collapsed instantly.
+
+Implementation diff is one new `nn.ModuleList` of `LayerNorm`s on `CausalCrossPropagator.__init__` plus the one-line change in the inner loop. See commit landing `configs/v10.yaml` + the propagator change.
+
+### Lessons for future variants (and for the streaming-SSD direction at the top of this file)
+
+- **Residual-stack hygiene is non-negotiable in any propagator/recurrence.** The streaming-SSD design above is also a per-query recurrence; whoever implements `Mamba3Tracker` per the original sketch must put LayerNorm (or an explicit gating mechanism) on the state path, not only on the inputs to attention. Pre-norm alone is insufficient when the state itself is the residual accumulator.
+- **Diagnose state-saturation before tuning losses.** Three failed loss redesigns cost ~12 hours of training compute before the track-memory diagnostic (`‖Q‖`, cos similarity across t) was run. Add this as a first-line check whenever the qualitative result diverges from the quantitative score.
+- **`q_norm` pre-norm ≠ residual safety.** The existing code already had `q_norms[l](Q)` as the input to `ssd_levels[l]` and `corr_levels[l]`. That bounded the *attention input*, not the *state*. The state still drifted.
+- **TAPVid-3D 3D-AJ can improve while the tracker is silently broken.** Predict-near-anchor satisfies the threshold-based metric for short-clip slow-motion subsets (pstudio). A correct architecture is necessary for the metric to actually measure tracking quality rather than anchor-snapping. Future ablations should report both the metric *and* a qualitative-motion diagnostic (e.g. ‖Δp̂(F-1) − Δp̂(0)‖ vs ‖Δp*(F-1) − Δp*(0)‖) per variant.
+- **Loss-vs-arch attribution requires arch-side diagnostics.** "Why doesn't the model learn?" can have an architectural answer that no loss tweak will reach. v6→v9 was four loss recipes hitting the same arch failure; v10 is one arch fix that should unblock whichever of those losses is actually best.
+
