@@ -14,3 +14,4 @@
 - [Tracker ablation v6→v7→v8](memory/feedback_tracker_ablation_v6v7v8.md) — one set of fixes per run; implement→train→eval→commit before the next; per-run delta is the paper's ablation row
 - [Wrap tracker training in systemd-run scope](memory/feedback_tracker_train_systemd_scope.md) — `systemd-run --user --scope -p MemoryMax=18G`; defence-in-depth for systemd-oomd PSI pressure
 - [TAPVid loader: decode window only, no persistent_workers](memory/feedback_tapvid_dataloader_window_only.md) — `load_clip(path, frames=(s,e))` + `persistent_workers=False`; the actual fix for v7's RAM leak that systemd-oomd killed twice
+- [One unified YAML per ablation run](memory/feedback_one_unified_yaml_per_ablation.md) — every knob (model, data, train, loss) lives in `configs/<run>.yaml`; not split across files

@@ -1,0 +1,1202 @@
+[
+  {
+    "average_jaccard": 0.017228438864628822,
+    "average_pts_within_thresh": 0.017228438864628822,
+    "occlusion_accuracy": 0.3546670305676856,
+    "clip_id": "Apartment_release_clean_seq133_3"
+  },
+  {
+    "average_jaccard": 0.07094594594594594,
+    "average_pts_within_thresh": 0.07094594594594594,
+    "occlusion_accuracy": 0.5019963144963145,
+    "clip_id": "Apartment_release_clean_seq133_4"
+  },
+  {
+    "average_jaccard": 0.028178879310344827,
+    "average_pts_within_thresh": 0.028178879310344827,
+    "occlusion_accuracy": 0.42376077586206895,
+    "clip_id": "Apartment_release_clean_seq134_0"
+  },
+  {
+    "average_jaccard": 0.40574919871794873,
+    "average_pts_within_thresh": 0.40574919871794873,
+    "occlusion_accuracy": 0.4557792467948718,
+    "clip_id": "Apartment_release_clean_seq134_7"
+  },
+  {
+    "average_jaccard": 0.026394774011299436,
+    "average_pts_within_thresh": 0.026394774011299436,
+    "occlusion_accuracy": 0.26839689265536726,
+    "clip_id": "Apartment_release_clean_seq136_1"
+  },
+  {
+    "average_jaccard": 0.051091867469879516,
+    "average_pts_within_thresh": 0.051091867469879516,
+    "occlusion_accuracy": 0.4974209337349398,
+    "clip_id": "Apartment_release_clean_seq136_6"
+  },
+  {
+    "average_jaccard": 0.018211451247165535,
+    "average_pts_within_thresh": 0.018211451247165535,
+    "occlusion_accuracy": 0.21191184807256236,
+    "clip_id": "Apartment_release_clean_seq138_0"
+  },
+  {
+    "average_jaccard": 0.014189632545931759,
+    "average_pts_within_thresh": 0.014189632545931759,
+    "occlusion_accuracy": 0.29125656167979,
+    "clip_id": "Apartment_release_clean_seq138_7"
+  },
+  {
+    "average_jaccard": 0.03741433253873659,
+    "average_pts_within_thresh": 0.03741433253873659,
+    "occlusion_accuracy": 0.642580452920143,
+    "clip_id": "Apartment_release_clean_seq141_0"
+  },
+  {
+    "average_jaccard": 0.10355029585798817,
+    "average_pts_within_thresh": 0.10355029585798817,
+    "occlusion_accuracy": 0.6939534023668639,
+    "clip_id": "Apartment_release_clean_seq141_7"
+  },
+  {
+    "average_jaccard": 0.029917377398720683,
+    "average_pts_within_thresh": 0.029917377398720683,
+    "occlusion_accuracy": 0.2592284115138593,
+    "clip_id": "Apartment_release_clean_seq143_1"
+  },
+  {
+    "average_jaccard": 0.015695224719101123,
+    "average_pts_within_thresh": 0.015695224719101123,
+    "occlusion_accuracy": 0.22247191011235956,
+    "clip_id": "Apartment_release_clean_seq143_6"
+  },
+  {
+    "average_jaccard": 0.02807171132764921,
+    "average_pts_within_thresh": 0.02807171132764921,
+    "occlusion_accuracy": 0.4265948538367844,
+    "clip_id": "Apartment_release_clean_seq143_8"
+  },
+  {
+    "average_jaccard": 0.5368691510695187,
+    "average_pts_within_thresh": 0.5368691510695187,
+    "occlusion_accuracy": 0.8074657419786097,
+    "clip_id": "Apartment_release_clean_seq144_2"
+  },
+  {
+    "average_jaccard": 0.01689046681664792,
+    "average_pts_within_thresh": 0.01689046681664792,
+    "occlusion_accuracy": 0.27671541057367827,
+    "clip_id": "Apartment_release_clean_seq144_5"
+  },
+  {
+    "average_jaccard": 0.011683238636363636,
+    "average_pts_within_thresh": 0.011683238636363636,
+    "occlusion_accuracy": 0.20534446022727273,
+    "clip_id": "Apartment_release_clean_seq146_4"
+  },
+  {
+    "average_jaccard": 0.019077649379932355,
+    "average_pts_within_thresh": 0.019077649379932355,
+    "occlusion_accuracy": 0.42696589627959414,
+    "clip_id": "Apartment_release_clean_seq148_2"
+  },
+  {
+    "average_jaccard": 0.006936887921653972,
+    "average_pts_within_thresh": 0.006936887921653972,
+    "occlusion_accuracy": 0.10583854733405876,
+    "clip_id": "Apartment_release_clean_seq148_5"
+  },
+  {
+    "average_jaccard": 0.027491648106904232,
+    "average_pts_within_thresh": 0.027491648106904232,
+    "occlusion_accuracy": 0.3748260022271715,
+    "clip_id": "Apartment_release_clean_seq150_3"
+  },
+  {
+    "average_jaccard": 0.045121951219512194,
+    "average_pts_within_thresh": 0.045121951219512194,
+    "occlusion_accuracy": 0.5956173780487805,
+    "clip_id": "Apartment_release_clean_seq150_4"
+  },
+  {
+    "average_jaccard": 0.013759784735812132,
+    "average_pts_within_thresh": 0.013759784735812132,
+    "occlusion_accuracy": 0.623394691780822,
+    "clip_id": "Apartment_release_decoration_seq131_2"
+  },
+  {
+    "average_jaccard": 0.013540605906313646,
+    "average_pts_within_thresh": 0.013540605906313646,
+    "occlusion_accuracy": 0.6288982942973523,
+    "clip_id": "Apartment_release_decoration_seq131_5"
+  },
+  {
+    "average_jaccard": 0.014425830469644903,
+    "average_pts_within_thresh": 0.014425830469644903,
+    "occlusion_accuracy": 0.5102197880870561,
+    "clip_id": "Apartment_release_decoration_seq134_0"
+  },
+  {
+    "average_jaccard": 0.041818893528183715,
+    "average_pts_within_thresh": 0.041818893528183715,
+    "occlusion_accuracy": 0.59205375782881,
+    "clip_id": "Apartment_release_decoration_seq134_7"
+  },
+  {
+    "average_jaccard": 0.06491006728778467,
+    "average_pts_within_thresh": 0.06491006728778467,
+    "occlusion_accuracy": 0.7636840062111802,
+    "clip_id": "Apartment_release_decoration_seq136_1"
+  },
+  {
+    "average_jaccard": 0.011058162267839688,
+    "average_pts_within_thresh": 0.011058162267839688,
+    "occlusion_accuracy": 0.1883553274682307,
+    "clip_id": "Apartment_release_decoration_seq136_6"
+  },
+  {
+    "average_jaccard": 0.015320824795081968,
+    "average_pts_within_thresh": 0.015320824795081968,
+    "occlusion_accuracy": 0.2585489241803279,
+    "clip_id": "Apartment_release_decoration_seq136_8"
+  },
+  {
+    "average_jaccard": 0.0,
+    "average_pts_within_thresh": 0.0,
+    "occlusion_accuracy": 0.9906800930460333,
+    "clip_id": "Apartment_release_decoration_skeleton_seq132_2"
+  },
+  {
+    "average_jaccard": 0.09628378378378379,
+    "average_pts_within_thresh": 0.09628378378378379,
+    "occlusion_accuracy": 0.988679183991684,
+    "clip_id": "Apartment_release_decoration_skeleton_seq132_5"
+  },
+  {
+    "average_jaccard": 0.01614249465811966,
+    "average_pts_within_thresh": 0.01614249465811966,
+    "occlusion_accuracy": 0.7684795673076923,
+    "clip_id": "Apartment_release_decoration_skeleton_seq135_1"
+  },
+  {
+    "average_jaccard": 0.05928451396070321,
+    "average_pts_within_thresh": 0.05928451396070321,
+    "occlusion_accuracy": 0.7715712254395036,
+    "clip_id": "Apartment_release_decoration_skeleton_seq135_8"
+  },
+  {
+    "average_jaccard": 0.03462689836448598,
+    "average_pts_within_thresh": 0.03462689836448598,
+    "occlusion_accuracy": 0.7183666764018691,
+    "clip_id": "Apartment_release_decoration_skeleton_seq137_0"
+  },
+  {
+    "average_jaccard": 0.028887113951011716,
+    "average_pts_within_thresh": 0.028887113951011716,
+    "occlusion_accuracy": 0.3181742545260916,
+    "clip_id": "Apartment_release_decoration_skeleton_seq137_7"
+  },
+  {
+    "average_jaccard": 0.042680830583058306,
+    "average_pts_within_thresh": 0.042680830583058306,
+    "occlusion_accuracy": 0.2644905115511551,
+    "clip_id": "Apartment_release_decoration_skeleton_seq139_1"
+  },
+  {
+    "average_jaccard": 0.052792553191489365,
+    "average_pts_within_thresh": 0.052792553191489365,
+    "occlusion_accuracy": 0.9954122340425532,
+    "clip_id": "Apartment_release_decoration_skeleton_seq139_6"
+  },
+  {
+    "average_jaccard": 0.08211653930131005,
+    "average_pts_within_thresh": 0.08211653930131005,
+    "occlusion_accuracy": 0.8997509552401747,
+    "clip_id": "Apartment_release_decoration_skeleton_seq140_1"
+  },
+  {
+    "average_jaccard": 0.0010467980295566501,
+    "average_pts_within_thresh": 0.0010467980295566501,
+    "occlusion_accuracy": 0.9237068965517241,
+    "clip_id": "Apartment_release_decoration_skeleton_seq140_6"
+  },
+  {
+    "average_jaccard": 0.12257853403141361,
+    "average_pts_within_thresh": 0.12257853403141361,
+    "occlusion_accuracy": 0.5180464659685864,
+    "clip_id": "Apartment_release_decoration_skeleton_seq140_8"
+  },
+  {
+    "average_jaccard": 0.07844349520383694,
+    "average_pts_within_thresh": 0.07844349520383694,
+    "occlusion_accuracy": 0.45855815347721823,
+    "clip_id": "Apartment_release_golden_skeleton_seq100_3"
+  },
+  {
+    "average_jaccard": 0.015981543624161074,
+    "average_pts_within_thresh": 0.015981543624161074,
+    "occlusion_accuracy": 0.30826342281879193,
+    "clip_id": "Apartment_release_golden_skeleton_seq100_4"
+  },
+  {
+    "average_jaccard": 0.046231617647058826,
+    "average_pts_within_thresh": 0.046231617647058826,
+    "occlusion_accuracy": 0.5339154411764706,
+    "clip_id": "Apartment_release_meal_seq131_1"
+  },
+  {
+    "average_jaccard": 0.0036474021084337348,
+    "average_pts_within_thresh": 0.0036474021084337348,
+    "occlusion_accuracy": 0.10551581325301204,
+    "clip_id": "Apartment_release_meal_seq131_6"
+  },
+  {
+    "average_jaccard": 0.31489596985583224,
+    "average_pts_within_thresh": 0.31489596985583224,
+    "occlusion_accuracy": 0.7852228047182176,
+    "clip_id": "Apartment_release_meal_seq131_8"
+  },
+  {
+    "average_jaccard": 0.11554101838755304,
+    "average_pts_within_thresh": 0.11554101838755304,
+    "occlusion_accuracy": 0.5347197666195191,
+    "clip_id": "Apartment_release_meal_seq136_2"
+  },
+  {
+    "average_jaccard": 0.04323045905707196,
+    "average_pts_within_thresh": 0.04323045905707196,
+    "occlusion_accuracy": 0.3903342121588089,
+    "clip_id": "Apartment_release_meal_seq136_5"
+  },
+  {
+    "average_jaccard": 0.021525065104166668,
+    "average_pts_within_thresh": 0.021525065104166668,
+    "occlusion_accuracy": 0.4196370442708333,
+    "clip_id": "Apartment_release_meal_seq141_3"
+  },
+  {
+    "average_jaccard": 0.09361328125,
+    "average_pts_within_thresh": 0.09361328125,
+    "occlusion_accuracy": 0.48033203125,
+    "clip_id": "Apartment_release_meal_seq141_4"
+  },
+  {
+    "average_jaccard": 0.1767641129032258,
+    "average_pts_within_thresh": 0.1767641129032258,
+    "occlusion_accuracy": 0.7408770161290322,
+    "clip_id": "Apartment_release_meal_seq143_2"
+  },
+  {
+    "average_jaccard": 0.32603377525252525,
+    "average_pts_within_thresh": 0.32603377525252525,
+    "occlusion_accuracy": 0.8234296085858586,
+    "clip_id": "Apartment_release_meal_seq143_5"
+  },
+  {
+    "average_jaccard": 0.025597545219638244,
+    "average_pts_within_thresh": 0.025597545219638244,
+    "occlusion_accuracy": 0.6474483204134367,
+    "clip_id": "Apartment_release_meal_seq144_8"
+  },
+  {
+    "average_jaccard": 0.027936746987951806,
+    "average_pts_within_thresh": 0.027936746987951806,
+    "occlusion_accuracy": 0.11893825301204819,
+    "clip_id": "Apartment_release_meal_seq146_0"
+  },
+  {
+    "average_jaccard": 0.6988011006289309,
+    "average_pts_within_thresh": 0.6988011006289309,
+    "occlusion_accuracy": 0.8424397274633124,
+    "clip_id": "Apartment_release_meal_seq146_7"
+  },
+  {
+    "average_jaccard": 0.017470991561181433,
+    "average_pts_within_thresh": 0.017470991561181433,
+    "occlusion_accuracy": 0.2219145569620253,
+    "clip_id": "Apartment_release_meal_seq150_0"
+  },
+  {
+    "average_jaccard": 0.17575918079096045,
+    "average_pts_within_thresh": 0.17575918079096045,
+    "occlusion_accuracy": 0.7752030367231638,
+    "clip_id": "Apartment_release_meal_seq150_7"
+  },
+  {
+    "average_jaccard": 0.05986001964636542,
+    "average_pts_within_thresh": 0.05986001964636542,
+    "occlusion_accuracy": 0.6916134577603144,
+    "clip_id": "Apartment_release_meal_skeleton_seq132_3"
+  },
+  {
+    "average_jaccard": 0.051133693609022556,
+    "average_pts_within_thresh": 0.051133693609022556,
+    "occlusion_accuracy": 0.3653959116541353,
+    "clip_id": "Apartment_release_meal_skeleton_seq132_4"
+  },
+  {
+    "average_jaccard": 0.06899038461538462,
+    "average_pts_within_thresh": 0.06899038461538462,
+    "occlusion_accuracy": 0.6335882867132867,
+    "clip_id": "Apartment_release_meal_skeleton_seq135_0"
+  },
+  {
+    "average_jaccard": 0.07708333333333334,
+    "average_pts_within_thresh": 0.07708333333333334,
+    "occlusion_accuracy": 0.6695652173913044,
+    "clip_id": "Apartment_release_meal_skeleton_seq135_7"
+  },
+  {
+    "average_jaccard": 0.013963172371638142,
+    "average_pts_within_thresh": 0.013963172371638142,
+    "occlusion_accuracy": 0.26522386919315405,
+    "clip_id": "Apartment_release_meal_skeleton_seq137_1"
+  },
+  {
+    "average_jaccard": 0.07124742090784043,
+    "average_pts_within_thresh": 0.07124742090784043,
+    "occlusion_accuracy": 0.6458476616231087,
+    "clip_id": "Apartment_release_meal_skeleton_seq137_6"
+  },
+  {
+    "average_jaccard": 0.03689620206489676,
+    "average_pts_within_thresh": 0.03689620206489676,
+    "occlusion_accuracy": 0.45529129793510326,
+    "clip_id": "Apartment_release_meal_skeleton_seq139_0"
+  },
+  {
+    "average_jaccard": 0.06143004722550177,
+    "average_pts_within_thresh": 0.06143004722550177,
+    "occlusion_accuracy": 0.5308810507674144,
+    "clip_id": "Apartment_release_meal_skeleton_seq139_7"
+  },
+  {
+    "average_jaccard": 0.023262331838565024,
+    "average_pts_within_thresh": 0.023262331838565024,
+    "occlusion_accuracy": 0.42530829596412556,
+    "clip_id": "Apartment_release_meal_skeleton_seq140_0"
+  },
+  {
+    "average_jaccard": 0.027052238805970148,
+    "average_pts_within_thresh": 0.027052238805970148,
+    "occlusion_accuracy": 0.14820429104477612,
+    "clip_id": "Apartment_release_meal_skeleton_seq140_7"
+  },
+  {
+    "average_jaccard": 0.0175592845659164,
+    "average_pts_within_thresh": 0.0175592845659164,
+    "occlusion_accuracy": 0.24535269292604503,
+    "clip_id": "Apartment_release_multiskeleton_party_seq101_2"
+  },
+  {
+    "average_jaccard": 0.027686825885978428,
+    "average_pts_within_thresh": 0.027686825885978428,
+    "occlusion_accuracy": 0.5685911016949152,
+    "clip_id": "Apartment_release_multiskeleton_party_seq101_5"
+  },
+  {
+    "average_jaccard": 0.0279985549132948,
+    "average_pts_within_thresh": 0.0279985549132948,
+    "occlusion_accuracy": 0.4722046604046243,
+    "clip_id": "Apartment_release_multiskeleton_party_seq103_3"
+  },
+  {
+    "average_jaccard": 0.013728983918128655,
+    "average_pts_within_thresh": 0.013728983918128655,
+    "occlusion_accuracy": 0.2549798976608187,
+    "clip_id": "Apartment_release_multiskeleton_party_seq103_4"
+  },
+  {
+    "average_jaccard": 0.054847592213114756,
+    "average_pts_within_thresh": 0.054847592213114756,
+    "occlusion_accuracy": 0.24346823770491804,
+    "clip_id": "Apartment_release_multiskeleton_party_seq106_1"
+  },
+  {
+    "average_jaccard": 0.10747385931558935,
+    "average_pts_within_thresh": 0.10747385931558935,
+    "occlusion_accuracy": 0.8290755703422054,
+    "clip_id": "Apartment_release_multiskeleton_party_seq106_6"
+  },
+  {
+    "average_jaccard": 0.021068548387096774,
+    "average_pts_within_thresh": 0.021068548387096774,
+    "occlusion_accuracy": 0.48921370967741934,
+    "clip_id": "Apartment_release_multiskeleton_party_seq106_8"
+  },
+  {
+    "average_jaccard": 0.06037062615101289,
+    "average_pts_within_thresh": 0.06037062615101289,
+    "occlusion_accuracy": 0.7759841160220995,
+    "clip_id": "Apartment_release_multiskeleton_party_seq108_0"
+  },
+  {
+    "average_jaccard": 0.010756909547738693,
+    "average_pts_within_thresh": 0.010756909547738693,
+    "occlusion_accuracy": 0.7293498743718593,
+    "clip_id": "Apartment_release_multiskeleton_party_seq108_7"
+  },
+  {
+    "average_jaccard": 0.05267546403712297,
+    "average_pts_within_thresh": 0.05267546403712297,
+    "occlusion_accuracy": 0.4465269721577726,
+    "clip_id": "Apartment_release_multiskeleton_party_seq115_3"
+  },
+  {
+    "average_jaccard": 0.07980253067484662,
+    "average_pts_within_thresh": 0.07980253067484662,
+    "occlusion_accuracy": 0.7644027990797546,
+    "clip_id": "Apartment_release_multiskeleton_party_seq115_4"
+  },
+  {
+    "average_jaccard": 0.03166347493036212,
+    "average_pts_within_thresh": 0.03166347493036212,
+    "occlusion_accuracy": 0.8428577646239555,
+    "clip_id": "Apartment_release_multiskeleton_party_seq117_2"
+  },
+  {
+    "average_jaccard": 0.15346534653465346,
+    "average_pts_within_thresh": 0.15346534653465346,
+    "occlusion_accuracy": 0.7216893564356436,
+    "clip_id": "Apartment_release_multiskeleton_party_seq119_3"
+  },
+  {
+    "average_jaccard": 0.09574652777777778,
+    "average_pts_within_thresh": 0.09574652777777778,
+    "occlusion_accuracy": 0.7214409722222223,
+    "clip_id": "Apartment_release_multiskeleton_party_seq119_4"
+  },
+  {
+    "average_jaccard": 0.10121951219512196,
+    "average_pts_within_thresh": 0.10121951219512196,
+    "occlusion_accuracy": 0.34310213414634144,
+    "clip_id": "Apartment_release_multiskeleton_party_seq122_3"
+  },
+  {
+    "average_jaccard": 0.038280007949125595,
+    "average_pts_within_thresh": 0.038280007949125595,
+    "occlusion_accuracy": 0.6157343004769475,
+    "clip_id": "Apartment_release_multiskeleton_party_seq122_4"
+  },
+  {
+    "average_jaccard": 0.04999115983026874,
+    "average_pts_within_thresh": 0.04999115983026874,
+    "occlusion_accuracy": 0.2460661244695898,
+    "clip_id": "Apartment_release_multiskeleton_party_seq127_1"
+  },
+  {
+    "average_jaccard": 0.10548456477732794,
+    "average_pts_within_thresh": 0.10548456477732794,
+    "occlusion_accuracy": 0.7427568319838057,
+    "clip_id": "Apartment_release_multiskeleton_party_seq127_6"
+  },
+  {
+    "average_jaccard": 0.06722383720930232,
+    "average_pts_within_thresh": 0.06722383720930232,
+    "occlusion_accuracy": 0.6307412790697674,
+    "clip_id": "Apartment_release_multiskeleton_party_seq127_8"
+  },
+  {
+    "average_jaccard": 0.06831781914893617,
+    "average_pts_within_thresh": 0.06831781914893617,
+    "occlusion_accuracy": 0.3249667553191489,
+    "clip_id": "Apartment_release_multiuser_clean_seq112_2"
+  },
+  {
+    "average_jaccard": 0.05902009587020649,
+    "average_pts_within_thresh": 0.05902009587020649,
+    "occlusion_accuracy": 0.7015578908554573,
+    "clip_id": "Apartment_release_multiuser_clean_seq112_5"
+  },
+  {
+    "average_jaccard": 0.011944110576923076,
+    "average_pts_within_thresh": 0.011944110576923076,
+    "occlusion_accuracy": 0.17119891826923078,
+    "clip_id": "Apartment_release_multiuser_clean_seq117_7"
+  },
+  {
+    "average_jaccard": 0.013664667896678967,
+    "average_pts_within_thresh": 0.013664667896678967,
+    "occlusion_accuracy": 0.32956642066420666,
+    "clip_id": "Apartment_release_multiuser_clean_seq119_1"
+  },
+  {
+    "average_jaccard": 0.013929263565891473,
+    "average_pts_within_thresh": 0.013929263565891473,
+    "occlusion_accuracy": 0.1771438953488372,
+    "clip_id": "Apartment_release_multiuser_clean_seq119_6"
+  },
+  {
+    "average_jaccard": 0.0075783378746594006,
+    "average_pts_within_thresh": 0.0075783378746594006,
+    "occlusion_accuracy": 0.17775034059945505,
+    "clip_id": "Apartment_release_multiuser_clean_seq119_8"
+  },
+  {
+    "average_jaccard": 0.02642857142857143,
+    "average_pts_within_thresh": 0.02642857142857143,
+    "occlusion_accuracy": 0.34379464285714284,
+    "clip_id": "Apartment_release_multiuser_clean_seq120_0"
+  },
+  {
+    "average_jaccard": 0.028630239520958084,
+    "average_pts_within_thresh": 0.028630239520958084,
+    "occlusion_accuracy": 0.23741579341317365,
+    "clip_id": "Apartment_release_multiuser_clean_seq120_7"
+  },
+  {
+    "average_jaccard": 0.09527616279069767,
+    "average_pts_within_thresh": 0.09527616279069767,
+    "occlusion_accuracy": 0.5053779069767442,
+    "clip_id": "Apartment_release_multiuser_cook_seq111_3"
+  },
+  {
+    "average_jaccard": 0.014541903409090909,
+    "average_pts_within_thresh": 0.014541903409090909,
+    "occlusion_accuracy": 0.4752130681818182,
+    "clip_id": "Apartment_release_multiuser_cook_seq113_2"
+  },
+  {
+    "average_jaccard": 0.009799970691676436,
+    "average_pts_within_thresh": 0.009799970691676436,
+    "occlusion_accuracy": 0.3104850527549824,
+    "clip_id": "Apartment_release_multiuser_cook_seq113_5"
+  },
+  {
+    "average_jaccard": 0.014874739039665972,
+    "average_pts_within_thresh": 0.014874739039665972,
+    "occlusion_accuracy": 0.35908141962421714,
+    "clip_id": "Apartment_release_multiuser_cook_seq114_1"
+  },
+  {
+    "average_jaccard": 0.061442057291666664,
+    "average_pts_within_thresh": 0.061442057291666664,
+    "occlusion_accuracy": 0.4146321614583333,
+    "clip_id": "Apartment_release_multiuser_cook_seq114_6"
+  },
+  {
+    "average_jaccard": 0.10829741379310345,
+    "average_pts_within_thresh": 0.10829741379310345,
+    "occlusion_accuracy": 0.579782824933687,
+    "clip_id": "Apartment_release_multiuser_cook_seq114_8"
+  },
+  {
+    "average_jaccard": 0.08284040178571428,
+    "average_pts_within_thresh": 0.08284040178571428,
+    "occlusion_accuracy": 0.48111049107142856,
+    "clip_id": "Apartment_release_multiuser_cook_seq116_0"
+  },
+  {
+    "average_jaccard": 0.028160714285714285,
+    "average_pts_within_thresh": 0.028160714285714285,
+    "occlusion_accuracy": 0.20098214285714286,
+    "clip_id": "Apartment_release_multiuser_cook_seq116_7"
+  },
+  {
+    "average_jaccard": 0.02719187402799378,
+    "average_pts_within_thresh": 0.02719187402799378,
+    "occlusion_accuracy": 0.3589618973561431,
+    "clip_id": "Apartment_release_multiuser_cook_seq118_1"
+  },
+  {
+    "average_jaccard": 0.006650641025641025,
+    "average_pts_within_thresh": 0.006650641025641025,
+    "occlusion_accuracy": 0.20889423076923078,
+    "clip_id": "Apartment_release_multiuser_cook_seq118_6"
+  },
+  {
+    "average_jaccard": 0.0615775939177102,
+    "average_pts_within_thresh": 0.0615775939177102,
+    "occlusion_accuracy": 0.7203432468694096,
+    "clip_id": "Apartment_release_multiuser_cook_seq118_8"
+  },
+  {
+    "average_jaccard": 0.014780405405405405,
+    "average_pts_within_thresh": 0.014780405405405405,
+    "occlusion_accuracy": 0.395802732079906,
+    "clip_id": "Apartment_release_multiuser_cook_seq142_0"
+  },
+  {
+    "average_jaccard": 0.24693714488636365,
+    "average_pts_within_thresh": 0.24693714488636365,
+    "occlusion_accuracy": 0.7506214488636364,
+    "clip_id": "Apartment_release_multiuser_cook_seq142_7"
+  },
+  {
+    "average_jaccard": 0.06612533921302578,
+    "average_pts_within_thresh": 0.06612533921302578,
+    "occlusion_accuracy": 0.6233887381275441,
+    "clip_id": "Apartment_release_multiuser_cook_seq145_3"
+  },
+  {
+    "average_jaccard": 0.0796259842519685,
+    "average_pts_within_thresh": 0.0796259842519685,
+    "occlusion_accuracy": 0.7429379921259842,
+    "clip_id": "Apartment_release_multiuser_cook_seq145_4"
+  },
+  {
+    "average_jaccard": 0.052918853073463265,
+    "average_pts_within_thresh": 0.052918853073463265,
+    "occlusion_accuracy": 0.7831474887556222,
+    "clip_id": "Apartment_release_multiuser_cook_seq149_3"
+  },
+  {
+    "average_jaccard": 0.07364729458917836,
+    "average_pts_within_thresh": 0.07364729458917836,
+    "occlusion_accuracy": 0.670497244488978,
+    "clip_id": "Apartment_release_multiuser_cook_seq149_4"
+  },
+  {
+    "average_jaccard": 0.021789813486370158,
+    "average_pts_within_thresh": 0.021789813486370158,
+    "occlusion_accuracy": 0.2823036226685796,
+    "clip_id": "Apartment_release_multiuser_meal_seq131_2"
+  },
+  {
+    "average_jaccard": 0.016237745098039217,
+    "average_pts_within_thresh": 0.016237745098039217,
+    "occlusion_accuracy": 0.36391952614379086,
+    "clip_id": "Apartment_release_multiuser_meal_seq131_5"
+  },
+  {
+    "average_jaccard": 0.03440676620076239,
+    "average_pts_within_thresh": 0.03440676620076239,
+    "occlusion_accuracy": 0.30513421219822107,
+    "clip_id": "Apartment_release_multiuser_meal_seq133_3"
+  },
+  {
+    "average_jaccard": 0.032396399456521736,
+    "average_pts_within_thresh": 0.032396399456521736,
+    "occlusion_accuracy": 0.2125509510869565,
+    "clip_id": "Apartment_release_multiuser_meal_seq133_4"
+  },
+  {
+    "average_jaccard": 0.05576599326599327,
+    "average_pts_within_thresh": 0.05576599326599327,
+    "occlusion_accuracy": 0.47948232323232326,
+    "clip_id": "Apartment_release_multiuser_meal_seq134_0"
+  },
+  {
+    "average_jaccard": 0.012794875271149675,
+    "average_pts_within_thresh": 0.012794875271149675,
+    "occlusion_accuracy": 0.4506507592190889,
+    "clip_id": "Apartment_release_multiuser_meal_seq134_7"
+  },
+  {
+    "average_jaccard": 0.02559596577017115,
+    "average_pts_within_thresh": 0.02559596577017115,
+    "occlusion_accuracy": 0.34993887530562345,
+    "clip_id": "Apartment_release_multiuser_meal_seq136_8"
+  },
+  {
+    "average_jaccard": 0.05794849023090586,
+    "average_pts_within_thresh": 0.05794849023090586,
+    "occlusion_accuracy": 0.5195104351687388,
+    "clip_id": "Apartment_release_multiuser_meal_seq138_0"
+  },
+  {
+    "average_jaccard": 0.004931192660550459,
+    "average_pts_within_thresh": 0.004931192660550459,
+    "occlusion_accuracy": 0.21748853211009175,
+    "clip_id": "Apartment_release_multiuser_meal_seq138_7"
+  },
+  {
+    "average_jaccard": 0.010911673553719008,
+    "average_pts_within_thresh": 0.010911673553719008,
+    "occlusion_accuracy": 0.3238421143250689,
+    "clip_id": "Apartment_release_multiuser_party_seq131_0"
+  },
+  {
+    "average_jaccard": 0.019159762247838618,
+    "average_pts_within_thresh": 0.019159762247838618,
+    "occlusion_accuracy": 0.4621307636887608,
+    "clip_id": "Apartment_release_multiuser_party_seq131_7"
+  },
+  {
+    "average_jaccard": 0.04082972805933251,
+    "average_pts_within_thresh": 0.04082972805933251,
+    "occlusion_accuracy": 0.4254480840543881,
+    "clip_id": "Apartment_release_multiuser_party_seq133_1"
+  },
+  {
+    "average_jaccard": 0.026995668316831683,
+    "average_pts_within_thresh": 0.026995668316831683,
+    "occlusion_accuracy": 0.528387995049505,
+    "clip_id": "Apartment_release_multiuser_party_seq133_6"
+  },
+  {
+    "average_jaccard": 0.051863456464379946,
+    "average_pts_within_thresh": 0.051863456464379946,
+    "occlusion_accuracy": 0.6545596965699209,
+    "clip_id": "Apartment_release_multiuser_party_seq133_8"
+  },
+  {
+    "average_jaccard": 0.018809335443037974,
+    "average_pts_within_thresh": 0.018809335443037974,
+    "occlusion_accuracy": 0.47090585443037974,
+    "clip_id": "Apartment_release_multiuser_party_seq135_11"
+  },
+  {
+    "average_jaccard": 0.0009095149253731343,
+    "average_pts_within_thresh": 0.0009095149253731343,
+    "occlusion_accuracy": 0.3145988805970149,
+    "clip_id": "Apartment_release_multiuser_party_seq138_2"
+  },
+  {
+    "average_jaccard": 0.017345346197502838,
+    "average_pts_within_thresh": 0.017345346197502838,
+    "occlusion_accuracy": 0.34403376844494893,
+    "clip_id": "Apartment_release_multiuser_party_seq138_5"
+  },
+  {
+    "average_jaccard": 0.03520989388264669,
+    "average_pts_within_thresh": 0.03520989388264669,
+    "occlusion_accuracy": 0.5253589263420724,
+    "clip_id": "Apartment_release_multiuser_party_seq141_2"
+  },
+  {
+    "average_jaccard": 0.10876865671641792,
+    "average_pts_within_thresh": 0.10876865671641792,
+    "occlusion_accuracy": 0.3402985074626866,
+    "clip_id": "Apartment_release_multiuser_party_seq141_5"
+  },
+  {
+    "average_jaccard": 0.0073307134220072555,
+    "average_pts_within_thresh": 0.0073307134220072555,
+    "occlusion_accuracy": 0.20272823458282951,
+    "clip_id": "Apartment_release_multiuser_party_seq143_3"
+  },
+  {
+    "average_jaccard": 0.052787162162162164,
+    "average_pts_within_thresh": 0.052787162162162164,
+    "occlusion_accuracy": 0.35557432432432434,
+    "clip_id": "Apartment_release_multiuser_party_seq146_1"
+  },
+  {
+    "average_jaccard": 0.012869698660714286,
+    "average_pts_within_thresh": 0.012869698660714286,
+    "occlusion_accuracy": 0.23477608816964285,
+    "clip_id": "Apartment_release_multiuser_party_seq146_6"
+  },
+  {
+    "average_jaccard": 0.05552421780986763,
+    "average_pts_within_thresh": 0.05552421780986763,
+    "occlusion_accuracy": 0.4518840252707581,
+    "clip_id": "Apartment_release_multiuser_party_seq146_8"
+  },
+  {
+    "average_jaccard": 0.013166085657370518,
+    "average_pts_within_thresh": 0.013166085657370518,
+    "occlusion_accuracy": 0.25569596613545814,
+    "clip_id": "Apartment_release_multiuser_party_seq150_8"
+  },
+  {
+    "average_jaccard": 0.23170230263157895,
+    "average_pts_within_thresh": 0.23170230263157895,
+    "occlusion_accuracy": 0.8845257675438597,
+    "clip_id": "Apartment_release_recognition_seq133_1"
+  },
+  {
+    "average_jaccard": 0.026788119612068964,
+    "average_pts_within_thresh": 0.026788119612068964,
+    "occlusion_accuracy": 0.6859509698275862,
+    "clip_id": "Apartment_release_recognition_seq133_6"
+  },
+  {
+    "average_jaccard": 0.2699282266260163,
+    "average_pts_within_thresh": 0.2699282266260163,
+    "occlusion_accuracy": 0.5672160823170732,
+    "clip_id": "Apartment_release_recognition_seq133_8"
+  },
+  {
+    "average_jaccard": 0.03326774279615795,
+    "average_pts_within_thresh": 0.03326774279615795,
+    "occlusion_accuracy": 0.5361859658484525,
+    "clip_id": "Apartment_release_recognition_seq136_3"
+  },
+  {
+    "average_jaccard": 0.04039977477477477,
+    "average_pts_within_thresh": 0.04039977477477477,
+    "occlusion_accuracy": 0.49723747184684686,
+    "clip_id": "Apartment_release_recognition_seq136_4"
+  },
+  {
+    "average_jaccard": 0.10465225563909775,
+    "average_pts_within_thresh": 0.10465225563909775,
+    "occlusion_accuracy": 0.8457471804511278,
+    "clip_id": "Apartment_release_recognition_seq138_2"
+  },
+  {
+    "average_jaccard": 0.035711115056818184,
+    "average_pts_within_thresh": 0.035711115056818184,
+    "occlusion_accuracy": 0.49882368607954547,
+    "clip_id": "Apartment_release_recognition_seq138_5"
+  },
+  {
+    "average_jaccard": 0.0211311260210035,
+    "average_pts_within_thresh": 0.0211311260210035,
+    "occlusion_accuracy": 0.5406213535589265,
+    "clip_id": "Apartment_release_work_seq108_1"
+  },
+  {
+    "average_jaccard": 0.03052591463414634,
+    "average_pts_within_thresh": 0.03052591463414634,
+    "occlusion_accuracy": 0.3586128048780488,
+    "clip_id": "Apartment_release_work_seq108_6"
+  },
+  {
+    "average_jaccard": 0.07105809128630705,
+    "average_pts_within_thresh": 0.07105809128630705,
+    "occlusion_accuracy": 0.8167790456431535,
+    "clip_id": "Apartment_release_work_seq108_8"
+  },
+  {
+    "average_jaccard": 0.02563421201814059,
+    "average_pts_within_thresh": 0.02563421201814059,
+    "occlusion_accuracy": 0.5856186224489796,
+    "clip_id": "Apartment_release_work_seq110_0"
+  },
+  {
+    "average_jaccard": 0.012492167919799499,
+    "average_pts_within_thresh": 0.012492167919799499,
+    "occlusion_accuracy": 0.20355576441102757,
+    "clip_id": "Apartment_release_work_seq110_7"
+  },
+  {
+    "average_jaccard": 0.2799403901734104,
+    "average_pts_within_thresh": 0.2799403901734104,
+    "occlusion_accuracy": 0.7598446531791907,
+    "clip_id": "Apartment_release_work_seq136_3"
+  },
+  {
+    "average_jaccard": 0.10784278791334094,
+    "average_pts_within_thresh": 0.10784278791334094,
+    "occlusion_accuracy": 0.450915763968073,
+    "clip_id": "Apartment_release_work_seq136_4"
+  },
+  {
+    "average_jaccard": 0.05784761235955056,
+    "average_pts_within_thresh": 0.05784761235955056,
+    "occlusion_accuracy": 0.6737535112359551,
+    "clip_id": "Apartment_release_work_seq138_2"
+  },
+  {
+    "average_jaccard": 0.07776767151767151,
+    "average_pts_within_thresh": 0.07776767151767151,
+    "occlusion_accuracy": 0.6217028326403327,
+    "clip_id": "Apartment_release_work_seq138_5"
+  },
+  {
+    "average_jaccard": 0.10946969696969697,
+    "average_pts_within_thresh": 0.10946969696969697,
+    "occlusion_accuracy": 0.5587752525252525,
+    "clip_id": "Apartment_release_work_skeleton_seq106_1"
+  },
+  {
+    "average_jaccard": 0.10303806734992679,
+    "average_pts_within_thresh": 0.10303806734992679,
+    "occlusion_accuracy": 0.5622941068814056,
+    "clip_id": "Apartment_release_work_skeleton_seq106_6"
+  },
+  {
+    "average_jaccard": 0.08281961305007587,
+    "average_pts_within_thresh": 0.08281961305007587,
+    "occlusion_accuracy": 0.9243408573596358,
+    "clip_id": "Apartment_release_work_skeleton_seq108_0"
+  },
+  {
+    "average_jaccard": 0.08971153846153847,
+    "average_pts_within_thresh": 0.08971153846153847,
+    "occlusion_accuracy": 0.9144230769230769,
+    "clip_id": "Apartment_release_work_skeleton_seq108_7"
+  },
+  {
+    "average_jaccard": 0.2842603211009174,
+    "average_pts_within_thresh": 0.2842603211009174,
+    "occlusion_accuracy": 0.9767775229357798,
+    "clip_id": "Apartment_release_work_skeleton_seq110_1"
+  },
+  {
+    "average_jaccard": 0.10345283417935702,
+    "average_pts_within_thresh": 0.10345283417935702,
+    "occlusion_accuracy": 0.696145304568528,
+    "clip_id": "Apartment_release_work_skeleton_seq110_6"
+  },
+  {
+    "average_jaccard": 0.15378006872852235,
+    "average_pts_within_thresh": 0.15378006872852235,
+    "occlusion_accuracy": 0.6974334192439863,
+    "clip_id": "Apartment_release_work_skeleton_seq110_8"
+  },
+  {
+    "average_jaccard": 0.007096421215242018,
+    "average_pts_within_thresh": 0.007096421215242018,
+    "occlusion_accuracy": 0.29174176107106076,
+    "clip_id": "Apartment_release_work_skeleton_seq131_1"
+  },
+  {
+    "average_jaccard": 0.18347701149425288,
+    "average_pts_within_thresh": 0.18347701149425288,
+    "occlusion_accuracy": 0.6814655172413793,
+    "clip_id": "Apartment_release_work_skeleton_seq131_6"
+  },
+  {
+    "average_jaccard": 0.3550639005602241,
+    "average_pts_within_thresh": 0.3550639005602241,
+    "occlusion_accuracy": 0.9565607492997199,
+    "clip_id": "Apartment_release_work_skeleton_seq131_8"
+  },
+  {
+    "average_jaccard": 0.1167694397993311,
+    "average_pts_within_thresh": 0.1167694397993311,
+    "occlusion_accuracy": 0.835127508361204,
+    "clip_id": "Apartment_release_work_skeleton_seq134_3"
+  },
+  {
+    "average_jaccard": 0.25669126157407407,
+    "average_pts_within_thresh": 0.25669126157407407,
+    "occlusion_accuracy": 0.8781467013888888,
+    "clip_id": "Apartment_release_work_skeleton_seq134_4"
+  },
+  {
+    "average_jaccard": 0.2902691426701571,
+    "average_pts_within_thresh": 0.2902691426701571,
+    "occlusion_accuracy": 0.6741042212041884,
+    "clip_id": "Apartment_release_work_skeleton_seq136_2"
+  },
+  {
+    "average_jaccard": 0.049875827814569534,
+    "average_pts_within_thresh": 0.049875827814569534,
+    "occlusion_accuracy": 0.5538251931567328,
+    "clip_id": "Apartment_release_work_skeleton_seq136_5"
+  },
+  {
+    "average_jaccard": 0.09572963800904978,
+    "average_pts_within_thresh": 0.09572963800904978,
+    "occlusion_accuracy": 0.6780731523378583,
+    "clip_id": "Lite_release_recognition_BambooPlate_seq031_2"
+  },
+  {
+    "average_jaccard": 0.049899193548387094,
+    "average_pts_within_thresh": 0.049899193548387094,
+    "occlusion_accuracy": 0.7073492703533026,
+    "clip_id": "Lite_release_recognition_BambooPlate_seq031_5"
+  },
+  {
+    "average_jaccard": 0.07459189842805321,
+    "average_pts_within_thresh": 0.07459189842805321,
+    "occlusion_accuracy": 0.7786993651753326,
+    "clip_id": "Lite_release_recognition_BirdHouseToy_seq030_2"
+  },
+  {
+    "average_jaccard": 0.0848822800495663,
+    "average_pts_within_thresh": 0.0848822800495663,
+    "occlusion_accuracy": 0.5673598203221809,
+    "clip_id": "Lite_release_recognition_BirdHouseToy_seq030_5"
+  },
+  {
+    "average_jaccard": 0.060581140350877194,
+    "average_pts_within_thresh": 0.060581140350877194,
+    "occlusion_accuracy": 0.6558779761904762,
+    "clip_id": "Lite_release_recognition_BirdHouseToy_seq032_4"
+  },
+  {
+    "average_jaccard": 0.2849476911976912,
+    "average_pts_within_thresh": 0.2849476911976912,
+    "occlusion_accuracy": 0.6064889971139971,
+    "clip_id": "Lite_release_recognition_BlackCeramicBowl_seq032_3"
+  },
+  {
+    "average_jaccard": 0.04278694968553459,
+    "average_pts_within_thresh": 0.04278694968553459,
+    "occlusion_accuracy": 0.6112617924528302,
+    "clip_id": "Lite_release_recognition_BlackCeramicBowl_seq032_4"
+  },
+  {
+    "average_jaccard": 0.2881439633375474,
+    "average_pts_within_thresh": 0.2881439633375474,
+    "occlusion_accuracy": 0.633316213653603,
+    "clip_id": "Lite_release_recognition_BlackCeramicDishSmall_seq032_0"
+  },
+  {
+    "average_jaccard": 0.06991279069767442,
+    "average_pts_within_thresh": 0.06991279069767442,
+    "occlusion_accuracy": 0.4827519379844961,
+    "clip_id": "Lite_release_recognition_BlackCeramicDishSmall_seq032_7"
+  },
+  {
+    "average_jaccard": 0.14181567513368984,
+    "average_pts_within_thresh": 0.14181567513368984,
+    "occlusion_accuracy": 0.8301512366310161,
+    "clip_id": "Lite_release_recognition_BlackCeramicMug_seq031_3"
+  },
+  {
+    "average_jaccard": 0.054783713054187194,
+    "average_pts_within_thresh": 0.054783713054187194,
+    "occlusion_accuracy": 0.7026824199507389,
+    "clip_id": "Lite_release_recognition_BlackCeramicMug_seq031_4"
+  },
+  {
+    "average_jaccard": 0.1976044952681388,
+    "average_pts_within_thresh": 0.1976044952681388,
+    "occlusion_accuracy": 0.7702089905362776,
+    "clip_id": "Lite_release_recognition_BookDeepLearning_seq030_2"
+  },
+  {
+    "average_jaccard": 0.09757234486873509,
+    "average_pts_within_thresh": 0.09757234486873509,
+    "occlusion_accuracy": 0.8074843377088305,
+    "clip_id": "Lite_release_recognition_BookDeepLearning_seq030_5"
+  },
+  {
+    "average_jaccard": 0.014991001308900524,
+    "average_pts_within_thresh": 0.014991001308900524,
+    "occlusion_accuracy": 0.6992392015706806,
+    "clip_id": "Lite_release_recognition_BookDeepLearning_seq032_3"
+  },
+  {
+    "average_jaccard": 0.15013070342205323,
+    "average_pts_within_thresh": 0.15013070342205323,
+    "occlusion_accuracy": 0.6224255386565273,
+    "clip_id": "Lite_release_recognition_BookDeepLearning_seq032_4"
+  },
+  {
+    "average_jaccard": 0.04716883296460177,
+    "average_pts_within_thresh": 0.04716883296460177,
+    "occlusion_accuracy": 0.7002558075221239,
+    "clip_id": "Lite_release_recognition_DinoToy_seq031_8"
+  },
+  {
+    "average_jaccard": 0.043347911963882615,
+    "average_pts_within_thresh": 0.043347911963882615,
+    "occlusion_accuracy": 0.41219314334085777,
+    "clip_id": "Lite_release_recognition_DinoToy_seq033_0"
+  },
+  {
+    "average_jaccard": 0.05019358407079646,
+    "average_pts_within_thresh": 0.05019358407079646,
+    "occlusion_accuracy": 0.8278830199115044,
+    "clip_id": "Lite_release_recognition_DinoToy_seq033_7"
+  },
+  {
+    "average_jaccard": 0.009528688524590163,
+    "average_pts_within_thresh": 0.009528688524590163,
+    "occlusion_accuracy": 0.8652834699453552,
+    "clip_id": "Lite_release_recognition_Flask_seq030_3"
+  },
+  {
+    "average_jaccard": 0.07030348904267589,
+    "average_pts_within_thresh": 0.07030348904267589,
+    "occlusion_accuracy": 0.7344290657439446,
+    "clip_id": "Lite_release_recognition_Flask_seq030_4"
+  },
+  {
+    "average_jaccard": 0.14143505184331798,
+    "average_pts_within_thresh": 0.14143505184331798,
+    "occlusion_accuracy": 0.822472638248848,
+    "clip_id": "Lite_release_recognition_Flask_seq032_2"
+  },
+  {
+    "average_jaccard": 0.08110119047619048,
+    "average_pts_within_thresh": 0.08110119047619048,
+    "occlusion_accuracy": 0.7497454573934837,
+    "clip_id": "Lite_release_recognition_Flask_seq032_5"
+  },
+  {
+    "average_jaccard": 0.08938910332541568,
+    "average_pts_within_thresh": 0.08938910332541568,
+    "occlusion_accuracy": 0.7853510985748219,
+    "clip_id": "Lite_release_recognition_GreenDecorationTall_seq031_8"
+  },
+  {
+    "average_jaccard": 0.02498070987654321,
+    "average_pts_within_thresh": 0.02498070987654321,
+    "occlusion_accuracy": 0.663695987654321,
+    "clip_id": "Lite_release_recognition_GreenDecorationTall_seq033_0"
+  },
+  {
+    "average_jaccard": 0.06767897406989853,
+    "average_pts_within_thresh": 0.06767897406989853,
+    "occlusion_accuracy": 0.7528537204058624,
+    "clip_id": "Lite_release_recognition_GreenDecorationTall_seq033_7"
+  },
+  {
+    "average_jaccard": 0.021158088235294116,
+    "average_pts_within_thresh": 0.021158088235294116,
+    "occlusion_accuracy": 0.9296875,
+    "clip_id": "Lite_release_recognition_RedClock_seq031_2"
+  },
+  {
+    "average_jaccard": 0.017958231334149328,
+    "average_pts_within_thresh": 0.017958231334149328,
+    "occlusion_accuracy": 0.8116967564259486,
+    "clip_id": "Lite_release_recognition_RedClock_seq031_5"
+  },
+  {
+    "average_jaccard": 0.030603213507625272,
+    "average_pts_within_thresh": 0.030603213507625272,
+    "occlusion_accuracy": 0.8313419117647058,
+    "clip_id": "Lite_release_recognition_RedClock_seq033_3"
+  },
+  {
+    "average_jaccard": 0.026167168674698794,
+    "average_pts_within_thresh": 0.026167168674698794,
+    "occlusion_accuracy": 0.8249931544359255,
+    "clip_id": "Lite_release_recognition_RedClock_seq033_4"
+  },
+  {
+    "average_jaccard": 0.23755047106325708,
+    "average_pts_within_thresh": 0.23755047106325708,
+    "occlusion_accuracy": 0.7255846231493943,
+    "clip_id": "Lite_release_recognition_WoodenBoxSmall_seq031_8"
+  },
+  {
+    "average_jaccard": 0.04807692307692308,
+    "average_pts_within_thresh": 0.04807692307692308,
+    "occlusion_accuracy": 0.6386693285528031,
+    "clip_id": "Lite_release_recognition_WoodenBoxSmall_seq033_0"
+  },
+  {
+    "average_jaccard": 0.024741379310344827,
+    "average_pts_within_thresh": 0.024741379310344827,
+    "occlusion_accuracy": 0.7161637931034482,
+    "clip_id": "Lite_release_recognition_WoodenBoxSmall_seq033_7"
+  },
+  {
+    "average_jaccard": 0.5331135321100917,
+    "average_pts_within_thresh": 0.5331135321100917,
+    "occlusion_accuracy": 0.9229680332568807,
+    "clip_id": "Lite_release_recognition_WoodenFork_seq030_8"
+  },
+  {
+    "average_jaccard": 0.05559463862559242,
+    "average_pts_within_thresh": 0.05559463862559242,
+    "occlusion_accuracy": 0.35402473341232227,
+    "clip_id": "Lite_release_recognition_WoodenFork_seq032_0"
+  },
+  {
+    "average_jaccard": 0.16209805909617614,
+    "average_pts_within_thresh": 0.16209805909617614,
+    "occlusion_accuracy": 0.863611674391657,
+    "clip_id": "Lite_release_recognition_WoodenFork_seq032_7"
+  },
+  {
+    "average_jaccard": 0.11834140435835351,
+    "average_pts_within_thresh": 0.11834140435835351,
+    "occlusion_accuracy": 0.8116109261501211,
+    "clip_id": "Lite_release_recognition_WoodenSpoon_seq033_2"
+  },
+  {
+    "average_jaccard": 0.031958438287153654,
+    "average_pts_within_thresh": 0.031958438287153654,
+    "occlusion_accuracy": 0.7848315491183879,
+    "clip_id": "Lite_release_recognition_WoodenSpoon_seq033_5"
+  },
+  {
+    "average_jaccard": 0.09261104783599089,
+    "average_pts_within_thresh": 0.09261104783599089,
+    "occlusion_accuracy": 0.7236973234624146,
+    "clip_id": "Lite_release_recognition_WoodenSpoon_seq034_8"
+  }
+]

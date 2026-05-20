@@ -29,9 +29,12 @@ from mamba3_tracker.model.tracker import Mamba3Tracker
 
 def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
     cfg = state["cfg"]
+    # v8+ uses nested `cfg["model"]`; v6/v7 used flat keys.
+    m = cfg.get("model", cfg)
     model = Mamba3Tracker(
-        dim=cfg["dim"], num_heads=cfg["num_heads"], state_dim=cfg["state_dim"],
-        level_sizes=tuple(cfg["level_sizes"]),
+        dim=int(m["dim"]), num_heads=int(m["num_heads"]),
+        state_dim=int(m["state_dim"]),
+        level_sizes=tuple(m["level_sizes"]),
     ).to(device)
     model.load_state_dict(state["model"])
     model.eval()
