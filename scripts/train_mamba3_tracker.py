@@ -22,7 +22,9 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import torch
+import torch.nn.functional as Fn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
@@ -30,6 +32,7 @@ from torch.utils.data import DataLoader
 from mamba3_tracker.data.dataset import (
     TAPVid3DDataset, collate_tracking, default_train_val, minival_split,
 )
+from mamba3_tracker.data.tapvid3d import load_clip
 from mamba3_tracker.model.tracker import Mamba3Tracker
 from mamba3_tracker.train.config import dump_resolved, load_config
 from mamba3_tracker.train.loss import TrackingLoss, TrackingLossOutput
@@ -105,6 +108,115 @@ def _validate(model, val_ds, loss_fn, device, amp_dtype, n_clips: int = 5) -> di
             totals[k].append(d[k])
     model.train()
     return {k: sum(v) / len(v) for k, v in totals.items()}
+
+
+_SUBSETS_KNOWN = ("pstudio", "drivetrack", "adt")
+
+
+def _which_subset(path: Path) -> str:
+    for s in _SUBSETS_KNOWN:
+        if s in path.parts:
+            return s
+    return "unknown"
+
+
+@torch.no_grad()
+def _motion_check(
+    model,
+    val_paths: list,
+    device,
+    amp_dtype,
+    max_frames: int = 32,
+    n_clips: int = 5,
+) -> dict[str, float]:
+    """In-training motion-ratio diagnostic. For each of the first `n_clips`
+    val clips, run inference on the first `max_frames` frames, reconstruct
+    the absolute trajectory with the v12 per-anchor cumsum, project to 2D
+    pixel coords (in the clip's ORIGINAL image space — uses `clip.K`
+    unscaled), and accumulate per-subset:
+
+        ratio(subset) = Σ d̂(t, n)  /  Σ d*(t, n)
+
+    where `d̂` is predicted pixel travel from each track's anchor frame to
+    frame t, `d*` is GT pixel travel, summed over visible (t, n) pairs
+    where the track is visible at both `a_n` and `t`.
+
+    Returns {subset: ratio} for the subsets that appeared in val_paths.
+    """
+    model.eval()
+    img_size = model.image_size
+    pred_sums: dict[str, float] = defaultdict(float)
+    gt_sums:   dict[str, float] = defaultdict(float)
+    for path in val_paths[:n_clips]:
+        sub = _which_subset(path)
+        clip = load_clip(path)
+        F_ = min(max_frames, clip.F)
+        sx = img_size / float(clip.W); sy = img_size / float(clip.H)
+        images = Fn.interpolate(
+            clip.images[:F_], size=(img_size, img_size),
+            mode="bilinear", align_corners=False,
+        ).unsqueeze(0).to(device)
+        N_q = clip.queries_xyt.shape[0]
+        queries = clip.queries_xyt.clone()
+        queries[:, 0] *= sx; queries[:, 1] *= sy
+        queries[:, 2] = queries[:, 2].clamp(max=F_ - 1)
+        qmask = torch.ones(1, N_q, dtype=torch.bool, device=device)
+        with torch.autocast(device_type=device.type, dtype=amp_dtype):
+            pred = model(images, queries.unsqueeze(0).to(device), qmask)
+        delta = pred.xyz[0].float().cpu()                      # (F, N_q, 3)
+
+        # Per-anchor cumsum reconstruction (matches loss.py / eval / render).
+        a_n = clip.queries_xyt[:, 2].long().clamp(min=0, max=F_ - 1)
+        init = clip.tracks_XYZ[a_n, torch.arange(N_q)]
+        delta_zero = delta.clone(); delta_zero[0] = 0.0
+        cs = delta_zero.cumsum(dim=0)                          # (F, N_q, 3)
+        cs_at_anchor = cs[a_n, torch.arange(N_q)]              # (N_q, 3)
+        p_hat = init.unsqueeze(0) + cs - cs_at_anchor.unsqueeze(0)  # (F, N_q, 3)
+        p_gt  = clip.tracks_XYZ[:F_]                            # (F, N_q, 3)
+
+        # Project both to 2D in ORIGINAL image coords (clip.K is unscaled).
+        # Track-level mask: drop tracks where the *predicted* Z goes
+        # unreasonably small at any frame (Z < 5 cm). This avoids one
+        # bad track dominating the per-subset ratio via projection blow-up
+        # (typical at random init: 0.1 m³ random output sometimes lands
+        # near the camera plane).
+        K = clip.K.numpy()
+        Z_pred = p_hat.numpy()[..., 2]                          # (F, N_q)
+        bad_track = (Z_pred < 0.05).any(axis=0)                 # (N_q,)
+        def _proj(xyz_np: np.ndarray) -> np.ndarray:
+            Z = np.clip(xyz_np[..., 2:3], 1e-6, None)
+            return (xyz_np[..., :2] / Z) * np.array([K[0,0], K[1,1]]) + np.array([K[0,2], K[1,2]])
+        uv_pred = _proj(p_hat.numpy())                          # (F, N_q, 2)
+        uv_gt   = _proj(p_gt.numpy())
+
+        # Pixel travel from each track's own anchor frame.
+        a_idx = a_n.numpy()
+        track_idx = np.arange(N_q)
+        ref_pred = uv_pred[a_idx, track_idx]                    # (N_q, 2)
+        ref_gt   = uv_gt[a_idx, track_idx]
+        diff_pred = uv_pred - ref_pred[None, :, :]              # (F, N_q, 2)
+        diff_gt   = uv_gt   - ref_gt[None, :, :]
+        travel_pred = np.linalg.norm(diff_pred, axis=-1)        # (F, N_q)
+        travel_gt   = np.linalg.norm(diff_gt,   axis=-1)
+
+        # Mask: visible at frame t AND visible at anchor frame, finite,
+        # and predicted Z stayed in a sane range across the clip.
+        vis = clip.visibility[:F_].numpy()                      # (F, N_q)
+        vis_anchor = vis[a_idx, track_idx]                      # (N_q,)
+        finite = np.isfinite(travel_pred) & np.isfinite(travel_gt)
+        mask = (vis & vis_anchor[None, :] & finite & ~bad_track[None, :])
+
+        pred_sums[sub] += float((travel_pred * mask).sum())
+        gt_sums[sub]   += float((travel_gt   * mask).sum())
+
+    model.train()
+    return {sub: pred_sums[sub] / max(gt_sums[sub], 1.0) for sub in pred_sums}
+
+
+def _fmt_motion_row(m: dict[str, float]) -> str:
+    if not m:
+        return "(no clips)"
+    return "  ".join(f"{sub}={ratio*100:5.1f}%" for sub, ratio in sorted(m.items()))
 
 
 def _build_overrides(args: argparse.Namespace) -> dict:
@@ -245,6 +357,13 @@ def main() -> int:
     sched = LambdaLR(optim, lr_lambda=lambda s: wsd(s, warmup, decay, n_steps))
 
     history: list[dict] = []
+    motion_history: list[dict] = []
+    # In-training motion check (v13+): runs on the first N val clip paths in
+    # full-clip (max_frames-window) inference. Cheap; logs [motion] line per val.
+    motion_cfg = train_cfg.get("motion_check", {})
+    motion_max_frames = int(motion_cfg.get("max_frames", 32))
+    motion_n_clips    = int(motion_cfg.get("n_clips", 5))
+    val_clips_for_motion = val_clips
     # cfg.json: resolved config + the CLI we used to launch (for repro).
     cfg_snapshot = {**cfg, "_launch": {
         "config_path": str(args.config),
@@ -267,6 +386,13 @@ def main() -> int:
             sched.load_state_dict(state["sched"])
         start_step = int(state["step"])
         history = list(state.get("history", []))
+        # Restore motion_history from disk so the run's [motion] log is contiguous.
+        mh_path = args.out_dir / "motion_history.json"
+        if mh_path.exists():
+            try:
+                motion_history = json.loads(mh_path.read_text())
+            except json.JSONDecodeError:
+                pass
         print(f"[train] RESUMED from {latest} at step {start_step}", flush=True)
 
     grad_clip = float(train_cfg["grad_clip"])
@@ -327,8 +453,19 @@ def main() -> int:
 
         if step > 0 and step % val_every == 0:
             v = _validate(model, val_ds, loss_fn, device, amp_dtype)
-            print(f"[train] step {step:6d}  VAL  {_fmt_loss_row(v)}", flush=True)
+            print(f"[train] step {step:6d}  VAL     {_fmt_loss_row(v)}", flush=True)
             history.append({"step": step, "val": v})
+            # In-training motion check (v13+): 2D pixel travel ratio per subset.
+            # Cheap (~5 val clips × ~32 frames), runs on val_paths the user
+            # passed in. Logs as [motion] line and persists to motion_history.json.
+            m = _motion_check(model, val_clips_for_motion, device, amp_dtype,
+                              max_frames=motion_max_frames,
+                              n_clips=motion_n_clips)
+            print(f"[train] step {step:6d}  MOTION  {_fmt_motion_row(m)}", flush=True)
+            motion_history.append({"step": step, **{f"{k}_ratio": v for k, v in m.items()}})
+            (args.out_dir / "motion_history.json").write_text(
+                json.dumps(motion_history, indent=2)
+            )
 
         if step > 0 and step % ckpt_every == 0:
             p = _save_ckpt(args.out_dir, step, model, optim, sched, history, cfg_snapshot)
