@@ -30,13 +30,18 @@ model:
   use_correlation: false
 
 data:
-  subsets: [pstudio, drivetrack, adt]
+  subsets: [pstudio, drivetrack]   # ADT dropped — the official adt minival
+                                    # ships labels-only (no images_jpeg_bytes;
+                                    # video has to be paired in from the
+                                    # Project Aria release). Will be added
+                                    # back in v13+ when we set up the ADT
+                                    # video pairing.
   image_size: 448
   num_tracks: 256
-  # New split knobs consumed by train/config.py + data/dataset.py.
-  # 40 + 5 + 5 = 50 (the entire minival per subset).
+  # 40 train + 5 val + 5 test = 50 (the entire minival per subset).
+  # Total across 2 subsets: 80 train / 10 val / 10 test = 100 clips.
   split:
-    source: minival          # use MINIVAL_FILES from dataset.py
+    source: minival
     n_train: 40
     n_val:   5
     n_test:  5
