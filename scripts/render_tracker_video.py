@@ -63,12 +63,18 @@ def _predict_and_match(model, clip, device, amp_dtype, max_frames: int) -> tuple
     delta = pred.xyz[0].float().cpu()
     pred_vis = torch.sigmoid(pred.vis_logits[0].float()).cpu()
 
-    # Recover absolute predictions: p_t = p_query_gt + Δp_t.
-    anchor_idx = clip.queries_xyt[:, 2].long().clamp(min=0, max=F - 1)
-    gt_anchor_xyz = clip.tracks_XYZ[:F].gather(
-        dim=0, index=anchor_idx.view(1, N_q, 1).expand(1, N_q, 3),
-    ).squeeze(0)
-    abs_pred = delta + gt_anchor_xyz.unsqueeze(0)
+    # v12 reconstruction. Each track anchored at its own query frame `a_n`;
+    # bidirectional cumsum (forward for t > a_n, backward for t < a_n).
+    a_n = clip.queries_xyt[:, 2].long().clamp(min=0, max=F - 1)  # (N_q,)
+    init = clip.tracks_XYZ[a_n, torch.arange(N_q)]                # (N_q, 3)
+    if F == 1:
+        abs_pred = init.unsqueeze(0)
+    else:
+        delta_zero_init = delta.clone()
+        delta_zero_init[0] = 0.0
+        cs = delta_zero_init.cumsum(dim=0)                        # (F, N_q, 3)
+        cs_at_anchor = cs[a_n, torch.arange(N_q)]                 # (N_q, 3)
+        abs_pred = init.unsqueeze(0) + cs - cs_at_anchor.unsqueeze(0)
     return abs_pred.transpose(0, 1).numpy(), pred_vis.transpose(0, 1).numpy()
 
 

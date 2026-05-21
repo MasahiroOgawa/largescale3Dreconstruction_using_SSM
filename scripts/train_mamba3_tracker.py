@@ -28,7 +28,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from mamba3_tracker.data.dataset import (
-    TAPVid3DDataset, collate_tracking, default_train_val,
+    TAPVid3DDataset, collate_tracking, default_train_val, minival_split,
 )
 from mamba3_tracker.model.tracker import Mamba3Tracker
 from mamba3_tracker.train.config import dump_resolved, load_config
@@ -36,35 +36,51 @@ from mamba3_tracker.train.loss import TrackingLoss, TrackingLossOutput
 from mamba3_tracker.train.schedule import wsd
 
 
-_LOSS_KEYS = ("total", "vel_3D", "vel_2D", "pos_3D", "pos_2D",
-              "smooth_3D", "smooth_2D", "vis")
+_LOSS_KEYS = ("total", "pos_3D", "pos_2D", "vis")
 
 
-def _save_ckpt(out_dir: Path, step: int, model, optim, cfg: dict) -> Path:
+def _save_ckpt(out_dir: Path, step: int, model, optim, sched, history, cfg) -> Path:
+    """Save an atomic checkpoint that captures everything needed to resume:
+    model + optimiser + scheduler + step counter + loss history + cfg."""
     path = out_dir / f"ckpt_{step}.pt"
-    torch.save({"step": step, "model": model.state_dict(),
-                "optim": optim.state_dict(), "cfg": cfg}, path)
+    tmp = out_dir / f"ckpt_{step}.pt.tmp"
+    torch.save({
+        "step": step,
+        "model": model.state_dict(),
+        "optim": optim.state_dict(),
+        "sched": sched.state_dict() if sched is not None else None,
+        "history": history,
+        "cfg": cfg,
+    }, tmp)
+    tmp.replace(path)
     return path
+
+
+def _find_latest_ckpt(out_dir: Path) -> Path | None:
+    cands = []
+    for p in out_dir.glob("ckpt_*.pt"):
+        try:
+            cands.append((int(p.stem.split("_", 1)[1]), p))
+        except ValueError:
+            continue
+    if not cands:
+        return None
+    cands.sort()
+    return cands[-1][1]
 
 
 def _loss_to_dict(out: TrackingLossOutput) -> dict[str, float]:
     return {
         "total": float(out.total.item()),
-        "vel_3D": float(out.vel_3D.item()),
-        "vel_2D": float(out.vel_2D.item()),
         "pos_3D": float(out.pos_3D.item()),
         "pos_2D": float(out.pos_2D.item()),
-        "smooth_3D": float(out.smooth_3D.item()),
-        "smooth_2D": float(out.smooth_2D.item()),
         "vis": float(out.vis.item()),
     }
 
 
 def _fmt_loss_row(d: dict[str, float]) -> str:
     return (f"loss={d['total']:.4f}  "
-            f"v3D={d['vel_3D']:.4f} v2D={d['vel_2D']:.4f}  "
             f"p3D={d['pos_3D']:.4f} p2D={d['pos_2D']:.4f}  "
-            f"s3D={d['smooth_3D']:.4f} s2D={d['smooth_2D']:.4f}  "
             f"vis={d['vis']:.4f}")
 
 
@@ -156,12 +172,30 @@ def main() -> int:
                  "fp32": torch.float32}[train_cfg["amp"]]
     use_amp = train_cfg["amp"] != "fp32"
 
-    train_clips, val_clips = default_train_val(
-        args.data_root, subsets=data_cfg["subsets"], val_frac=0.1, seed=42,
-    )
+    split_cfg = data_cfg.get("split", {"source": "legacy"})
+    source = split_cfg.get("source", "legacy")
+    if source == "minival":
+        train_clips, val_clips, test_clips = minival_split(
+            args.data_root,
+            subsets=data_cfg["subsets"],
+            n_train=int(split_cfg.get("n_train", 40)),
+            n_val=int(split_cfg.get("n_val", 5)),
+            n_test=int(split_cfg.get("n_test", 5)),
+            seed=int(split_cfg.get("seed", 42)),
+        )
+        print(f"[train] split=minival   "
+              f"{len(train_clips)} train / {len(val_clips)} val / {len(test_clips)} test  "
+              f"(subsets={data_cfg['subsets']})")
+    elif source == "legacy":
+        train_clips, val_clips = default_train_val(
+            args.data_root, subsets=data_cfg["subsets"], val_frac=0.1, seed=42,
+        )
+        print(f"[train] split=legacy(random 90/10)   "
+              f"{len(train_clips)} train / {len(val_clips)} val  "
+              f"(subsets={data_cfg['subsets']})")
+    else:
+        raise ValueError(f"data.split.source = {source!r} not in {{minival, legacy}}")
     print(f"[train] data root: {args.data_root}")
-    print(f"[train] {len(train_clips)} train clips / {len(val_clips)} val clips "
-          f"(subsets={data_cfg['subsets']})")
 
     train_ds = TAPVid3DDataset(train_clips, window_size=int(train_cfg["window"]),
                                augment=True, seed=int(train_cfg["seed"]),
@@ -184,19 +218,23 @@ def main() -> int:
         dim=int(model_cfg["dim"]), num_heads=int(model_cfg["num_heads"]),
         state_dim=int(model_cfg["state_dim"]),
         level_sizes=tuple(model_cfg["level_sizes"]),
+        num_iters=int(model_cfg.get("num_iters", 1)),
+        use_correlation=bool(model_cfg.get("use_correlation", False)),
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"[train] tracker params: {n_params:.2f}M, level_sizes={model_cfg['level_sizes']}")
+    print(f"[train] tracker params: {n_params:.2f}M, "
+          f"level_sizes={model_cfg['level_sizes']}, "
+          f"num_iters={model_cfg.get('num_iters', 1)}, "
+          f"use_correlation={model_cfg.get('use_correlation', False)}")
 
     if args.init_ckpt is not None:
-        state = torch.load(args.init_ckpt, map_location="cpu")
+        state = torch.load(args.init_ckpt, map_location="cpu", weights_only=False)
         model.load_state_dict(state["model"])
         print(f"[train] loaded init weights from {args.init_ckpt}")
 
     loss_fn = TrackingLoss(
         weights=loss_cfg["weights"],
-        delta_3d_m=float(loss_cfg["delta_3d_m"]),
-        delta_2d_px=float(loss_cfg["delta_2d_px"]),
+        image_size=int(data_cfg["image_size"]),
     ).to(device)
     optim = AdamW(model.parameters(),
                   lr=float(train_cfg["lr"]),
@@ -216,6 +254,21 @@ def main() -> int:
     }}
     dump_resolved(cfg_snapshot, args.out_dir / "cfg.json")
 
+    # Auto-resume from the latest ckpt_*.pt in --out-dir if one exists.
+    # Restores model + optimiser + scheduler state + step counter + history,
+    # so a killed run picks up at most `ckpt_every` steps behind where it died.
+    start_step = 0
+    latest = _find_latest_ckpt(args.out_dir)
+    if latest is not None:
+        state = torch.load(latest, map_location=device, weights_only=False)
+        model.load_state_dict(state["model"])
+        optim.load_state_dict(state["optim"])
+        if state.get("sched") is not None:
+            sched.load_state_dict(state["sched"])
+        start_step = int(state["step"])
+        history = list(state.get("history", []))
+        print(f"[train] RESUMED from {latest} at step {start_step}", flush=True)
+
     grad_clip = float(train_cfg["grad_clip"])
     log_every = int(train_cfg["log_every"])
     val_every = int(train_cfg["val_every"])
@@ -223,7 +276,7 @@ def main() -> int:
 
     model.train()
     t0 = time.perf_counter()
-    step = 0
+    step = start_step
     loader_iter = iter(loader)
     while step < n_steps:
         try:
@@ -278,13 +331,13 @@ def main() -> int:
             history.append({"step": step, "val": v})
 
         if step > 0 and step % ckpt_every == 0:
-            p = _save_ckpt(args.out_dir, step, model, optim, cfg_snapshot)
+            p = _save_ckpt(args.out_dir, step, model, optim, sched, history, cfg_snapshot)
             print(f"[train] saved {p}", flush=True)
 
         (args.out_dir / "loss_history.json").write_text(json.dumps(history, indent=2))
         step += 1
 
-    final = _save_ckpt(args.out_dir, n_steps, model, optim, cfg_snapshot)
+    final = _save_ckpt(args.out_dir, n_steps, model, optim, sched, history, cfg_snapshot)
     print(f"[train] DONE — {final}")
     return 0
 

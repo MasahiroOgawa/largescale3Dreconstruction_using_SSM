@@ -141,7 +141,8 @@ class CausalCrossPropagator(nn.Module):
         num_pyramid_levels: int = 3,
         num_heads: int = 6,
         state_dim: int = 64,
-        num_iters: int = 3,
+        num_iters: int = 1,
+        use_correlation: bool = False,
         corr_temperature: float = 0.1,
     ) -> None:
         super().__init__()
@@ -150,6 +151,7 @@ class CausalCrossPropagator(nn.Module):
         self.dim = dim
         self.num_pyramid_levels = num_pyramid_levels
         self.num_iters = num_iters
+        self.use_correlation = use_correlation
 
         self.ssd_levels = nn.ModuleList(
             [
@@ -160,12 +162,20 @@ class CausalCrossPropagator(nn.Module):
                 for _ in range(num_pyramid_levels)
             ]
         )
-        self.corr_levels = nn.ModuleList(
-            [
-                CorrelationCrossAttention(dim=dim, temperature_init=corr_temperature)
-                for _ in range(num_pyramid_levels)
-            ]
-        )
+        # `CorrelationCrossAttention` (RAFT-style) is kept available in this
+        # module but instantiated only when explicitly requested via
+        # `use_correlation=True`. v11 default omits it — the diagnostic data
+        # showed it didn't move the metric vs cost in gradient conflict with
+        # the SSD branch and per-step variance.
+        if use_correlation:
+            self.corr_levels = nn.ModuleList(
+                [
+                    CorrelationCrossAttention(dim=dim, temperature_init=corr_temperature)
+                    for _ in range(num_pyramid_levels)
+                ]
+            )
+        else:
+            self.corr_levels = None
         self.q_norms = nn.ModuleList(
             [nn.LayerNorm(dim) for _ in range(num_pyramid_levels)]
         )
@@ -216,8 +226,11 @@ class CausalCrossPropagator(nn.Module):
                     kv_tokens = self.kv_norms[l](kv_raw)
                     q_tokens = self.q_norms[l](Q)
                     delta_ssd = self.ssd_levels[l](q_tokens, kv_tokens)
-                    delta_corr = self.corr_levels[l](q_tokens, kv_tokens)
-                    Q = self.out_norms[l](Q + delta_ssd + delta_corr)
+                    if self.corr_levels is not None:
+                        delta_corr = self.corr_levels[l](q_tokens, kv_tokens)
+                        Q = self.out_norms[l](Q + delta_ssd + delta_corr)
+                    else:
+                        Q = self.out_norms[l](Q + delta_ssd)
             history.append(Q)
 
         return torch.stack(history, dim=1)

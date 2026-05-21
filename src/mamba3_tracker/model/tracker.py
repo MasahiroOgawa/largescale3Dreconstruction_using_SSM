@@ -39,6 +39,8 @@ class Mamba3Tracker(nn.Module):
         level_sizes: tuple[int, ...] = (32, 64),
         blocks_per_level: int = 2,
         patch: int = 14,
+        num_iters: int = 1,
+        use_correlation: bool = False,
     ) -> None:
         super().__init__()
         self.encoder = PyramidEncoder(
@@ -48,6 +50,7 @@ class Mamba3Tracker(nn.Module):
         self.propagator = CausalCrossPropagator(
             dim=dim, num_pyramid_levels=len(level_sizes),
             num_heads=num_heads, state_dim=state_dim,
+            num_iters=num_iters, use_correlation=use_correlation,
         )
         self.heads = TrackHeads(dim=dim)
         self.image_size = self.encoder.coarse_image_size

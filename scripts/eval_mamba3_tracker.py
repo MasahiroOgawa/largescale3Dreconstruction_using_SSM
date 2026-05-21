@@ -45,9 +45,11 @@ def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
 def _infer_clip(model, clip, device, amp_dtype, max_frames: int = 0) -> tuple[np.ndarray, np.ndarray]:
     """Return (pred_tracks_NT3, pred_visibility_NT) for one clip.
 
-    v2: slot n is GT track n by construction (query-conditioned bank). The
-    model emits Δp relative to the query anchor; absolute prediction is
-    recovered as `p_query + Δp` using GT at the query frame.
+    v11: the model emits per-frame motion `Δp̂(t, n) = pred.xyz[t, n]`.
+    `Δp̂(0, n)` is discarded; `p̂(0, n) = clip.tracks_XYZ[0, n]` (GT initial
+    position — placeholder for a future feature-detector head). For t ≥ 1
+    the trajectory is reconstructed by cumulative summation:
+        p̂(t, n) = p̂(0, n) + Σ_{s=1..t} Δp̂(s, n).
     """
     F = int(clip.images.shape[0]) if max_frames in (0, None) else min(int(clip.images.shape[0]), max_frames)
     images = clip.images[:F].clone()
@@ -77,12 +79,20 @@ def _infer_clip(model, clip, device, amp_dtype, max_frames: int = 0) -> tuple[np
     delta = pred.xyz[0].float().cpu()                        # (F, N_q, 3)
     pred_vis = torch.sigmoid(pred.vis_logits[0].float()).cpu()  # (F, N_q)
 
-    # Recover absolute predictions: p_n^(t) = p_n^query + Δp_n^(t).
-    anchor_idx = clip.queries_xyt[:, 2].long().clamp(min=0, max=F - 1)
-    gt_anchor_xyz = clip.tracks_XYZ[:F].gather(
-        dim=0, index=anchor_idx.view(1, N_q, 1).expand(1, N_q, 3),
-    ).squeeze(0)                                             # (N_q, 3)
-    pred_abs = delta + gt_anchor_xyz.unsqueeze(0)            # (F, N_q, 3)
+    # v12 reconstruction. Each track has its own anchor frame `a_n`:
+    #   p̂(a_n, n) = clip.tracks_XYZ[a_n, n]
+    #   p̂(t, n)   = p̂(a_n, n) + (cumsum_{s=0..t} Δp̂(s, n) − cumsum_{s=0..a_n} Δp̂(s, n))
+    # where Δp̂(0, n) is treated as 0 inside the cumsum.
+    a_n = clip.queries_xyt[:, 2].long().clamp(min=0, max=F - 1)  # (N_q,)
+    init = clip.tracks_XYZ[a_n, torch.arange(N_q)]                # (N_q, 3)
+    if F == 1:
+        pred_abs = init.unsqueeze(0)
+    else:
+        delta_zero_init = delta.clone()
+        delta_zero_init[0] = 0.0
+        cs = delta_zero_init.cumsum(dim=0)                        # (F, N_q, 3)
+        cs_at_anchor = cs[a_n, torch.arange(N_q)]                 # (N_q, 3)
+        pred_abs = init.unsqueeze(0) + cs - cs_at_anchor.unsqueeze(0)  # (F, N_q, 3)
 
     pred_tracks_NT3 = pred_abs.transpose(0, 1).numpy()
     pred_vis_NT = pred_vis.transpose(0, 1).numpy()

@@ -15,3 +15,4 @@
 - [Wrap tracker training in systemd-run scope](memory/feedback_tracker_train_systemd_scope.md) — `systemd-run --user --scope -p MemoryMax=18G`; defence-in-depth for systemd-oomd PSI pressure
 - [TAPVid loader: decode window only, no persistent_workers](memory/feedback_tapvid_dataloader_window_only.md) — `load_clip(path, frames=(s,e))` + `persistent_workers=False`; the actual fix for v7's RAM leak that systemd-oomd killed twice
 - [One unified YAML per ablation run](memory/feedback_one_unified_yaml_per_ablation.md) — every knob (model, data, train, loss) lives in `configs/<run>.yaml`; not split across files
+- [Output dirs named `<eval_title>_<datetime>`](memory/feedback_output_dir_naming.md) — eval/render artifact dirs get a `YYYYMMDD-HHMM` suffix so re-runs don't clobber prior outputs

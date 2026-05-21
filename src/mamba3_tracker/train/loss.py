@@ -1,31 +1,38 @@
-"""Tracking loss v8 — velocity-based, single Huber-clipped scale per (t, n).
+"""Tracking loss v11 — cumulative-sum trajectory + scale-normalised squared L2.
 
-v6/v7's scaled-position loss let the model collapse to "predict Δp̂ = 0":
-`(Δp̂ − Δp*) / s` with per-clip median scale s ≈ 1 m and motion ≈ 5 cm
-gives a residual of 0.05 — Smooth-L1(0.05) ≈ 0.00125. Predicting zero
-already sits at the loss floor.
+User-driven design after v6–v10's static-tracks failure mode was traced to two
+sources: (1) the propagator track-memory accumulator blowing up across many
+residual adds without LayerNorm (fixed in v10), and (2) the per-(t, n) Huber
+loss scale producing a non-stationary cost surface that made the loss spiky
+and non-monotone in training-step space.
 
-v8 replaces all relative-position terms (pos, mag, dir, reproj from v6)
-with **velocity** residuals + a small absolute-position anchor, both
-divided by a Huber-clipped per-(t, n) scale built from the GT velocity
-magnitude. The position residual is written on the absolute prediction
-`p̂ = p*_anchor + Δp̂` (numerically identical to `Δp̂ − Δp*`, but the
-formulation mirrors what the TAPVid-3D evaluator measures).
+v11 keeps the loss's *shape in residual space* simple and smooth — a parabola
+in the prediction variable — and replaces the offset-from-anchor prediction
+with a cumulative integration of per-frame motion.
 
-Seven terms:
-  * `vel_3D`     — ‖(v̂ − v*) / s_3D‖²  for visible (t≥1, n)
-  * `vel_2D`     — ‖(û − u*) / s_2D‖²  for visible (t≥1, n) in pixel space
-  * `pos_3D`     — ‖(p̂ − p*) / s_3D‖²  for visible (t, n)
-  * `pos_2D`     — ‖(π(p̂) − π(p*)) / s_2D‖²  for visible (t, n)
-  * `smooth_3D`  — ‖(v̂(t) − v̂(t−1)) / s_3D‖²  for visible (t≥2, n)
-  * `smooth_2D`  — same in 2D
-  * `vis`        — BCEWithLogits (surrogate for Occ-Acc)
+Reconstruction:
 
-Spawn is removed (not in TAPVid-3D eval). `pred.spawn_logits` survives
-in the model output only as a no-op tensor; loss ignores it.
+    Δp̂(t, n) = pred.xyz[..., t, n, :]    model output per frame
+    Δp̂(0, n) is IGNORED (the first frame's emitted value is discarded).
+    p̂(0, n) = p*(0, n)                    initial position from GT
+    p̂(t, n) = p̂(0, n) + Σ_{s=1..t} Δp̂(s, n)    for t ≥ 1
 
-Final `total = Σ_i λ_i · loss_i` where `Σ_i λ_i = 1` (normalised by
-the config loader in `train/config.py`).
+Per-clip scale (training only — eval uses TAPVid-3D's median scaling):
+
+    s_3D = median over visible (t, n) of  ‖p*(t, n)‖₂          [m]
+    s_2D = image_size                                            [px]
+
+Three loss terms — all squared L2 in scale-normalised space:
+
+    L_3D(t, n) = ‖( p̂(t, n) − p*(t, n) ) / s_3D‖²
+    L_2D(t, n) = ‖( π(p̂(t, n), K) − π(p*(t, n), K) ) / s_2D‖²
+    L_vis      = BCEWithLogits(pred.vis_logits, gt_visibility)
+
+Means over visible (t, n) and over the batch. Weighted sum with
+normalised weights `Σ λ_i = 1` from `configs/v11.yaml`.
+
+No velocity term. No smoothness term. No threshold. No Huber per-(t, n)
+clamp. Three terms, three numbers, smooth U-shape in the prediction.
 """
 
 from __future__ import annotations
@@ -40,18 +47,14 @@ from torch import Tensor, nn
 from ..model.heads import TrackerOutputs
 
 
-_TERMS = ("vel_3D", "vel_2D", "pos_3D", "pos_2D", "smooth_3D", "smooth_2D", "vis")
+_TERMS = ("pos_3D", "pos_2D", "vis")
 
 
 @dataclass
 class TrackingLossOutput:
     total: Tensor
-    vel_3D: Tensor
-    vel_2D: Tensor
     pos_3D: Tensor
     pos_2D: Tensor
-    smooth_3D: Tensor
-    smooth_2D: Tensor
     vis: Tensor
 
 
@@ -69,34 +72,80 @@ def _project(xyz: Tensor, K: Tensor) -> Tensor:
     return torch.stack([u, v], dim=-1)
 
 
-def _huber_scale(v: Tensor, delta: float) -> Tensor:
-    """`s = sqrt(δ² + ‖v‖²)`. Detached; no gradient flows through s."""
-    return (delta * delta + v.pow(2).sum(dim=-1)).clamp_min(1e-12).sqrt().detach()
+def reconstruct_trajectory(
+    delta_pred: Tensor,
+    init_xyz: Tensor,
+    anchor_idx: Tensor,
+) -> Tensor:
+    """Bidirectional cumsum reconstruction anchored at each track's anchor frame.
+
+    For each track n with anchor frame `a_n = anchor_idx[b, n]`:
+        p̂(a_n, n) = init_xyz[b, n]
+        p̂(t, n)   = init_xyz[b, n] + Σ_{s = a_n+1 .. t} Δp̂(s, n)       for t > a_n
+        p̂(t, n)   = init_xyz[b, n] − Σ_{s = t+1   .. a_n} Δp̂(s, n)     for t < a_n
+
+    Implemented as:
+        cs[t] = Σ_{s = 0..t} Δp̂(s)               (cumsum with Δp̂(0) := 0)
+        p̂(t) = init_xyz + (cs[t] − cs[a_n])      gather + subtract
+
+    Args:
+        delta_pred: (B, F, N, 3) — model's per-frame `Δp̂(t, n)`. The
+            entry at t=0 is ignored (Δp̂(0) := 0 inside the cumsum).
+        init_xyz: (B, N, 3) — initial 3-D position at each track's
+            anchor frame `a_n` (v12 uses GT at `tracks_XYZ[a_n, n]`;
+            future = feature-detector output).
+        anchor_idx: (B, N) long — each track's anchor frame index in
+            window coords. Clamped to [0, F-1].
+    Returns:
+        p_hat: (B, F, N, 3) with `p̂(a_n) = init_xyz` exactly.
+    """
+    B, F_, N, _ = delta_pred.shape
+    if F_ == 0:
+        return delta_pred
+    if F_ == 1:
+        return init_xyz.unsqueeze(1)
+    # Zero out the t=0 entry so cumsum starts effectively at t=1.
+    delta_zero_init = delta_pred.clone()
+    delta_zero_init[:, 0] = 0.0
+    cs = delta_zero_init.cumsum(dim=1)                      # (B, F, N, 3)
+    a = anchor_idx.clamp(min=0, max=F_ - 1)                 # (B, N)
+    cs_at_anchor = cs.gather(                               # (B, N, 3)
+        dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+    ).squeeze(1)
+    p_hat = init_xyz.unsqueeze(1) + cs - cs_at_anchor.unsqueeze(1)
+    return p_hat
 
 
-def _weighted_sum_sq(x: Tensor, weight: Tensor) -> Tensor:
-    """Weighted mean of `‖x‖²` (sum over last dim) over `weight > 0` entries."""
-    sq = x.pow(2).sum(dim=-1)
-    denom = weight.sum().clamp_min(1.0)
-    return (sq * weight).sum() / denom
+def _per_clip_median_scale(
+    gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
+    visible: Tensor,          # (B, F, N) bool/float
+    eps: float = 1e-3,
+) -> Tensor:
+    """`s_3D = median(‖p*‖)` over visible (t, n), one scalar per clip."""
+    B = gt_tracks_XYZ.shape[0]
+    norms = gt_tracks_XYZ.norm(dim=-1)                # (B, F, N)
+    s = torch.full((B,), eps, device=gt_tracks_XYZ.device, dtype=gt_tracks_XYZ.dtype)
+    for b in range(B):
+        v = visible[b].bool()
+        if v.any():
+            s[b] = norms[b][v].median()
+    return s.clamp_min(eps)
 
 
 class TrackingLoss(nn.Module):
-    """v8 loss. Construct with normalised weights + δ from `train/config.py`."""
+    """v11 loss. Construct with normalised weights from `train/config.py`."""
 
     def __init__(
         self,
         weights: Mapping[str, float],
-        delta_3d_m: float = 0.05,
-        delta_2d_px: float = 1.0,
+        image_size: int = 224,
     ) -> None:
         super().__init__()
         missing = set(_TERMS) - set(weights)
         if missing:
             raise ValueError(f"TrackingLoss: missing weights for {sorted(missing)}")
         self.w = {k: float(weights[k]) for k in _TERMS}
-        self.delta_3d_m = float(delta_3d_m)
-        self.delta_2d_px = float(delta_2d_px)
+        self.image_size = float(image_size)
 
     def forward(
         self,
@@ -104,105 +153,60 @@ class TrackingLoss(nn.Module):
         gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
         gt_visibility: Tensor,    # (B, F, N) bool
         gt_query_mask: Tensor,    # (B, N) bool
-        gt_anchor_frame: Tensor,  # (B, N) long
+        gt_anchor_frame: Tensor,  # (B, N) long — kept in signature for backwards compat (unused in v11)
         K: Tensor,                # (B, 3, 3)
     ) -> TrackingLossOutput:
         B, F_, N, _ = gt_tracks_XYZ.shape
-        device = pred.xyz.device
-        dtype = pred.xyz.dtype
-        zero = torch.zeros((), device=device, dtype=dtype)
 
-        # GT anchor 3-D position: p*_anchor(n)
-        anchor_idx = gt_anchor_frame.clamp(min=0, max=F_ - 1)
-        gt_anchor_xyz = gt_tracks_XYZ.gather(
-            dim=1, index=anchor_idx.view(B, 1, N, 1).expand(B, 1, N, 3),
-        ).squeeze(1)                                                       # (B, N, 3)
+        # v12: each track is anchored at its own query frame `gt_anchor_frame[b, n]`,
+        # not at clip-frame-0. p̂(a_n, n) = GT[a_n, n]; trajectory integrated
+        # bidirectionally from there. This matches the TAPVid-3D evaluation
+        # convention where queries can be at any frame and all visible frames
+        # are scored. See `reconstruct_trajectory` for the cumsum-gather math.
+        a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()                  # (B, N)
+        init_xyz = gt_tracks_XYZ.gather(
+            dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+        ).squeeze(1)                                                          # (B, N, 3)
+        p_hat = reconstruct_trajectory(pred.xyz, init_xyz, a)                 # (B, F, N, 3)
 
-        # Absolute predicted 3-D position: p̂(t) = p*_anchor + Δp̂(t)
-        p_pred = gt_anchor_xyz.unsqueeze(1) + pred.xyz                      # (B, F, N, 3)
-        p_gt = gt_tracks_XYZ
-
-        # 2-D projections (pixel space)
-        uv_pred = _project(p_pred, K)                                       # (B, F, N, 2)
-        uv_gt = _project(p_gt, K)
-
-        # GT velocity v*(t) = p*(t) − p*(t−1) for t ≥ 1; padded zero at t=0
-        v_gt_3d = torch.zeros_like(p_gt)
-        u_gt_2d = torch.zeros_like(uv_gt)
-        if F_ >= 2:
-            v_gt_3d[:, 1:] = p_gt[:, 1:] - p_gt[:, :-1]
-            u_gt_2d[:, 1:] = uv_gt[:, 1:] - uv_gt[:, :-1]
-
-        # Per-(t, n) Huber-clipped scales. Floor at δ when v*=0 (incl. t=0).
-        s_3D = _huber_scale(v_gt_3d, self.delta_3d_m)                       # (B, F, N)
-        s_2D = _huber_scale(u_gt_2d, self.delta_2d_px)
-
+        # Mask: visible (t, n) AND real query slot.
         vis_f = gt_visibility.float()
         qm = gt_query_mask.unsqueeze(1).expand(B, F_, N).float()
-        w_pos = vis_f * qm                                                  # visible (t, n)
-        if F_ >= 2:
-            vis_pair = vis_f[:, 1:] * vis_f[:, :-1] * qm[:, 1:]             # (B, F-1, N)
-        else:
-            vis_pair = torch.zeros(B, 0, N, device=device, dtype=dtype)
+        w_pos = vis_f * qm                                                  # (B, F, N)
+        denom = w_pos.sum().clamp_min(1.0)
 
-        # 1. Position residuals (all t).
-        r_p3d = (p_pred - p_gt) / s_3D.unsqueeze(-1).clamp_min(1e-12)
-        r_p2d = (uv_pred - uv_gt) / s_2D.unsqueeze(-1).clamp_min(1e-12)
-        pos_3D = _weighted_sum_sq(r_p3d, w_pos)
-        pos_2D = _weighted_sum_sq(r_p2d, w_pos)
+        # Per-clip 3-D scale (detached so no gradient flows back through GT magnitudes).
+        s_3D = _per_clip_median_scale(gt_tracks_XYZ, w_pos).detach()        # (B,)
+        s_3D_b = s_3D.view(B, 1, 1, 1)
+        s_2D_b = self.image_size
 
-        # 2. Velocity residuals (t ≥ 1). Predicted velocity comes from
-        #    consecutive Δp̂ differences (the GT anchor cancels).
-        if F_ >= 2:
-            v_pred_3d = pred.xyz[:, 1:] - pred.xyz[:, :-1]                  # (B, F-1, N, 3)
-            u_pred_2d = uv_pred[:, 1:] - uv_pred[:, :-1]
-            r_v3d = (v_pred_3d - v_gt_3d[:, 1:]) / s_3D[:, 1:].unsqueeze(-1).clamp_min(1e-12)
-            r_v2d = (u_pred_2d - u_gt_2d[:, 1:]) / s_2D[:, 1:].unsqueeze(-1).clamp_min(1e-12)
-            vel_3D = _weighted_sum_sq(r_v3d, vis_pair)
-            vel_2D = _weighted_sum_sq(r_v2d, vis_pair)
-        else:
-            v_pred_3d = torch.zeros(B, 0, N, 3, device=device, dtype=dtype)
-            u_pred_2d = torch.zeros(B, 0, N, 2, device=device, dtype=dtype)
-            vel_3D = zero
-            vel_2D = zero
+        # L_3D — scale-normalised squared L2 in 3D.
+        r_3D = (p_hat - gt_tracks_XYZ) / s_3D_b                             # (B, F, N, 3)
+        pos_3D = ((r_3D.pow(2).sum(dim=-1)) * w_pos).sum() / denom
 
-        # 3. Time smoothness on the *residual* velocity (t ≥ 2).
-        # Penalise the second difference of (v̂ − v*) so that:
-        #   * a perfect prediction yields exactly zero smoothness loss, and
-        #   * the static-Δp̂=0 predictor still pays for its mismatch with the
-        #     GT acceleration profile (the v6 failure mode we're trying to
-        #     kill must not get a free smoothness pass).
-        if F_ >= 3:
-            res_v3d = v_pred_3d - v_gt_3d[:, 1:]                            # (B, F-1, N, 3)
-            res_v2d = u_pred_2d - u_gt_2d[:, 1:]
-            acc_res_3d = res_v3d[:, 1:] - res_v3d[:, :-1]                   # (B, F-2, N, 3)
-            acc_res_2d = res_v2d[:, 1:] - res_v2d[:, :-1]
-            # Triple-visible (t, t-1, t-2) for acceleration of velocity.
-            triple_vis = vis_pair[:, 1:] * vis_f[:, :-2]
-            s3d_acc = s_3D[:, 2:].unsqueeze(-1).clamp_min(1e-12)
-            s2d_acc = s_2D[:, 2:].unsqueeze(-1).clamp_min(1e-12)
-            smooth_3D = _weighted_sum_sq(acc_res_3d / s3d_acc, triple_vis)
-            smooth_2D = _weighted_sum_sq(acc_res_2d / s2d_acc, triple_vis)
-        else:
-            smooth_3D = zero
-            smooth_2D = zero
+        # L_2D — pinhole-project both predicted and GT, then scale-normalised
+        # squared L2 in pixel space.
+        uv_hat = _project(p_hat, K)                                          # (B, F, N, 2)
+        uv_gt = _project(gt_tracks_XYZ, K)                                   # (B, F, N, 2)
+        r_2D = (uv_hat - uv_gt) / s_2D_b                                     # (B, F, N, 2)
+        # Mask out non-finite projections (rare: Z near zero — clamp handles it,
+        # but be defensive).
+        finite_2D = torch.isfinite(r_2D).all(dim=-1).float()
+        w_2D = w_pos * finite_2D
+        denom_2D = w_2D.sum().clamp_min(1.0)
+        pos_2D = ((torch.nan_to_num(r_2D.pow(2).sum(dim=-1), nan=0.0,
+                                    posinf=0.0, neginf=0.0)) * w_2D).sum() / denom_2D
 
-        # 4. Visibility BCE (Occ-Acc surrogate). Mean over per-frame qmask entries.
+        # Visibility BCE — masked by qm (per-frame target weighted by query slot).
         vis_loss = F.binary_cross_entropy_with_logits(
             pred.vis_logits, vis_f, weight=qm, reduction="sum",
         ) / qm.sum().clamp_min(1.0)
 
         total = (
-            self.w["vel_3D"]    * vel_3D
-            + self.w["vel_2D"]    * vel_2D
-            + self.w["pos_3D"]    * pos_3D
-            + self.w["pos_2D"]    * pos_2D
-            + self.w["smooth_3D"] * smooth_3D
-            + self.w["smooth_2D"] * smooth_2D
-            + self.w["vis"]       * vis_loss
+            self.w["pos_3D"] * pos_3D
+            + self.w["pos_2D"] * pos_2D
+            + self.w["vis"]    * vis_loss
         )
         return TrackingLossOutput(
-            total=total, vel_3D=vel_3D, vel_2D=vel_2D,
-            pos_3D=pos_3D, pos_2D=pos_2D,
-            smooth_3D=smooth_3D, smooth_2D=smooth_2D, vis=vis_loss,
+            total=total, pos_3D=pos_3D, pos_2D=pos_2D, vis=vis_loss,
         )

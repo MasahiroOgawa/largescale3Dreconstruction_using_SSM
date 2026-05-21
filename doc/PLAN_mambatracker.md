@@ -175,3 +175,68 @@ Implementation diff is one new `nn.ModuleList` of `LayerNorm`s on `CausalCrossPr
 - **TAPVid-3D 3D-AJ can improve while the tracker is silently broken.** Predict-near-anchor satisfies the threshold-based metric for short-clip slow-motion subsets (pstudio). A correct architecture is necessary for the metric to actually measure tracking quality rather than anchor-snapping. Future ablations should report both the metric *and* a qualitative-motion diagnostic (e.g. ‖Δp̂(F-1) − Δp̂(0)‖ vs ‖Δp*(F-1) − Δp*(0)‖) per variant.
 - **Loss-vs-arch attribution requires arch-side diagnostics.** "Why doesn't the model learn?" can have an architectural answer that no loss tweak will reach. v6→v9 was four loss recipes hitting the same arch failure; v10 is one arch fix that should unblock whichever of those losses is actually best.
 
+## v11 — cumsum-trajectory + smooth scale-normalised L2 (2026-05-21)
+
+v10 unblocked the architecture (track-memory magnitude bounded), but the qualitative result was still split: drivetrack tracks finally moved (~16 px in 32 frames), pstudio tracks still snapped to anchor. The training-loss curves were spiky across the run — the per-(t,n) Huber-velocity scale `s = sqrt(δ² + ‖v*‖²)` produces a *non-stationary* cost surface where the same physical error contributes wildly different loss values across the batch. The optimiser sees orders-of-magnitude variance from step to step.
+
+### Loss redesign — smooth U-shape, no thresholds, scale-normalised
+
+User-driven design — every term is a squared L2 in a scale-normalised space. No Huber, no threshold, no velocity term, no smoothness term:
+
+```
+For one (clip in batch, track n, frame t):
+  Δp̂(t, n) = pred.xyz[..., t, n, :]   ∈ ℝ³        per-frame motion (model output)
+  p̂(0, n)  = p*(0, n)                              initial position from GT (placeholder
+                                                    for a future feature-detector head)
+  p̂(t, n)  = p̂(0, n) + Σ_{s=1..t} Δp̂(s, n)        for t ≥ 1 — cumulative integration
+  p*(t, n) = clip.tracks_XYZ[t, n, :]
+  û(t, n)  = π( p̂(t, n), K )                       pinhole-project predicted position
+  u*(t, n) = π( p*(t, n), K )
+
+Per-clip scale:
+  s_3D = median over visible (t, n) of  ‖p*(t, n)‖₂        (one scalar per clip, in metres)
+  s_2D = image_size                                          (= 448 px, constant)
+
+Three loss terms:
+  L_3D = mean over visible (t, n) of ‖( p̂(t, n) − p*(t, n) ) / s_3D‖₂²
+  L_2D = mean over visible (t, n) of ‖( û(t, n) − u*(t, n) ) / s_2D‖₂²
+  L_vis = BCEWithLogits(pred.vis_logits, gt_visibility)
+
+L_total = λ_3D · L_3D + λ_2D · L_2D + λ_vis · L_vis     (weights normalised, Σ = 1)
+```
+
+`Δp̂(0, n)` is **ignored** by both loss and inference — the model's emitted value at the first window-frame is discarded, and `p̂(0, n)` is set from GT (or, in the future, from a separate initial-position extractor like SIFT, SuperPoint, or a learned dense feature detector). This separates "where do we start tracking?" (initial-position problem) from "how does the point move?" (the model's job).
+
+Properties:
+- Each loss term is a parabola in the prediction variable — smooth, single minimum at zero residual, second derivative positive everywhere (Newton-friendly).
+- Scale-invariant: `(0.01 m / 1 m)² = (1 m / 100 m)²` — same relative-error contribution.
+- No per-(t,n) variance source from a varying Huber scale — `s_3D` is a per-clip scalar.
+- Cumsum couples the F frames at the loss level: an error at frame t propagates back through all earlier predicted `Δp̂`. Similar to BPTT through a learned integrator. Static-`Δp̂` predictors produce linearly drifting `p̂`, which is the wrong shape and the loss catches it at every frame.
+
+### Method changes
+
+Architecture mostly intact; three removals:
+
+- **Correlation cross-attention not instantiated.** `CorrelationCrossAttention` class definition stays in `src/mamba3_tracker/model/propagator.py` for future reuse, but `CausalCrossPropagator.__init__` skips building `self.corr_levels`. Inner update reduces to `Q = self.out_norms[l](Q + delta_ssd)`.
+- **Iterative refinement off.** `num_iters` becomes a config-driven knob, default 1. Set in `configs/v11.yaml` under `model.num_iters`.
+- **4-level coarse-to-fine pyramid `[16, 32, 64, 128]`.** Previously 2 levels `[32, 64]`. The encoder's `coarse_image_size` becomes `16 × patch = 16 × 14 = 224 px` — model resizes input to 224² internally (down from the 448² of v6–v10). Trade-off: more pyramid levels at finer spatial scales, but starting from a coarser patch grid. Worth one full run to measure.
+- **LayerNorm hygiene from v10 retained.**
+
+### Coordinate convention note (TAPVid-3D is per-frame camera coords)
+
+The dataset stores `tracks_XYZ[t, n, :]` in the camera frame at time `t` — not in a world frame. The .npz file does not ship per-frame extrinsics `R(t), T(t)`. Consequences:
+
+- Pinhole projection in the loss and eval uses only intrinsics K. The standard `u = X/Z · fx + cx, v = Y/Z · fy + cy` produces the correct 2-D pixel coords in frame `t` directly because the input is already in frame-`t` camera coordinates.
+- For static-point/moving-camera clips (drivetrack, ADT), `tracks_XYZ[t, n]` changes over time even though the world position of the point doesn't. The cumsum-of-Δp̂ design has to absorb both real point motion and apparent camera-induced motion — they're entangled in the GT.
+- No published TAPVid-3D baseline decomposes the two; all of them (SpatialTracker, CoTracker3D, DELTA, BootsTAPIR+ZoeDepth) produce per-frame-camera-frame predictions like ours.
+
+### Future direction — world-coordinate decomposition
+
+If we ran COLMAP (or any SfM/SLAM stage) on each clip to recover `R(t), T(t)`, we could convert GT into world coordinates `X_world(n) = R(t)⁻¹ · (p*(t, n) − T(t))`, which would be **constant in time** for static points. The model would then predict a single world-coord trajectory per track, decoupled from camera ego-motion. Pre-processing scope is significant (per-clip multi-view bundle adjustment) but the resulting tracking problem becomes strictly easier — for static points the model just has to learn one 3-vector regardless of clip length. Carry this as a v12+ direction.
+
+### Training resume
+
+`scripts/train_mamba3_tracker.py` now auto-resumes from the latest `ckpt_*.pt` in `--out-dir` if any exists. Optimiser state, model state, step counter, and loss history are all restored. Use this to recover from manual kills, OOMs, or systemd-oomd hits.
+
+Implementation lands in commit … (next commit).
+
