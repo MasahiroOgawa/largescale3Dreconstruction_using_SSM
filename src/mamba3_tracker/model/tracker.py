@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from torch import Tensor, nn
 
+from .dino_encoder import DINOv2Encoder
 from .encoder import PyramidEncoder
 from .heads import TrackerOutputs, TrackHeads
 from .propagator import CausalCrossPropagator
@@ -41,14 +42,26 @@ class Mamba3Tracker(nn.Module):
         patch: int = 14,
         num_iters: int = 1,
         use_correlation: bool = False,
+        encoder_kind: str = "pyramid",         # "pyramid" (v6–v13) or "dinov2" (v14+)
+        dinov2_model: str = "facebook/dinov2-small",
+        dinov2_image_size: int = 448,
     ) -> None:
         super().__init__()
-        self.encoder = PyramidEncoder(
-            dim=dim, num_heads=num_heads, state_dim=state_dim, patch=patch,
-            level_sizes=level_sizes, blocks_per_level=blocks_per_level,
-        )
+        if encoder_kind == "pyramid":
+            self.encoder = PyramidEncoder(
+                dim=dim, num_heads=num_heads, state_dim=state_dim, patch=patch,
+                level_sizes=level_sizes, blocks_per_level=blocks_per_level,
+            )
+            n_pyramid_levels = len(level_sizes)
+        elif encoder_kind == "dinov2":
+            self.encoder = DINOv2Encoder(
+                model_name=dinov2_model, image_size=dinov2_image_size,
+            )
+            n_pyramid_levels = 1               # DINOv2 emits a single feature grid
+        else:
+            raise ValueError(f"encoder_kind={encoder_kind!r} must be 'pyramid' or 'dinov2'")
         self.propagator = CausalCrossPropagator(
-            dim=dim, num_pyramid_levels=len(level_sizes),
+            dim=dim, num_pyramid_levels=n_pyramid_levels,
             num_heads=num_heads, state_dim=state_dim,
             num_iters=num_iters, use_correlation=use_correlation,
         )

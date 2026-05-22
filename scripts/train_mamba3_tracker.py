@@ -44,12 +44,19 @@ _LOSS_KEYS = ("total", "pos_3D", "pos_2D", "vis")
 
 def _save_ckpt(out_dir: Path, step: int, model, optim, sched, history, cfg) -> Path:
     """Save an atomic checkpoint that captures everything needed to resume:
-    model + optimiser + scheduler + step counter + loss history + cfg."""
+    trainable params + optimiser + scheduler + step counter + loss history + cfg.
+
+    Frozen `encoder.backbone.*` weights (v14+ DINOv2 backbone) are NOT saved —
+    they reload from the HuggingFace Hub via `from_pretrained` at resume.
+    Keeps ckpts at ~5 MB per step instead of ~90 MB.
+    """
     path = out_dir / f"ckpt_{step}.pt"
     tmp = out_dir / f"ckpt_{step}.pt.tmp"
+    model_sd = {k: v for k, v in model.state_dict().items()
+                if not k.startswith("encoder.backbone.")}
     torch.save({
         "step": step,
-        "model": model.state_dict(),
+        "model": model_sd,
         "optim": optim.state_dict(),
         "sched": sched.state_dict() if sched is not None else None,
         "history": history,
@@ -329,19 +336,23 @@ def main() -> int:
     model = Mamba3Tracker(
         dim=int(model_cfg["dim"]), num_heads=int(model_cfg["num_heads"]),
         state_dim=int(model_cfg["state_dim"]),
-        level_sizes=tuple(model_cfg["level_sizes"]),
+        level_sizes=tuple(model_cfg.get("level_sizes", [32, 64])),
         num_iters=int(model_cfg.get("num_iters", 1)),
         use_correlation=bool(model_cfg.get("use_correlation", False)),
+        encoder_kind=str(model_cfg.get("encoder_kind", "pyramid")),
+        dinov2_model=str(model_cfg.get("dinov2_model", "facebook/dinov2-small")),
+        dinov2_image_size=int(model_cfg.get("dinov2_image_size", 448)),
     ).to(device)
-    n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"[train] tracker params: {n_params:.2f}M, "
-          f"level_sizes={model_cfg['level_sizes']}, "
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
+    n_total = sum(p.numel() for p in model.parameters()) / 1e6
+    print(f"[train] tracker params: trainable={n_trainable:.2f}M  total={n_total:.2f}M  "
+          f"encoder_kind={model_cfg.get('encoder_kind', 'pyramid')}, "
           f"num_iters={model_cfg.get('num_iters', 1)}, "
           f"use_correlation={model_cfg.get('use_correlation', False)}")
 
     if args.init_ckpt is not None:
         state = torch.load(args.init_ckpt, map_location="cpu", weights_only=False)
-        model.load_state_dict(state["model"])
+        model.load_state_dict(state["model"], strict=False)
         print(f"[train] loaded init weights from {args.init_ckpt}")
 
     loss_fn = TrackingLoss(
@@ -380,7 +391,7 @@ def main() -> int:
     latest = _find_latest_ckpt(args.out_dir)
     if latest is not None:
         state = torch.load(latest, map_location=device, weights_only=False)
-        model.load_state_dict(state["model"])
+        model.load_state_dict(state["model"], strict=False)
         optim.load_state_dict(state["optim"])
         if state.get("sched") is not None:
             sched.load_state_dict(state["sched"])

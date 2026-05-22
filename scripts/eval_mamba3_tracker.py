@@ -34,9 +34,14 @@ def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
     model = Mamba3Tracker(
         dim=int(m["dim"]), num_heads=int(m["num_heads"]),
         state_dim=int(m["state_dim"]),
-        level_sizes=tuple(m["level_sizes"]),
+        level_sizes=tuple(m.get("level_sizes", [32, 64])),
+        num_iters=int(m.get("num_iters", 1)),
+        use_correlation=bool(m.get("use_correlation", False)),
+        encoder_kind=str(m.get("encoder_kind", "pyramid")),
+        dinov2_model=str(m.get("dinov2_model", "facebook/dinov2-small")),
+        dinov2_image_size=int(m.get("dinov2_image_size", 448)),
     ).to(device)
-    model.load_state_dict(state["model"])
+    model.load_state_dict(state["model"], strict=False)   # frozen DINO weights load via from_pretrained
     model.eval()
     return model
 
