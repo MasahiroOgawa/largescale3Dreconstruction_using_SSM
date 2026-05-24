@@ -35,6 +35,7 @@ def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
         dinov2_model=str(m.get("dinov2_model", "facebook/dinov2-small")),
         dinov2_image_size=int(m.get("dinov2_image_size", 448)),
         dinov2_fuse_layers=m.get("dinov2_fuse_layers"),
+        predict_scale=bool(m.get("predict_scale", False)),
     ).to(device)
     model.load_state_dict(state["model"], strict=False)
     model.eval()
@@ -68,9 +69,11 @@ def _predict_and_match(model, clip, device, amp_dtype, max_frames: int) -> tuple
         pred = model(images, queries, qmask)
     delta = pred.xyz[0].float().cpu()
     pred_vis = torch.sigmoid(pred.vis_logits[0].float()).cpu()
+    if pred.scale is not None:                                       # v18: pre-multiply by learned scalar
+        delta = float(pred.scale[0].float().cpu().item()) * delta
 
-    # v12 reconstruction. Each track anchored at its own query frame `a_n`;
-    # bidirectional cumsum (forward for t > a_n, backward for t < a_n).
+    # v11–v17 per-anchor bidirectional cumsum; v18 applies the per-clip
+    # scale above, then the same cumsum.
     a_n = clip.queries_xyt[:, 2].long().clamp(min=0, max=F - 1)  # (N_q,)
     init = clip.tracks_XYZ[a_n, torch.arange(N_q)]                # (N_q, 3)
     if F == 1:

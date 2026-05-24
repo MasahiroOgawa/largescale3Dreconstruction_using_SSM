@@ -35,7 +35,7 @@ from mamba3_tracker.data.dataset import (
 from mamba3_tracker.data.tapvid3d import load_clip
 from mamba3_tracker.model.tracker import Mamba3Tracker
 from mamba3_tracker.train.config import dump_resolved, load_config
-from mamba3_tracker.train.loss import TrackingLoss, TrackingLossOutput
+from mamba3_tracker.train.loss import TrackingLoss, TrackingLossOutput, TrackingLossV18
 from mamba3_tracker.train.schedule import wsd
 
 
@@ -171,14 +171,17 @@ def _motion_check(
         with torch.autocast(device_type=device.type, dtype=amp_dtype):
             pred = model(images, queries.unsqueeze(0).to(device), qmask)
         delta = pred.xyz[0].float().cpu()                      # (F, N_q, 3)
+        if pred.scale is not None:                             # v18: pre-multiply by learned scalar
+            delta = float(pred.scale[0].float().cpu().item()) * delta
 
-        # Per-anchor cumsum reconstruction (matches loss.py / eval / render).
+        # Per-anchor bidirectional cumsum reconstruction (v11–v17 form;
+        # v18 applies the per-clip scale above, then the same cumsum).
         a_n = clip.queries_xyt[:, 2].long().clamp(min=0, max=F_ - 1)
         init = clip.tracks_XYZ[a_n, torch.arange(N_q)]
         delta_zero = delta.clone(); delta_zero[0] = 0.0
         cs = delta_zero.cumsum(dim=0)                          # (F, N_q, 3)
         cs_at_anchor = cs[a_n, torch.arange(N_q)]              # (N_q, 3)
-        p_hat = init.unsqueeze(0) + cs - cs_at_anchor.unsqueeze(0)  # (F, N_q, 3)
+        p_hat = init.unsqueeze(0) + cs - cs_at_anchor.unsqueeze(0)
         p_gt  = clip.tracks_XYZ[:F_]                            # (F, N_q, 3)
 
         # Project both to 2D in ORIGINAL image coords (clip.K is unscaled).
@@ -343,6 +346,7 @@ def main() -> int:
         dinov2_model=str(model_cfg.get("dinov2_model", "facebook/dinov2-small")),
         dinov2_image_size=int(model_cfg.get("dinov2_image_size", 448)),
         dinov2_fuse_layers=model_cfg.get("dinov2_fuse_layers"),
+        predict_scale=bool(model_cfg.get("predict_scale", False)),
     ).to(device)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
     n_total = sum(p.numel() for p in model.parameters()) / 1e6
@@ -356,10 +360,12 @@ def main() -> int:
         model.load_state_dict(state["model"], strict=False)
         print(f"[train] loaded init weights from {args.init_ckpt}")
 
-    loss_fn = TrackingLoss(
+    loss_cls = TrackingLossV18 if bool(model_cfg.get("predict_scale", False)) else TrackingLoss
+    loss_fn = loss_cls(
         weights=loss_cfg["weights"],
         image_size=int(data_cfg["image_size"]),
     ).to(device)
+    print(f"[train] loss class: {loss_cls.__name__}")
     optim = AdamW(model.parameters(),
                   lr=float(train_cfg["lr"]),
                   weight_decay=float(train_cfg["weight_decay"]))

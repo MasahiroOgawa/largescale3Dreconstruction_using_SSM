@@ -23,11 +23,12 @@ recovered as `delta_xyz + p_query`.
 
 from __future__ import annotations
 
+import torch
 from torch import Tensor, nn
 
 from .dino_encoder import DINOv2Encoder
 from .encoder import PyramidEncoder
-from .heads import TrackerOutputs, TrackHeads
+from .heads import ScaleHead, TrackerOutputs, TrackHeads
 from .propagator import CausalCrossPropagator
 
 
@@ -46,6 +47,7 @@ class Mamba3Tracker(nn.Module):
         dinov2_model: str = "facebook/dinov2-small",
         dinov2_image_size: int = 448,
         dinov2_fuse_layers: list[int] | None = None,  # v16+: e.g. [2, 5, 8, 11]
+        predict_scale: bool = False,           # v18+: emit per-clip scalar `s`
     ) -> None:
         super().__init__()
         if encoder_kind == "pyramid":
@@ -70,6 +72,25 @@ class Mamba3Tracker(nn.Module):
         self.heads = TrackHeads(dim=dim)
         self.image_size = self.encoder.coarse_image_size
 
+        self.predict_scale = bool(predict_scale)
+        if self.predict_scale:
+            if encoder_kind != "dinov2":
+                raise ValueError("predict_scale=True requires encoder_kind='dinov2' (needs CLS tokens)")
+            self.scale_head = ScaleHead(dim=dim)
+            # Zero-init xyz_head's final layer so Δp̃ = 0 at startup. With
+            # v18's path-length-normalised 3D loss, a random initial
+            # Δp̃ ~ O(0.1 m) divided by a 1 mm GT step (e.g. pstudio
+            # near the anchor) explodes to a 10⁴ squared residual.
+            # Δp̃ = 0 caps the startup loss at the collapse-floor
+            # value (≈ 1 per visible (t, n)) and lets the optimiser
+            # ramp up cleanly.
+            with torch.no_grad():
+                final_xyz = self.heads.xyz_head[-1]
+                final_xyz.weight.zero_()
+                final_xyz.bias.zero_()
+        else:
+            self.scale_head = None
+
     def forward(
         self,
         video: Tensor,
@@ -84,10 +105,19 @@ class Mamba3Tracker(nn.Module):
                 the encoder's input resolution).
             query_mask: (B, N) bool — True at real query slots, False at padding.
         Returns:
-            TrackerOutputs with `xyz` = predicted Δp (motion since query anchor).
+            TrackerOutputs with `xyz` = per-frame Δp̃ (v18: pre-scale relative
+            deltas, recovered as Σ_τ s·Δp̃; v11–v17: Δp relative to query
+            anchor, recovered via per-anchor cumsum).
         """
-        pyramid = self.encoder.forward_video(video)
+        if self.predict_scale:
+            pyramid, cls_per_frame = self.encoder.forward_video_with_cls(video)
+            scale = self.scale_head(cls_per_frame)                     # (B,)
+        else:
+            pyramid = self.encoder.forward_video(video)
+            scale = None
         q_history = self.propagator(
             pyramid, queries_xyt, query_mask, image_size=self.image_size,
         )
-        return self.heads(q_history)
+        out = self.heads(q_history)
+        out.scale = scale
+        return out

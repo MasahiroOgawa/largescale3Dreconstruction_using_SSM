@@ -120,9 +120,11 @@ class DINOv2Encoder(nn.Module):
     def coarse_image_size(self) -> int:
         return self.image_size
 
-    def _forward_one_image_batch(self, image: Tensor) -> Tensor:
+    def _forward_one_image_batch(self, image: Tensor) -> tuple[Tensor, Tensor]:
         """Args:  image (B, 3, H, W) in [0, 1].
-        Returns: (B, dim, grid, grid) feature map.
+        Returns: tuple (feat, cls) where
+            feat: (B, dim, grid, grid)   — patch feature map
+            cls:  (B, dim)               — CLS token (DINO global summary)
 
         DINO backbone runs under `torch.no_grad()` (frozen). The fusion
         projection (v16+, when `fuse_proj` is not None) DOES need
@@ -151,6 +153,7 @@ class DINOv2Encoder(nn.Module):
                 interpolate_pos_encoding=True,
                 output_hidden_states=want_hidden_states,
             )
+        cls = out.last_hidden_state[:, 0, :]                                  # (B, D)
         if not want_hidden_states:
             tokens = out.last_hidden_state[:, self._n_prefix_tokens:, :]              # (B, P, D)
         else:
@@ -171,28 +174,42 @@ class DINOv2Encoder(nn.Module):
                 f"patch={self.patch_size}"
             )
         feat = tokens.transpose(1, 2).reshape(B, D, self.grid_size, self.grid_size)
-        return feat                                                # (B, D, h, w)
+        return feat, cls                                          # (B, D, h, w), (B, D)
 
     def forward(self, image: Tensor) -> list[Tensor]:
         """Single-image forward (matches PyramidEncoder.forward signature).
         Returns a one-level "pyramid".
         """
-        feat = self._forward_one_image_batch(image)
+        feat, _ = self._forward_one_image_batch(image)
         return [feat]
 
     def forward_video(self, video: Tensor) -> list[Tensor]:
         """Args:  video (B, F, 3, H, W).
         Returns: one-element list of (B, F, D, grid, grid).
         """
+        pyramid, _ = self.forward_video_with_cls(video)
+        return pyramid
+
+    def forward_video_with_cls(self, video: Tensor) -> tuple[list[Tensor], Tensor]:
+        """Args:  video (B, F, 3, H, W).
+        Returns: (pyramid, cls_per_frame) where
+            pyramid:        one-element list of (B, F, D, grid, grid)
+            cls_per_frame:  (B, F, D) — DINO CLS token at each frame.
+
+        Used by v18+ tracker (clip-level scale head pools over CLS-per-frame).
+        """
         B, F_, C, H, W = video.shape
         flat = video.reshape(B * F_, C, H, W)
-        feat = self._forward_one_image_batch(flat)
+        feat, cls = self._forward_one_image_batch(flat)
         D, h, w = feat.shape[1], feat.shape[2], feat.shape[3]
-        return [feat.reshape(B, F_, D, h, w)]
+        pyramid = [feat.reshape(B, F_, D, h, w)]
+        cls_per_frame = cls.reshape(B, F_, D)
+        return pyramid, cls_per_frame
 
     def forward_frame(self, image: Tensor) -> Tensor:
         """Streaming-inference path: one frame in, one feature grid out.
         Args:  image (B, 3, H, W).
         Returns: (B, D, grid, grid).
         """
-        return self._forward_one_image_batch(image)
+        feat, _ = self._forward_one_image_batch(image)
+        return feat

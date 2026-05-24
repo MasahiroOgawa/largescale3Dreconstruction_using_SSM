@@ -41,6 +41,7 @@ def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
         dinov2_model=str(m.get("dinov2_model", "facebook/dinov2-small")),
         dinov2_image_size=int(m.get("dinov2_image_size", 448)),
         dinov2_fuse_layers=m.get("dinov2_fuse_layers"),
+        predict_scale=bool(m.get("predict_scale", False)),
     ).to(device)
     model.load_state_dict(state["model"], strict=False)   # frozen DINO weights load via from_pretrained
     model.eval()
@@ -84,11 +85,13 @@ def _infer_clip(model, clip, device, amp_dtype, max_frames: int = 0) -> tuple[np
 
     delta = pred.xyz[0].float().cpu()                        # (F, N_q, 3)
     pred_vis = torch.sigmoid(pred.vis_logits[0].float()).cpu()  # (F, N_q)
+    if pred.scale is not None:                                # v18: pre-multiply by learned scalar
+        delta = float(pred.scale[0].float().cpu().item()) * delta
 
-    # v12 reconstruction. Each track has its own anchor frame `a_n`:
+    # v11–v17 per-anchor bidirectional cumsum with GT init at the anchor;
+    # v18 applies the per-clip scale above, then the same cumsum:
     #   p̂(a_n, n) = clip.tracks_XYZ[a_n, n]
-    #   p̂(t, n)   = p̂(a_n, n) + (cumsum_{s=0..t} Δp̂(s, n) − cumsum_{s=0..a_n} Δp̂(s, n))
-    # where Δp̂(0, n) is treated as 0 inside the cumsum.
+    #   p̂(t, n)   = p̂(a_n, n) + (cumsum_{τ=0..t} Δp̂ − cumsum_{τ=0..a_n} Δp̂)
     a_n = clip.queries_xyt[:, 2].long().clamp(min=0, max=F - 1)  # (N_q,)
     init = clip.tracks_XYZ[a_n, torch.arange(N_q)]                # (N_q, 3)
     if F == 1:
