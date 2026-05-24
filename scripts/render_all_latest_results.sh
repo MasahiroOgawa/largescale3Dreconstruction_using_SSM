@@ -85,12 +85,30 @@ else
 fi
 
 echo
-echo "wrote MP4s:"
-ls -la "$OUT"/*.mp4
-
-echo
 echo "[plot] rendering training-curve + motion-ratio plots"
 uv run python scripts/plot_training_curves.py --run-dir "$RUN_DIR" 2>&1 | tee -a "$OUT/render.log"
+
+# Final summary — absolute paths so users can copy-paste and find them
+# even after the surrounding logs scroll out of view.
+RUN_ABS="$(realpath "$RUN_DIR")"
+OUT_ABS="$(realpath "$OUT")"
+PLOTS_ABS="$(realpath "$RUN_DIR/plots")"
+
 echo
-echo "plots:"
-ls -la "$RUN_DIR/plots/"
+echo "================================================================"
+echo "DONE — outputs for step $STEP"
+echo "================================================================"
+echo "run dir : $RUN_ABS"
+echo
+echo "MP4s    ($OUT_ABS):"
+for f in "$OUT"/*.mp4; do
+    [ -f "$f" ] && echo "  $(realpath "$f")"
+done
+echo
+echo "plots   ($PLOTS_ABS):"
+for f in "$PLOTS_ABS"/*.png; do
+    [ -f "$f" ] && echo "  $f"
+done
+echo
+echo "log     : $OUT_ABS/render.log"
+echo "================================================================"
