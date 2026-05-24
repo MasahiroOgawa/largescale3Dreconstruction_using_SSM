@@ -53,3 +53,8 @@ packages = ["src/mamba3_attn", "src/mamba3_tracker"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.14",
+]
