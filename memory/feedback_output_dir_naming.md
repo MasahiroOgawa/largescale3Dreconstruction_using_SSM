@@ -7,10 +7,13 @@ metadata:
 
 ## Convention
 
-Each training run gets **one** top-level directory:
+Each training run gets **one** top-level directory whose name carries the
+datetime. **Child directories inside it do NOT repeat the datetime** — the
+parent already disambiguates the run, and nested timestamps make paths
+unreadable.
 
 ```
-outputs/track_v<version>_<YYYYMMDD-HHMM>/
+outputs/track_v<version>_<YYYYMMDD-HHMM>/              ← datetime ONLY here
     ├─ cfg.json                         resolved config + launch args snapshot
     ├─ train.log                        stdout of the training process
     ├─ loss_history.json                per-step + per-val loss rows
@@ -20,7 +23,7 @@ outputs/track_v<version>_<YYYYMMDD-HHMM>/
     ├─ eval/                            TAPVid-3D eval results (per-subset JSONs)
     │     ├─ pstudio.json
     │     └─ drivetrack.json
-    ├─ viz/                             rendered tracking MP4s
+    ├─ viz_ckpt<step>/                  rendered MP4s, named by source ckpt step
     │     ├─ pstudio_basketball_1.mp4
     │     └─ drivetrack_<clip_id>.mp4
     └─ plots/                           training-curve, motion-ratio plots
@@ -28,7 +31,12 @@ outputs/track_v<version>_<YYYYMMDD-HHMM>/
           └─ motion_ratio.png
 ```
 
-`<version>` = `v13`, `v14`, etc. `<YYYYMMDD-HHMM>` set at first launch.
+`<version>` = `v13`, `v14`, etc. `<YYYYMMDD-HHMM>` is set at first launch and
+appears EXACTLY ONCE in the path. Child dirs use descriptive single-purpose
+names (`viz_ckpt30k`, `viz_step12500`, `eval`, `plots`). If a render is
+re-run on the same checkpoint, manually remove or rename the existing
+`viz_ckpt<step>/` first; we do not bake datetimes into child paths to avoid
+the collision.
 
 ## Why one dir
 
@@ -47,6 +55,11 @@ outputs/track_v<version>_<YYYYMMDD-HHMM>/
 - `outputs/track_v13/` without a datetime — risks silent overwrite on re-launches.
 - `outputs/track_v13_<datetime>/runs/`, `outputs/track_v13_<datetime>/eval/v2/`,
   or any deeper version nesting. One dir per run, period.
+- **`outputs/track_v16_<datetime>/viz_step12500_<datetime>/`** — datetime
+  appearing twice in the path. Child dirs use descriptive names only
+  (`viz_step12500`, `viz_ckpt30k`, `eval`, `plots`); never a second timestamp.
+  Rule added 2026-05-23 after the redundant timestamp pattern made
+  paths unreadable in shell history.
 
 ## Scope
 

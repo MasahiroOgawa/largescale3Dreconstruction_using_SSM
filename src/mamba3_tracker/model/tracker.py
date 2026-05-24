@@ -45,6 +45,7 @@ class Mamba3Tracker(nn.Module):
         encoder_kind: str = "pyramid",         # "pyramid" (v6–v13) or "dinov2" (v14+)
         dinov2_model: str = "facebook/dinov2-small",
         dinov2_image_size: int = 448,
+        dinov2_fuse_layers: list[int] | None = None,  # v16+: e.g. [2, 5, 8, 11]
     ) -> None:
         super().__init__()
         if encoder_kind == "pyramid":
@@ -56,6 +57,7 @@ class Mamba3Tracker(nn.Module):
         elif encoder_kind == "dinov2":
             self.encoder = DINOv2Encoder(
                 model_name=dinov2_model, image_size=dinov2_image_size,
+                fuse_layers=dinov2_fuse_layers,
             )
             n_pyramid_levels = 1               # DINOv2 emits a single feature grid
         else:

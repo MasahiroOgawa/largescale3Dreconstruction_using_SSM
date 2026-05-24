@@ -54,6 +54,7 @@ class DINOv2Encoder(nn.Module):
         self,
         model_name: str = "facebook/dinov2-small",
         image_size: int = 448,
+        fuse_layers: list[int] | None = None,
     ) -> None:
         super().__init__()
         from transformers import AutoModel
@@ -70,6 +71,43 @@ class DINOv2Encoder(nn.Module):
         self.image_size = int(image_size)
         self.grid_size = self.image_size // self.patch_size
         self.dim = int(self.backbone.config.hidden_size)
+        # Number of non-patch tokens prepended to the patch sequence in
+        # `last_hidden_state`. DINOv2 has 1 CLS token. DINOv3 has 1 CLS
+        # token + N register tokens ("Vision Transformers Need Registers",
+        # Darcet et al. 2024). Token order: [CLS, REG_1, ..., REG_N,
+        # patch_1, ..., patch_P]. We slice off all of them.
+        n_reg = int(getattr(self.backbone.config, "num_register_tokens", 0) or 0)
+        self._n_prefix_tokens = 1 + n_reg
+
+        # DPT-style multi-layer fusion. v16: fuse the outputs of several
+        # DINOv2 transformer blocks into one feature map, so the propagator
+        # sees both early-layer local detail (sharp per-patch appearance —
+        # critical for localising small objects like balls) and late-layer
+        # semantic content (cross-frame identity). Free in encoder compute
+        # — DINOv2 already computes every layer; we just read more outputs.
+        # `fuse_layers` is a list of 0-indexed block indices in [0, num_blocks).
+        # `None` (the default) means v14/v15 behaviour: use only the last block.
+        n_blocks = int(self.backbone.config.num_hidden_layers)
+        if fuse_layers is not None and len(fuse_layers) > 1:
+            for l in fuse_layers:
+                if l < 0 or l >= n_blocks:
+                    raise ValueError(
+                        f"fuse_layer {l} out of range [0, {n_blocks})"
+                    )
+            self.fuse_layers = list(fuse_layers)
+            # Per-layer LayerNorm — different DINO layers have very different
+            # output scales; without normalising, the late layers (which
+            # have larger magnitude) would dominate the fusion.
+            self.fuse_norms = nn.ModuleList(
+                [nn.LayerNorm(self.dim) for _ in self.fuse_layers]
+            )
+            self.fuse_proj = nn.Linear(
+                len(self.fuse_layers) * self.dim, self.dim,
+            )
+        else:
+            self.fuse_layers = None
+            self.fuse_norms = None
+            self.fuse_proj = None
 
         # DINOv2 was trained with ImageNet mean/std normalisation.
         self.register_buffer("imagenet_mean",
@@ -82,10 +120,14 @@ class DINOv2Encoder(nn.Module):
     def coarse_image_size(self) -> int:
         return self.image_size
 
-    @torch.no_grad()
     def _forward_one_image_batch(self, image: Tensor) -> Tensor:
         """Args:  image (B, 3, H, W) in [0, 1].
         Returns: (B, dim, grid, grid) feature map.
+
+        DINO backbone runs under `torch.no_grad()` (frozen). The fusion
+        projection (v16+, when `fuse_proj` is not None) DOES need
+        gradient — it's trainable — so the no_grad context is scoped to
+        the backbone call only.
         """
         if image.shape[-1] != self.image_size or image.shape[-2] != self.image_size:
             image = F.interpolate(
@@ -96,8 +138,31 @@ class DINOv2Encoder(nn.Module):
 
         # DINOv2 returns last_hidden_state of shape (B, 1 + grid*grid, D)
         # — first token is CLS, rest are patch tokens in row-major order.
-        out = self.backbone(pixel_values=image)
-        tokens = out.last_hidden_state[:, 1:, :]                  # (B, P, D)
+        # `interpolate_pos_encoding=True` lets DINOv2 accept input sizes
+        # other than its default training resolution (it interpolates the
+        # learned positional embedding to the new grid).
+        # `output_hidden_states=True` (only when fusing) exposes the output
+        # of every transformer block; tuple length = num_blocks + 1
+        # (index 0 = post-embedding pre-block; indices 1..L = block outputs).
+        want_hidden_states = self.fuse_proj is not None
+        with torch.no_grad():
+            out = self.backbone(
+                pixel_values=image,
+                interpolate_pos_encoding=True,
+                output_hidden_states=want_hidden_states,
+            )
+        if not want_hidden_states:
+            tokens = out.last_hidden_state[:, self._n_prefix_tokens:, :]              # (B, P, D)
+        else:
+            # `out.hidden_states[block_idx + 1]` is the output of block
+            # `block_idx` (0-indexed in `fuse_layers`). LayerNorm each
+            # layer first (DPT-style); then concat along feature dim;
+            # then learnable Linear back to D.
+            chunks = []
+            for norm, l in zip(self.fuse_norms, self.fuse_layers):
+                h_l = out.hidden_states[l + 1][:, self._n_prefix_tokens:, :]          # (B, P, D)
+                chunks.append(norm(h_l))
+            tokens = self.fuse_proj(torch.cat(chunks, dim=-1))    # (B, P, D)
         B, P, D = tokens.shape
         if P != self.grid_size * self.grid_size:
             raise RuntimeError(

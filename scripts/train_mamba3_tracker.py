@@ -342,6 +342,7 @@ def main() -> int:
         encoder_kind=str(model_cfg.get("encoder_kind", "pyramid")),
         dinov2_model=str(model_cfg.get("dinov2_model", "facebook/dinov2-small")),
         dinov2_image_size=int(model_cfg.get("dinov2_image_size", 448)),
+        dinov2_fuse_layers=model_cfg.get("dinov2_fuse_layers"),
     ).to(device)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
     n_total = sum(p.numel() for p in model.parameters()) / 1e6

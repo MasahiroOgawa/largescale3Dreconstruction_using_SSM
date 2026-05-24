@@ -34,6 +34,7 @@ def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
         encoder_kind=str(m.get("encoder_kind", "pyramid")),
         dinov2_model=str(m.get("dinov2_model", "facebook/dinov2-small")),
         dinov2_image_size=int(m.get("dinov2_image_size", 448)),
+        dinov2_fuse_layers=m.get("dinov2_fuse_layers"),
     ).to(device)
     model.load_state_dict(state["model"], strict=False)
     model.eval()

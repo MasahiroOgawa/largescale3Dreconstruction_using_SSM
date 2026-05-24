@@ -72,11 +72,17 @@ def _sample_query_features(
                 continue
             feat = pyramid_finest[b:b + 1, t_val]
             grid = grid_xy[b, sel].view(1, -1, 1, 2)
+            # `grid_sample` may upcast to fp32 under autocast in certain
+            # gradient-tracked contexts (v16 fusion triggers this where
+            # v14/v15 didn't, because v14/v15 wrapped the whole encoder in
+            # @torch.no_grad() while v16 needs gradient through fuse_proj).
+            # Cast grid to feat's dtype, then cast sampled back to out's
+            # dtype before the index_put so dtypes always line up.
             sampled = F.grid_sample(
-                feat, grid, mode="bilinear",
+                feat, grid.to(feat.dtype), mode="bilinear",
                 padding_mode="border", align_corners=True,
             )
-            out[b, sel] = sampled.squeeze(-1).squeeze(0).transpose(0, 1)
+            out[b, sel] = sampled.squeeze(-1).squeeze(0).transpose(0, 1).to(out.dtype)
     return out
 
 
