@@ -84,6 +84,24 @@ else
     "${CMD[@]}" --amp bf16 2>&1 | tee "$OUT/render.log"
 fi
 
+# 3D-space trajectory plots (PNG, one per clip). Same model + clip set
+# as the 2D MP4 step above; uses matplotlib mplot3d so no extra deps.
+echo
+echo "[3d] rendering 3D-space track plots"
+CMD_3D=(
+    uv run python scripts/render_3d_tracks.py
+    --ckpt "$LATEST_CKPT"
+    --out-dir "$OUT"
+    --subsets $SUBSETS
+    --clips-per-subset "$CLIPS_PER_SUBSET"
+    --max-frames "$MAX_FRAMES"
+)
+if [ "$USE_CPU" = "1" ]; then
+    CUDA_VISIBLE_DEVICES="" "${CMD_3D[@]}" --amp fp32 2>&1 | tee -a "$OUT/render.log"
+else
+    "${CMD_3D[@]}" --amp bf16 2>&1 | tee -a "$OUT/render.log"
+fi
+
 echo
 echo "[plot] rendering training-curve + motion-ratio plots"
 uv run python scripts/plot_training_curves.py --run-dir "$RUN_DIR" 2>&1 | tee -a "$OUT/render.log"
@@ -102,6 +120,11 @@ echo "run dir : $RUN_ABS"
 echo
 echo "MP4s    ($OUT_ABS):"
 for f in "$OUT"/*.mp4; do
+    [ -f "$f" ] && echo "  $(realpath "$f")"
+done
+echo
+echo "3D PNGs ($OUT_ABS):"
+for f in "$OUT"/*_3d.png; do
     [ -f "$f" ] && echo "  $(realpath "$f")"
 done
 echo
