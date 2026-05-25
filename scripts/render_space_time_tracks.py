@@ -144,7 +144,7 @@ def _plot_clip_st_png(
     N_q, F, _ = pred_NF3.shape
     sel = _pick_tracks(vis_NF, max_tracks)
 
-    fig = plt.figure(figsize=(18, 6))
+    fig = plt.figure(figsize=(21, 7))
     cmap = plt.get_cmap("tab20")
     for col, (a_idx, b_idx, a_lab, b_lab) in enumerate(PROJECTIONS):
         ax = fig.add_subplot(1, 3, col + 1, projection="3d")
@@ -161,12 +161,13 @@ def _plot_clip_st_png(
             if 0 <= a < F:
                 ax.scatter([gt_NF3[n, a, a_idx]], [gt_NF3[n, a, b_idx]], [times_s[a]],
                            s=18, color=color, edgecolors="black", linewidths=0.4)
-        ax.set_xlabel(f"{a_lab} (m)")
-        ax.set_ylabel(f"{b_lab} (m)")
-        ax.set_zlabel("time (s)")
-        ax.set_title(f"{a_lab}–{b_lab} vs time", fontsize=10)
-    fig.suptitle(f"{title}\nsolid = predicted, dashed = GT, dot = anchor frame", fontsize=10)
-    fig.tight_layout()
+        ax.set_xlabel(f"{a_lab} (m)", fontsize=12, labelpad=6)
+        ax.set_ylabel(f"{b_lab} (m)", fontsize=12, labelpad=6)
+        ax.set_zlabel("time (s)",     fontsize=12, labelpad=6)
+        ax.set_title(f"{a_lab.lower()}{b_lab.lower()}t  —  {a_lab}-{b_lab} plane vs time",
+                     fontsize=13, fontweight="bold")
+    fig.suptitle(f"{title}\nsolid = predicted, dashed = GT, dot = anchor frame", fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(out_path, dpi=130)
     plt.close(fig)
 
@@ -181,7 +182,10 @@ def _plot_clip_st_html(
 
     fig = make_subplots(
         rows=1, cols=3, specs=[[{"type": "scene"}] * 3],
-        subplot_titles=[f"{a_lab}–{b_lab} vs time" for _, _, a_lab, b_lab in PROJECTIONS],
+        subplot_titles=[
+            f"<b>{a_lab.lower()}{b_lab.lower()}t</b>  —  {a_lab}-{b_lab} plane vs time"
+            for _, _, a_lab, b_lab in PROJECTIONS
+        ],
         horizontal_spacing=0.02,
     )
     for col, (a_idx, b_idx, a_lab, b_lab) in enumerate(PROJECTIONS):
