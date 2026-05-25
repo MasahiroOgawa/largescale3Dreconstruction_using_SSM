@@ -128,6 +128,11 @@ for f in "$OUT"/*_3d.png; do
     [ -f "$f" ] && echo "  $(realpath "$f")"
 done
 echo
+echo "3D HTML ($OUT_ABS) — open in a browser for interactive rotate/zoom:"
+for f in "$OUT"/*_3d.html; do
+    [ -f "$f" ] && echo "  $(realpath "$f")"
+done
+echo
 echo "plots   ($PLOTS_ABS):"
 for f in "$PLOTS_ABS"/*.png; do
     [ -f "$f" ] && echo "  $f"
