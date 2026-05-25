@@ -120,6 +120,12 @@ class DINOv2Encoder(nn.Module):
     def coarse_image_size(self) -> int:
         return self.image_size
 
+    # Frames are independent at the DINO level (no cross-frame attention),
+    # so a 150-frame clip at 896 input fits perfectly fine as 5 chunks of
+    # 32 frames each — but not as one batch of 150 (would OOM at ~9 GB).
+    # Training runs with window <= 8 so chunking is a no-op there.
+    ENC_CHUNK = 32
+
     def _forward_one_image_batch(self, image: Tensor) -> tuple[Tensor, Tensor]:
         """Args:  image (B, 3, H, W) in [0, 1].
         Returns: tuple (feat, cls) where
@@ -130,6 +136,10 @@ class DINOv2Encoder(nn.Module):
         projection (v16+, when `fuse_proj` is not None) DOES need
         gradient — it's trainable — so the no_grad context is scoped to
         the backbone call only.
+
+        Large `B` (e.g. full-clip eval, B=150-300 frames) is chunked over
+        the batch dim into sub-batches of `ENC_CHUNK` frames so peak
+        memory stays bounded; outputs are concatenated.
         """
         if image.shape[-1] != self.image_size or image.shape[-2] != self.image_size:
             image = F.interpolate(
@@ -138,43 +148,41 @@ class DINOv2Encoder(nn.Module):
             )
         image = (image - self.imagenet_mean) / self.imagenet_std
 
-        # DINOv2 returns last_hidden_state of shape (B, 1 + grid*grid, D)
-        # — first token is CLS, rest are patch tokens in row-major order.
-        # `interpolate_pos_encoding=True` lets DINOv2 accept input sizes
-        # other than its default training resolution (it interpolates the
-        # learned positional embedding to the new grid).
-        # `output_hidden_states=True` (only when fusing) exposes the output
-        # of every transformer block; tuple length = num_blocks + 1
-        # (index 0 = post-embedding pre-block; indices 1..L = block outputs).
         want_hidden_states = self.fuse_proj is not None
-        with torch.no_grad():
-            out = self.backbone(
-                pixel_values=image,
-                interpolate_pos_encoding=True,
-                output_hidden_states=want_hidden_states,
+        feat_chunks: list[Tensor] = []
+        cls_chunks: list[Tensor] = []
+        total = image.shape[0]
+        for start in range(0, total, self.ENC_CHUNK):
+            sub = image[start:start + self.ENC_CHUNK]
+            with torch.no_grad():
+                out = self.backbone(
+                    pixel_values=sub,
+                    interpolate_pos_encoding=True,
+                    output_hidden_states=want_hidden_states,
+                )
+            cls_chunks.append(out.last_hidden_state[:, 0, :])
+            if not want_hidden_states:
+                tokens = out.last_hidden_state[:, self._n_prefix_tokens:, :]
+            else:
+                parts = []
+                for norm, l in zip(self.fuse_norms, self.fuse_layers):
+                    h_l = out.hidden_states[l + 1][:, self._n_prefix_tokens:, :]
+                    parts.append(norm(h_l))
+                tokens = self.fuse_proj(torch.cat(parts, dim=-1))
+            B_sub, P, D = tokens.shape
+            if P != self.grid_size * self.grid_size:
+                raise RuntimeError(
+                    f"DINOv2 returned {P} patch tokens; expected "
+                    f"{self.grid_size * self.grid_size} for image_size={self.image_size}, "
+                    f"patch={self.patch_size}"
+                )
+            feat_chunks.append(
+                tokens.transpose(1, 2).reshape(B_sub, D, self.grid_size, self.grid_size)
             )
-        cls = out.last_hidden_state[:, 0, :]                                  # (B, D)
-        if not want_hidden_states:
-            tokens = out.last_hidden_state[:, self._n_prefix_tokens:, :]              # (B, P, D)
-        else:
-            # `out.hidden_states[block_idx + 1]` is the output of block
-            # `block_idx` (0-indexed in `fuse_layers`). LayerNorm each
-            # layer first (DPT-style); then concat along feature dim;
-            # then learnable Linear back to D.
-            chunks = []
-            for norm, l in zip(self.fuse_norms, self.fuse_layers):
-                h_l = out.hidden_states[l + 1][:, self._n_prefix_tokens:, :]          # (B, P, D)
-                chunks.append(norm(h_l))
-            tokens = self.fuse_proj(torch.cat(chunks, dim=-1))    # (B, P, D)
-        B, P, D = tokens.shape
-        if P != self.grid_size * self.grid_size:
-            raise RuntimeError(
-                f"DINOv2 returned {P} patch tokens; expected "
-                f"{self.grid_size * self.grid_size} for image_size={self.image_size}, "
-                f"patch={self.patch_size}"
-            )
-        feat = tokens.transpose(1, 2).reshape(B, D, self.grid_size, self.grid_size)
-        return feat, cls                                          # (B, D, h, w), (B, D)
+            del out, tokens
+        feat = torch.cat(feat_chunks, dim=0)                       # (B, D, h, w)
+        cls = torch.cat(cls_chunks, dim=0)                         # (B, D)
+        return feat, cls
 
     def forward(self, image: Tensor) -> list[Tensor]:
         """Single-image forward (matches PyramidEncoder.forward signature).

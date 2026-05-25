@@ -161,6 +161,12 @@ def main() -> int:
                       flush=True)
             except Exception as e:
                 print(f"[eval] {sub}/{path.stem}: FAIL {type(e).__name__}: {e}", flush=True)
+            # Long-clip evals at 896 input fragment the CUDA allocator across
+            # clips and can OOM later in the loop even when each individual
+            # clip would fit. Empty the cache between clips so the allocator
+            # gets a clean slate; cheap and reliable mitigation.
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         (metrics_root / f"{sub}.json").write_text(json.dumps(per_clip, indent=2))
         agg = aggregate(per_clip)
         summary[sub] = agg
