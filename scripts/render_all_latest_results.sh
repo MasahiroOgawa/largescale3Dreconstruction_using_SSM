@@ -102,6 +102,24 @@ else
     "${CMD_3D[@]}" --amp bf16 2>&1 | tee -a "$OUT/render.log"
 fi
 
+# Space-time diagrams (3 planar projections of (x,y,z) world coords
+# against frame index). Same clip set, same model.
+echo
+echo "[st] rendering space-time track plots (xy / yz / zx × time)"
+CMD_ST=(
+    uv run python scripts/render_space_time_tracks.py
+    --ckpt "$LATEST_CKPT"
+    --out-dir "$OUT"
+    --subsets $SUBSETS
+    --clips-per-subset "$CLIPS_PER_SUBSET"
+    --max-frames "$MAX_FRAMES"
+)
+if [ "$USE_CPU" = "1" ]; then
+    CUDA_VISIBLE_DEVICES="" "${CMD_ST[@]}" --amp fp32 2>&1 | tee -a "$OUT/render.log"
+else
+    "${CMD_ST[@]}" --amp bf16 2>&1 | tee -a "$OUT/render.log"
+fi
+
 echo
 echo "[plot] rendering training-curve + motion-ratio plots"
 uv run python scripts/plot_training_curves.py --run-dir "$RUN_DIR" 2>&1 | tee -a "$OUT/render.log"
@@ -130,6 +148,16 @@ done
 echo
 echo "3D HTML ($OUT_ABS) — open in a browser for interactive rotate/zoom:"
 for f in "$OUT"/*_3d.html; do
+    [ -f "$f" ] && echo "  $(realpath "$f")"
+done
+echo
+echo "Space-time PNGs ($OUT_ABS) — xy / yz / zx vs frame index:"
+for f in "$OUT"/*_st.png; do
+    [ -f "$f" ] && echo "  $(realpath "$f")"
+done
+echo
+echo "Space-time HTML ($OUT_ABS) — interactive 1×3 subplots:"
+for f in "$OUT"/*_st.html; do
     [ -f "$f" ] && echo "  $(realpath "$f")"
 done
 echo
