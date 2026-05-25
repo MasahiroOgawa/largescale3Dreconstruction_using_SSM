@@ -49,6 +49,11 @@ def _save_ckpt(out_dir: Path, step: int, model, optim, sched, history, cfg) -> P
     Frozen `encoder.backbone.*` weights (v14+ DINOv2 backbone) are NOT saved —
     they reload from the HuggingFace Hub via `from_pretrained` at resume.
     Keeps ckpts at ~5 MB per step instead of ~90 MB.
+
+    After the new ckpt is in place we delete every other `ckpt_*.pt` in the
+    same directory so disk usage stays at one checkpoint regardless of how
+    long the run goes (write-then-delete order means there's always at
+    least one checkpoint on disk for resume).
     """
     path = out_dir / f"ckpt_{step}.pt"
     tmp = out_dir / f"ckpt_{step}.pt.tmp"
@@ -63,6 +68,12 @@ def _save_ckpt(out_dir: Path, step: int, model, optim, sched, history, cfg) -> P
         "cfg": cfg,
     }, tmp)
     tmp.replace(path)
+    for old in out_dir.glob("ckpt_*.pt"):
+        if old != path:
+            try:
+                old.unlink()
+            except OSError:
+                pass
     return path
 
 
