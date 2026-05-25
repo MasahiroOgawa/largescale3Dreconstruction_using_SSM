@@ -1,17 +1,19 @@
-"""Render 3D point trajectories in camera space — both static PNG and
+"""Render the XY world plane vs time, in 3D — both static PNG and
 interactive HTML, one of each per clip.
 
-Each plot shows N sampled track trajectories as 3D polylines:
+Plot layout:
+  * X axis = world X (metres)
+  * Y axis = world Y (metres)
+  * Z axis = time   (seconds; FPS is per-subset, baked from the
+    TAPVid-3D paper)
+
+Tracks drawn as 3D polylines through (X, Y, t):
   * predicted track       : solid line, per-track colour
   * ground-truth track    : dashed line, same track colour, lower alpha
   * anchor frame position : marker dot
 
-Outputs per clip (written to --out-dir):
-  <subset>_<clip_id>_3d.png    matplotlib mplot3d snapshot
-  <subset>_<clip_id>_3d.html   plotly self-contained interactive
-                                 (open in any browser to rotate / zoom /
-                                  toggle tracks via legend / hover for
-                                  per-frame coords)
+For all three planar projections of the trajectory (X-Y, Y-Z, Z-X) each
+shown against time, see scripts/render_space_time_tracks.py.
 
 Same model + inference path as scripts/render_tracker_video.py.
 
@@ -40,6 +42,12 @@ import torch
 
 from mamba3_tracker.data.tapvid3d import SUBSETS, list_clips, load_clip
 from mamba3_tracker.model.tracker import Mamba3Tracker
+
+
+# Per-subset frame rate from the TAPVid-3D paper (clip-level FPS isn't
+# stored in the .npz files). Used to convert frame index → seconds on
+# the Z axis of these space-time plots.
+SUBSET_FPS = {"pstudio": 30.0, "drivetrack": 10.0, "adt": 20.0}
 
 
 def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
@@ -116,6 +124,7 @@ def _plot_clip_3d_png(
     gt_NF3:   np.ndarray,         # (N_q, F, 3) GT absolute 3D
     vis_NF:   np.ndarray,         # (N_q, F)   bool: GT visibility per (n, t)
     anchor_n: np.ndarray,         # (N_q,)     anchor frame per track
+    times_s:  np.ndarray,         # (F,)       per-frame timestamps in seconds
     out_path: Path,
     title: str,
     max_tracks: int = 32,
@@ -131,23 +140,19 @@ def _plot_clip_3d_png(
         m = vis_NF[n].astype(bool)
         if m.sum() < 2:
             continue
-        ax.plot(gt_NF3[n, m, 0], gt_NF3[n, m, 1], gt_NF3[n, m, 2],
+        ax.plot(gt_NF3[n, m, 0], gt_NF3[n, m, 1], times_s[m],
                 linestyle="--", linewidth=1.0, color=color, alpha=0.55)
-        ax.plot(pred_NF3[n, m, 0], pred_NF3[n, m, 1], pred_NF3[n, m, 2],
+        ax.plot(pred_NF3[n, m, 0], pred_NF3[n, m, 1], times_s[m],
                 linestyle="-",  linewidth=1.4, color=color, alpha=0.95)
         a = int(anchor_n[n])
         if 0 <= a < F:
-            ax.scatter(gt_NF3[n, a, 0], gt_NF3[n, a, 1], gt_NF3[n, a, 2],
+            ax.scatter([gt_NF3[n, a, 0]], [gt_NF3[n, a, 1]], [times_s[a]],
                        s=18, color=color, edgecolors="black", linewidths=0.4)
 
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
-    ax.set_zlabel("Z (m, depth)")
+    ax.set_zlabel("time (s)")
     ax.set_title(f"{title}\nsolid = predicted, dashed = GT, dot = anchor frame", fontsize=10)
-    try:
-        ax.set_box_aspect((1, 1, 1))
-    except (AttributeError, ValueError):
-        pass
     fig.tight_layout()
     fig.savefig(out_path, dpi=130)
     plt.close(fig)
@@ -158,13 +163,14 @@ def _plot_clip_3d_html(
     gt_NF3:   np.ndarray,         # (N_q, F, 3)
     vis_NF:   np.ndarray,         # (N_q, F)   bool
     anchor_n: np.ndarray,         # (N_q,)
+    times_s:  np.ndarray,         # (F,)       per-frame timestamps in seconds
     out_path: Path,
     title: str,
     max_tracks: int = 32,
 ) -> None:
     """Interactive plotly version. Open the resulting .html in a browser
-    to rotate / zoom / pan / hover individual tracks / toggle them via the
-    legend. Self-contained — no internet or plotly-server required.
+    to rotate / zoom / pan / hover individual tracks / toggle them via
+    the legend. Self-contained — no internet or plotly-server required.
     """
     N_q, F, _ = pred_NF3.shape
     sel = _pick_tracks(vis_NF, max_tracks)
@@ -181,41 +187,33 @@ def _plot_clip_3d_html(
         if m.sum() < 2:
             continue
         legend_group = f"track {n}"
-        # GT (dashed)
         traces.append(go.Scatter3d(
-            x=gt_NF3[n, m, 0], y=gt_NF3[n, m, 1], z=gt_NF3[n, m, 2],
+            x=gt_NF3[n, m, 0], y=gt_NF3[n, m, 1], z=times_s[m],
             mode="lines",
             line=dict(color=color, width=2, dash="dash"),
             opacity=0.6,
-            name=f"{legend_group} GT",
-            legendgroup=legend_group,
-            showlegend=True,
-            hovertemplate="GT track %d<br>frame %%{text}<br>(%%{x:.2f}, %%{y:.2f}, %%{z:.2f})<extra></extra>" % n,
-            text=[str(t) for t in range(F) if m[t]],
+            name=f"{legend_group} GT", legendgroup=legend_group, showlegend=True,
+            hovertemplate=("GT track %d<br>t=%%{z:.2f}s<br>"
+                           "(X=%%{x:.2f}, Y=%%{y:.2f}) m<extra></extra>" % n),
         ))
-        # Predicted (solid)
         traces.append(go.Scatter3d(
-            x=pred_NF3[n, m, 0], y=pred_NF3[n, m, 1], z=pred_NF3[n, m, 2],
+            x=pred_NF3[n, m, 0], y=pred_NF3[n, m, 1], z=times_s[m],
             mode="lines",
             line=dict(color=color, width=4),
             opacity=0.95,
-            name=f"{legend_group} pred",
-            legendgroup=legend_group,
-            showlegend=True,
-            hovertemplate="Pred track %d<br>frame %%{text}<br>(%%{x:.2f}, %%{y:.2f}, %%{z:.2f})<extra></extra>" % n,
-            text=[str(t) for t in range(F) if m[t]],
+            name=f"{legend_group} pred", legendgroup=legend_group, showlegend=True,
+            hovertemplate=("Pred track %d<br>t=%%{z:.2f}s<br>"
+                           "(X=%%{x:.2f}, Y=%%{y:.2f}) m<extra></extra>" % n),
         ))
-        # Anchor marker
         a = int(anchor_n[n])
         if 0 <= a < F:
             traces.append(go.Scatter3d(
-                x=[gt_NF3[n, a, 0]], y=[gt_NF3[n, a, 1]], z=[gt_NF3[n, a, 2]],
+                x=[gt_NF3[n, a, 0]], y=[gt_NF3[n, a, 1]], z=[times_s[a]],
                 mode="markers",
                 marker=dict(color=color, size=4, line=dict(color="black", width=0.5)),
-                name=f"{legend_group} anchor",
-                legendgroup=legend_group,
-                showlegend=False,
-                hovertemplate="Anchor track %d (frame %d)<extra></extra>" % (n, a),
+                name=f"{legend_group} anchor", legendgroup=legend_group, showlegend=False,
+                hovertemplate=("Anchor track %d (t=%.2fs)<extra></extra>"
+                               % (n, float(times_s[a]))),
             ))
     fig = go.Figure(data=traces)
     fig.update_layout(
@@ -224,8 +222,8 @@ def _plot_clip_3d_html(
         scene=dict(
             xaxis_title="X (m)",
             yaxis_title="Y (m)",
-            zaxis_title="Z (m, depth)",
-            aspectmode="data",
+            zaxis_title="time (s)",
+            aspectmode="cube",
         ),
         legend=dict(font=dict(size=9), itemsizing="constant"),
         margin=dict(l=0, r=0, b=0, t=60),
@@ -266,11 +264,14 @@ def main() -> int:
                 gt = clip.tracks_XYZ[:F].numpy().transpose(1, 0, 2)         # (N, F, 3)
                 vis = clip.visibility[:F].numpy().transpose(1, 0)            # (N, F)
                 anchor = clip.queries_xyt[:, 2].long().clamp(0, F - 1).numpy()
-                title = f"{sub}/{clip.clip_id}  (step {state.get('step', '?')})"
+                fps = SUBSET_FPS.get(sub, 30.0)
+                times_s = np.arange(F) / fps
+                title = (f"{sub}/{clip.clip_id}  (step {state.get('step', '?')}, "
+                         f"{fps:g} fps)")
                 png_path  = args.out_dir / f"{sub}_{clip.clip_id}_3d.png"
                 html_path = args.out_dir / f"{sub}_{clip.clip_id}_3d.html"
-                _plot_clip_3d_png(pred, gt, vis, anchor, png_path, title, args.max_tracks)
-                _plot_clip_3d_html(pred, gt, vis, anchor, html_path, title, args.max_tracks)
+                _plot_clip_3d_png(pred, gt, vis, anchor, times_s, png_path, title, args.max_tracks)
+                _plot_clip_3d_html(pred, gt, vis, anchor, times_s, html_path, title, args.max_tracks)
                 print(f"[3d] wrote {png_path}")
                 print(f"[3d] wrote {html_path}")
             except Exception as e:
