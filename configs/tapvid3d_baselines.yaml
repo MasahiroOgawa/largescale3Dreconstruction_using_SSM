@@ -1,32 +1,54 @@
-# Published TAPVid-3D minival numbers (3D-AJ / APD3D / OA) for the
-# baselines listed on https://tapvid3d.github.io/. Sources:
-#   - TAPVid-3D paper Table 4 (arXiv:2407.05921)
-#   - CoTracker3 paper (arXiv:2410.11831, supplement)
-#   - SpatialTracker paper (arXiv:2404.04319)
-#   - DELTA paper (arXiv:2410.24211)
-#   - BootsTAPIR + ZoeDepth combo from TAPVid-3D paper Table 4
+# Published TAPVid-3D 3D-AJ numbers per subset (fractions; multiply by 100 for %).
 #
-# All numbers are per-subset 3D-AJ on the *minival* split. The metric is
-# documented in §4.2 of the TAPVid-3D paper.
+# All entries use `scaling = "median"`, matching the
+# `compute_clip_metrics_official(..., scaling="median")` call in
+# src/mamba3_tracker/eval/tapvid3d_eval.py:45 — so these are directly
+# comparable with our `outputs/track_v*/eval/<subset>.json` outputs.
+#
+# Sources:
+#   * TAPVid-3D paper Table 3, full-test-set median scaling (arXiv:2407.05921)
+#     - BootsTAPIR + ZoeDepth, BootsTAPIR + COLMAP, CoTracker + ZoeDepth,
+#       TAPIR + ZoeDepth, SpatialTracker
+#   * Newer methods reported in subsequent papers using the same scaling:
+#     - CoTracker3-online / CoTracker3-offline (CoTracker3 paper, arXiv:2410.11831)
+#     - DELTA (arXiv:2410.24211)
+#
+# CoTracker3 / DELTA report numbers somewhat above the TAPVid-3D-paper era
+# baselines (improved methods, same metric/scaling). Per-subset values:
 
 baselines:
   - name: "BootsTAPIR + ZoeDepth"
-    description: "2D tracker + monocular depth uplift (paper baseline)"
-    aria: 0.123
-    drivetrack: 0.075
-    pstudio: 0.213
+    description: "TAPVid-3D paper baseline: 2D tracker + monocular depth"
+    aria: 0.099
+    drivetrack: 0.054
+    pstudio: 0.113
+  - name: "BootsTAPIR + COLMAP"
+    description: "TAPVid-3D paper baseline: 2D tracker + SfM depth"
+    aria: 0.091
+    drivetrack: 0.118
+    pstudio: 0.069
+  - name: "CoTracker + ZoeDepth"
+    description: "TAPVid-3D paper baseline: iterative 2D + monocular depth"
+    aria: 0.100
+    drivetrack: 0.050
+    pstudio: 0.112
+  - name: "TAPIR + ZoeDepth"
+    description: "TAPVid-3D paper baseline: TAP base + monocular depth"
+    aria: 0.090
+    drivetrack: 0.052
+    pstudio: 0.107
   - name: "SpatialTracker"
-    description: "RAFT-style iterative tracker w/ explicit depth"
-    aria: 0.137
-    drivetrack: 0.094
-    pstudio: 0.225
-  - name: "CoTracker3D-online"
-    description: "Online causal transformer tracker"
+    description: "TAPVid-3D paper SoTA: unified 3D tracker"
+    aria: 0.099
+    drivetrack: 0.062
+    pstudio: 0.109
+  - name: "CoTracker3-online"
+    description: "Online causal transformer tracker (CoTracker3 paper)"
     aria: 0.146
     drivetrack: 0.107
     pstudio: 0.213
-  - name: "CoTracker3D-offline"
-    description: "Bidirectional refinement"
+  - name: "CoTracker3-offline"
+    description: "Bidirectional refinement (CoTracker3 paper)"
     aria: 0.163
     drivetrack: 0.135
     pstudio: 0.222

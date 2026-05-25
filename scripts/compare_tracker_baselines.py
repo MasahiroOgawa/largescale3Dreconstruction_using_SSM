@@ -1,13 +1,20 @@
-"""Build a comparison table between this tracker and published baselines.
+"""Compare one or more of our tracker runs against published TAPVid-3D baselines.
 
 Reads:
-  - configs/tapvid3d_baselines.yaml — published 3D-AJ per subset for the
-    leaderboard methods.
-  - outputs/eval_tracker/<run>/summary.md  (or metric_results/*.json) — this
-    run's per-subset roll-up.
+  - configs/tapvid3d_baselines.yaml — published 3D-AJ per subset (median scaling).
+  - For each --eval-dir <path>:
+      <path>/metric_results/{pstudio,drivetrack,adt}.json   per-clip results
+      (the directory layout written by scripts/eval_mamba3_tracker.py).
 
-Writes:
-  - outputs/eval_tracker/<run>/comparison.md
+Writes (to --out-dir):
+  - comparison.md   markdown table: baselines + our runs vs subset 3D-AJ + mean
+  - comparison.png  grouped-bar chart of 3D-AJ across all methods × subsets
+
+Usage:
+  uv run python scripts/compare_tracker_baselines.py \\
+      --eval-dir outputs/eval_tracker/v14 \\
+      --eval-dir outputs/eval_tracker/v17 \\
+      --out-dir  outputs/eval_tracker/comparison_v14_v17
 """
 
 from __future__ import annotations
@@ -17,84 +24,140 @@ import json
 import sys
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 import yaml
 
 
-def _load_ours(eval_dir: Path) -> dict[str, dict[str, float]]:
-    """Return {subset: {average_jaccard, average_pts_within_thresh, occlusion_accuracy}}."""
-    out: dict[str, dict[str, float]] = {}
-    for json_path in (eval_dir / "metric_results").glob("*.json"):
-        sub = json_path.stem
-        per_clip = json.loads(json_path.read_text())
-        if not per_clip:
-            out[sub] = {}
+SUBSETS = ("pstudio", "drivetrack", "aria")
+SUBSET_ON_DISK = {"pstudio": "pstudio", "drivetrack": "drivetrack", "aria": "adt"}
+
+
+def _load_run(eval_dir: Path) -> dict[str, float | None]:
+    """Return {subset: 3D-AJ as fraction in [0, 1]} for one of our runs."""
+    out: dict[str, float | None] = {s: None for s in SUBSETS}
+    for sub in SUBSETS:
+        json_path = eval_dir / "metric_results" / f"{SUBSET_ON_DISK[sub]}.json"
+        if not json_path.exists():
             continue
-        keys = ("average_jaccard", "average_pts_within_thresh", "occlusion_accuracy")
-        agg = {}
-        for k in keys:
-            vals = [c[k] for c in per_clip if isinstance(c.get(k), (int, float))]
-            agg[k] = sum(vals) / len(vals) if vals else float("nan")
-        out[sub] = agg
+        per_clip = json.loads(json_path.read_text())
+        ajs = [c["average_jaccard"] for c in per_clip
+               if isinstance(c.get("average_jaccard"), (int, float))]
+        out[sub] = sum(ajs) / len(ajs) if ajs else None
     return out
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--eval-dir", type=Path, required=True,
-                    help="outputs/eval_tracker/<run> containing metric_results/*.json")
-    ap.add_argument("--baselines", type=Path,
-                    default=Path("configs/tapvid3d_baselines.yaml"))
-    args = ap.parse_args()
+def _mean(vals: list[float | None]) -> float | None:
+    finite = [v for v in vals if isinstance(v, (int, float))]
+    return sum(finite) / len(finite) if finite else None
 
-    cfg = yaml.safe_load(args.baselines.read_text())
-    baselines = cfg["baselines"]
-    ours = _load_ours(args.eval_dir)
 
-    rows = [
-        "# TAPVid-3D comparison\n",
-        "## 3D-AJ per subset (higher is better)\n",
-        "| method | aria | drivetrack | pstudio | mean |",
-        "|---|---|---|---|---|",
+def _fmt(v: float | None) -> str:
+    return "—" if v is None else f"{v * 100:.1f}"
+
+
+def _write_markdown(
+    baselines: list[dict], ours: list[tuple[str, dict[str, float | None]]],
+    out_path: Path,
+) -> None:
+    lines = [
+        "# TAPVid-3D 3D-AJ comparison (median scaling, %)",
+        "",
+        "Per-clip mean 3D Average Jaccard × 100. Subsets are the TAPVid-3D",
+        "test splits. Baselines from configs/tapvid3d_baselines.yaml.",
+        "",
+        "| method | pstudio | drivetrack | aria (adt) | mean |",
+        "|---|---:|---:|---:|---:|",
     ]
     for b in baselines:
-        vals = [b.get(s, float("nan")) for s in ("aria", "drivetrack", "pstudio")]
-        finite = [v for v in vals if isinstance(v, (int, float))]
-        mean = sum(finite) / len(finite) if finite else float("nan")
-        rows.append(
-            f"| {b['name']} | {b.get('aria', float('nan')):.3f} | "
-            f"{b.get('drivetrack', float('nan')):.3f} | "
-            f"{b.get('pstudio', float('nan')):.3f} | {mean:.3f} |"
+        vals = [b.get(s) for s in SUBSETS]
+        lines.append(
+            f"| {b['name']} | {_fmt(vals[0])} | {_fmt(vals[1])} | "
+            f"{_fmt(vals[2])} | {_fmt(_mean(vals))} |"
         )
+    for label, m in ours:
+        vals = [m.get(s) for s in SUBSETS]
+        lines.append(
+            f"| **{label}** | **{_fmt(vals[0])}** | **{_fmt(vals[1])}** | "
+            f"**{_fmt(vals[2])}** | **{_fmt(_mean(vals))}** |"
+        )
+    out_path.write_text("\n".join(lines) + "\n")
+    print(f"[compare] wrote {out_path}")
 
-    # Ours
-    aria = ours.get("adt", {}).get("average_jaccard", float("nan"))
-    drv = ours.get("drivetrack", {}).get("average_jaccard", float("nan"))
-    pst = ours.get("pstudio", {}).get("average_jaccard", float("nan"))
-    finite_ours = [v for v in (aria, drv, pst) if isinstance(v, (int, float)) and v == v]
-    mean_ours = sum(finite_ours) / len(finite_ours) if finite_ours else float("nan")
-    rows.append(
-        f"| **Mamba-3 tracker (this run)** | **{aria:.3f}** | **{drv:.3f}** | "
-        f"**{pst:.3f}** | **{mean_ours:.3f}** |"
+
+def _plot(
+    baselines: list[dict], ours: list[tuple[str, dict[str, float | None]]],
+    out_path: Path,
+) -> None:
+    methods = [(b["name"], {s: b.get(s) for s in SUBSETS}, "baseline") for b in baselines]
+    methods.extend((label, m, "ours") for label, m in ours)
+
+    x_labels = ["pstudio", "drivetrack", "aria", "mean"]
+    n_methods = len(methods)
+    n_groups = len(x_labels)
+    width = 0.8 / n_methods
+    fig, ax = plt.subplots(figsize=(max(10, 1.2 * n_methods + 4), 5.5))
+    x = np.arange(n_groups)
+    for i, (name, m, kind) in enumerate(methods):
+        vals = [m.get(s) for s in SUBSETS] + [_mean([m.get(s) for s in SUBSETS])]
+        ys = [0 if v is None else v * 100 for v in vals]
+        color = "#d62728" if kind == "ours" else None
+        alpha = 1.0 if kind == "ours" else 0.85
+        bars = ax.bar(
+            x + i * width - 0.4 + width / 2, ys, width, label=name,
+            color=color, alpha=alpha,
+            edgecolor="black" if kind == "ours" else "none", linewidth=0.6,
+        )
+        for bar, v in zip(bars, vals):
+            if v is not None:
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2,
+                        f"{v * 100:.1f}", ha="center", va="bottom", fontsize=7)
+    ax.set_xticks(x)
+    ax.set_xticklabels(x_labels)
+    ax.set_ylabel("3D-AJ (%)")
+    ax.set_title("TAPVid-3D 3D-AJ — published baselines vs our runs")
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(fontsize=7, ncol=2, loc="upper right")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+    print(f"[compare] wrote {out_path}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--eval-dir", type=Path, action="append", default=[],
+        help="Path to outputs/eval_tracker/<run>/. May be repeated.",
     )
+    ap.add_argument(
+        "--baselines", type=Path,
+        default=Path("configs/tapvid3d_baselines.yaml"),
+    )
+    ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument(
+        "--label", action="append", default=None,
+        help="Display label per --eval-dir (in order). "
+             "Default: parent directory name.",
+    )
+    args = ap.parse_args()
 
-    rows.append("\n## Per-subset detail of this run\n")
-    rows.append("| subset | 3D-AJ | APD3D | OA |")
-    rows.append("|---|---|---|---|")
-    for sub in ("adt", "drivetrack", "pstudio"):
-        m = ours.get(sub, {})
-        rows.append(
-            f"| {sub} | {m.get('average_jaccard', float('nan')):.4f} | "
-            f"{m.get('average_pts_within_thresh', float('nan')):.4f} | "
-            f"{m.get('occlusion_accuracy', float('nan')):.4f} |"
-        )
+    if not args.eval_dir:
+        ap.error("at least one --eval-dir is required")
+    if args.label is not None and len(args.label) != len(args.eval_dir):
+        ap.error("--label count must match --eval-dir count")
 
-    rows.append("")
-    rows.append("Baseline numbers from configs/tapvid3d_baselines.yaml "
-                "(TAPVid-3D paper + each method's released numbers).")
+    baselines = yaml.safe_load(args.baselines.read_text())["baselines"]
+    ours: list[tuple[str, dict[str, float | None]]] = []
+    for i, ed in enumerate(args.eval_dir):
+        label = args.label[i] if args.label else ed.name
+        ours.append((label, _load_run(ed)))
 
-    out = args.eval_dir / "comparison.md"
-    out.write_text("\n".join(rows) + "\n")
-    print(f"[compare] wrote {out}")
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    _write_markdown(baselines, ours, args.out_dir / "comparison.md")
+    _plot(baselines, ours, args.out_dir / "comparison.png")
     return 0
 
 
