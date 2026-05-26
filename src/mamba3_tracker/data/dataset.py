@@ -396,3 +396,45 @@ def default_train_val(
     configs/checkpoints. v12+ configs explicitly call `minival_split`.
     """
     return split_clips(list_clips(data_root, subsets), val_frac=val_frac, seed=seed)
+
+
+def official_train_test_split(
+    data_root: str | Path = "~/data",
+    subsets: Iterable[str] = SUBSETS,
+) -> tuple[list[Path], list[Path]]:
+    """v19+ split following the official TAPVid-3D protocol (option A1).
+
+    TAPVid-3D ships two named splits — MINIVAL_FILES (150 dev clips) and
+    FULL_EVAL_FILES (4419 eval clips). They are DISJOINT (verified via
+    the vendored splits file). The benchmark is officially eval-only, so
+    published baselines train on external data (Kubric etc.). Lacking
+    external data, we treat:
+
+        train_clips  ←  FULL_EVAL_FILES   (4419 clips: 1906 adt + 2407 drivetrack + 106 pstudio)
+        test_clips   ←  MINIVAL_FILES     ( 150 clips: 50 each)
+
+    No leakage between train and test — they're disjoint by construction.
+    Our reported numbers compare to the TAPVid-3D paper's Table 4 (minival)
+    baseline column.
+
+    `data_root` should point at `~/data` (default); the function appends
+    `/tapvid3d/<subset>/` internally. Files not present on disk are silently
+    skipped (no error) — useful for incremental downloads. The caller can
+    check `len(train_clips)` against the expected totals to detect partial
+    downloads.
+
+    Returns:
+        (train_clips, test_clips) — sorted lists of .npz paths.
+    """
+    from .tapvid3d_splits import FULL_EVAL_FILES, MINIVAL_FILES
+    root = Path(data_root).expanduser()
+    if root.name != "tapvid3d":
+        root = root / "tapvid3d"
+    train: list[Path] = []
+    test: list[Path] = []
+    for sub in subsets:
+        if sub not in FULL_EVAL_FILES or sub not in MINIVAL_FILES:
+            raise ValueError(f"Subset {sub!r} not in official TAPVid-3D splits")
+        train += sorted(p for p in (root / sub / n for n in FULL_EVAL_FILES[sub]) if p.exists())
+        test  += sorted(p for p in (root / sub / n for n in MINIVAL_FILES[sub])   if p.exists())
+    return train, test
