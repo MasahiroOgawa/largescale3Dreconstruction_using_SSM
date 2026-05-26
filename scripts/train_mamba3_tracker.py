@@ -16,6 +16,7 @@ Smoke run (override knobs via CLI on top of the config):
 from __future__ import annotations
 
 import argparse
+import random
 import json
 import sys
 import time
@@ -31,6 +32,7 @@ from torch.utils.data import DataLoader
 
 from mamba3_tracker.data.dataset import (
     TAPVid3DDataset, collate_tracking, default_train_val, minival_split,
+    official_train_test_split,
 )
 from mamba3_tracker.data.tapvid3d import load_clip
 from mamba3_tracker.model.tracker import Mamba3Tracker
@@ -326,8 +328,24 @@ def main() -> int:
         print(f"[train] split=legacy(random 90/10)   "
               f"{len(train_clips)} train / {len(val_clips)} val  "
               f"(subsets={data_cfg['subsets']})")
+    elif source == "official":
+        # v19+ TAPVid-3D protocol "A1": train on FULL_EVAL_FILES (4419 clips,
+        # disjoint from MINIVAL), test on MINIVAL_FILES (150 clips).
+        # In-training "val" rows are computed on a small random sample of
+        # train clips (15 by default) — never peeks at the held-out test set.
+        train_clips, test_clips = official_train_test_split(
+            args.data_root, subsets=data_cfg["subsets"],
+        )
+        n_val_monitor = int(split_cfg.get("n_val_monitor", 15))
+        rng = random.Random(int(split_cfg.get("seed", 42)))
+        val_clips = rng.sample(train_clips, min(n_val_monitor, len(train_clips)))
+        print(f"[train] split=official(A1)   "
+              f"{len(train_clips)} train (FULL_EVAL) / "
+              f"{n_val_monitor} val-monitor (sampled from train) / "
+              f"{len(test_clips)} test (MINIVAL, held out)  "
+              f"(subsets={data_cfg['subsets']})")
     else:
-        raise ValueError(f"data.split.source = {source!r} not in {{minival, legacy}}")
+        raise ValueError(f"data.split.source = {source!r} not in {{minival, legacy, official}}")
     print(f"[train] data root: {args.data_root}")
 
     train_ds = TAPVid3DDataset(train_clips, window_size=int(train_cfg["window"]),

@@ -1,59 +1,46 @@
-# Published TAPVid-3D 3D-AJ numbers per subset (fractions; multiply by 100 for %).
+# Published TAPVid-3D baselines on the MINIVAL split (150 clips: 50 per subset).
 #
 # All entries use `scaling = "median"`, matching the
 # `compute_clip_metrics_official(..., scaling="median")` call in
-# src/mamba3_tracker/eval/tapvid3d_eval.py:45 — so these are directly
-# comparable with our `outputs/track_v*/eval/<subset>.json` outputs.
+# src/mamba3_tracker/eval/tapvid3d_eval.py:45 — direct apples-to-apples
+# with our `outputs/eval_tracker/v*/metric_results/<subset>.json` outputs
+# when the eval set is MINIVAL.
 #
-# Sources:
-#   * TAPVid-3D paper Table 3, full-test-set median scaling (arXiv:2407.05921)
-#     - BootsTAPIR + ZoeDepth, BootsTAPIR + COLMAP, CoTracker + ZoeDepth,
-#       TAPIR + ZoeDepth, SpatialTracker
-#   * Newer methods reported in subsequent papers using the same scaling:
-#     - CoTracker3-online / CoTracker3-offline (CoTracker3 paper, arXiv:2410.11831)
-#     - DELTA (arXiv:2410.24211)
+# Why minival and not full_eval:
+#   Our v19+ training uses the OFFICIAL TAPVid-3D protocol "A1" — train on
+#   FULL_EVAL_FILES (4419 clips, disjoint from minival), test on
+#   MINIVAL_FILES (150 clips). The full-eval test set would overlap with our
+#   training data, so the only zero-leakage test set is minival.
 #
-# CoTracker3 / DELTA report numbers somewhat above the TAPVid-3D-paper era
-# baselines (improved methods, same metric/scaling). Per-subset values:
+# Source: TAPVid-3D paper (arXiv:2407.05921 / NeurIPS 2024), Table 3
+# minival column (the entries marked with "*"). Fractions; ×100 = %.
+#
+# Per-subset minival values from the paper:
+#   BootsTAPIR + ZoeDepth*   aria  8.6   drivetrack  5.1   pstudio 10.2
+#   BootsTAPIR + COLMAP*     aria  7.3   drivetrack  9.3   pstudio  6.2
+#   SpatialTracker*          aria  9.2   drivetrack  5.8   pstudio  9.8
+#
+# Newer methods (CoTracker3, DELTA, TAPIP3D, SpatialTrackerV2) published
+# *only* full-eval numbers (Table 3 unstarred), not minival. They are
+# omitted from this file — putting their full-eval numbers next to our
+# minival numbers would be apples-to-oranges. If you want a rough
+# directional reference, the published full-eval AJ for the strongest is
+# DELTA = 18.3 mean, CoTracker3-offline = 17.3 mean, vs the older
+# baselines below at ~8 mean.
 
 baselines:
-  - name: "BootsTAPIR + ZoeDepth"
-    description: "TAPVid-3D paper baseline: 2D tracker + monocular depth"
-    aria: 0.099
-    drivetrack: 0.054
-    pstudio: 0.113
-  - name: "BootsTAPIR + COLMAP"
-    description: "TAPVid-3D paper baseline: 2D tracker + SfM depth"
-    aria: 0.091
-    drivetrack: 0.118
-    pstudio: 0.069
-  - name: "CoTracker + ZoeDepth"
-    description: "TAPVid-3D paper baseline: iterative 2D + monocular depth"
-    aria: 0.100
-    drivetrack: 0.050
-    pstudio: 0.112
-  - name: "TAPIR + ZoeDepth"
-    description: "TAPVid-3D paper baseline: TAP base + monocular depth"
-    aria: 0.090
-    drivetrack: 0.052
-    pstudio: 0.107
-  - name: "SpatialTracker"
-    description: "TAPVid-3D paper SoTA: unified 3D tracker"
-    aria: 0.099
-    drivetrack: 0.062
-    pstudio: 0.109
-  - name: "CoTracker3-online"
-    description: "Online causal transformer tracker (CoTracker3 paper)"
-    aria: 0.146
-    drivetrack: 0.107
-    pstudio: 0.213
-  - name: "CoTracker3-offline"
-    description: "Bidirectional refinement (CoTracker3 paper)"
-    aria: 0.163
-    drivetrack: 0.135
-    pstudio: 0.222
-  - name: "DELTA"
-    description: "Dense 3D tracker w/ flow + depth co-training"
-    aria: 0.176
-    drivetrack: 0.130
-    pstudio: 0.244
+  - name: "BootsTAPIR + ZoeDepth*"
+    description: "2D TAP base + monocular depth uplift (paper Table 3 minival)"
+    aria: 0.086
+    drivetrack: 0.051
+    pstudio: 0.102
+  - name: "BootsTAPIR + COLMAP*"
+    description: "2D TAP base + Structure-from-Motion depth (paper Table 3 minival)"
+    aria: 0.073
+    drivetrack: 0.093
+    pstudio: 0.062
+  - name: "SpatialTracker*"
+    description: "Unified 3D tracker (paper Table 3 minival, original SoTA)"
+    aria: 0.092
+    drivetrack: 0.058
+    pstudio: 0.098
