@@ -1,29 +1,39 @@
 #!/usr/bin/env bash
-# Render all "latest" results for a tracker training run in one shot:
-#   * tracking MP4s from a checkpoint (per subset/clip), and
-#   * training/validation loss curves + motion-ratio plots from the run's history.
+# Produce ALL results for a tracker run in one shot — eval + every visualisation:
+#   1. TAPVid-3D metric eval (3D-AJ / APD / OA) on the chosen split
+#   2. baseline comparison table + bar chart vs configs/tapvid3d_baselines.yaml
+#   3. per-clip tracking MP4s
+#   4. per-clip 3D xyz-space trajectory plots (PNG + interactive HTML)
+#   5. per-clip space-time xyt/yzt/zxt plots (PNG + interactive HTML)
+#   6. training/validation loss curves + motion-ratio plot
 #
-# MP4s go in <run_dir>/viz_step<N>/, plots go in <run_dir>/plots/
-# (see memory/feedback_output_dir_naming.md — datetime only at run-dir level).
+# Layout (see memory/feedback_output_dir_naming.md — datetime only at run-dir level):
+#   <run_dir>/eval/metric_results/<subset>.json   per-clip metrics
+#   <run_dir>/eval/summary.md                      per-subset roll-up
+#   <run_dir>/eval/comparison.{png,md}             vs published baselines
+#   <run_dir>/viz_step<N>/*.mp4                     tracking videos
+#   <run_dir>/viz_step<N>/*_3d.{png,html}           xyz spatial plots
+#   <run_dir>/viz_step<N>/*_st.{png,html}           space-time plots
+#   <run_dir>/plots/{training_curve,motion_ratio}.png
 #
 # Usage:
 #   scripts/render_all_latest_results.sh                                 # latest run dir, latest ckpt
-#   scripts/render_all_latest_results.sh outputs/track_v17_<dt>          # specific run dir, latest ckpt
-#   scripts/render_all_latest_results.sh outputs/track_v17_<dt>/ckpt_5000.pt   # specific ckpt
-#   USE_CPU=0 scripts/render_all_latest_results.sh             # use GPU (only when training not running)
-#   CLIPS_PER_SUBSET=4 scripts/render_all_latest_results.sh    # more clips
-#   MAX_FRAMES=64 scripts/render_all_latest_results.sh         # longer windows
+#   scripts/render_all_latest_results.sh outputs/track_v19_<dt>          # specific run dir
+#   scripts/render_all_latest_results.sh outputs/track_v19_<dt>/ckpt_5000.pt   # specific ckpt
+#
+# Env vars (all optional):
+#   SPLIT=minival          which TAPVid-3D split to eval+visualise (default minival;
+#                          use the held-out test set for v19+ official-protocol runs)
+#   USE_CPU=0              run on GPU (default 1 = CPU, safe during training)
+#   RUN_EVAL=0            skip the metric eval + comparison, viz only (default 1)
+#   SUBSETS="pstudio drivetrack adt"   subsets to process (default all three)
+#   CLIPS_PER_SUBSET=3    clips per subset for the per-clip visualisations
+#   MAX_FRAMES=48         frame cap per clip for the visualisations
 #
 # Argument resolution:
 #   no arg                 -> ls -td outputs/track_v*_*/ | head -1 ; latest ckpt
 #   path is a directory    -> that dir's latest ckpt
 #   path is a .pt file     -> that exact ckpt
-#
-# Outputs:
-#   <run_dir>/viz_step<N>/*.mp4         per-clip rendered tracking videos
-#   <run_dir>/viz_step<N>/render.log    stdout/stderr of this run
-#   <run_dir>/plots/training_curve.png  per-term train+val loss curves
-#   <run_dir>/plots/motion_ratio.png    per-subset motion ratio vs step
 
 set -euo pipefail
 
@@ -58,74 +68,65 @@ mkdir -p "$OUT"
 LATEST_CKPT="$CKPT"
 
 USE_CPU="${USE_CPU:-1}"
-CLIPS_PER_SUBSET="${CLIPS_PER_SUBSET:-2}"
-MAX_FRAMES="${MAX_FRAMES:-32}"
-SUBSETS="${SUBSETS:-pstudio drivetrack}"
-SPLIT="${SPLIT:-all}"          # all | minival | full_eval — for eval-time viz use minival
+RUN_EVAL="${RUN_EVAL:-1}"
+CLIPS_PER_SUBSET="${CLIPS_PER_SUBSET:-3}"
+MAX_FRAMES="${MAX_FRAMES:-48}"
+SUBSETS="${SUBSETS:-pstudio drivetrack adt}"
+SPLIT="${SPLIT:-minival}"      # all | minival | full_eval — minival = held-out test set for v19+
+AMP=$([ "$USE_CPU" = "1" ] && echo fp32 || echo bf16)
+CUDA_PREFIX=$([ "$USE_CPU" = "1" ] && echo "CUDA_VISIBLE_DEVICES=" || echo "")
+EVAL_DIR="${RUN_DIR}/eval"
 
 echo "run    : $RUN_DIR"
 echo "ckpt   : $LATEST_CKPT (step $STEP)"
 echo "output : $OUT"
 echo "device : $([ "$USE_CPU" = "1" ] && echo CPU || echo GPU)"
-echo "subsets: $SUBSETS  | clips/subset: $CLIPS_PER_SUBSET  | max-frames: $MAX_FRAMES  | split: $SPLIT"
+echo "subsets: $SUBSETS  | clips/subset: $CLIPS_PER_SUBSET  | max-frames: $MAX_FRAMES  | split: $SPLIT  | run_eval: $RUN_EVAL"
 echo
 
-CMD=(
-    uv run python scripts/render_tracker_video.py
-    --ckpt "$LATEST_CKPT"
-    --out-dir "$OUT"
-    --subsets $SUBSETS
-    --clips-per-subset "$CLIPS_PER_SUBSET"
-    --max-frames "$MAX_FRAMES"
-    --split "$SPLIT"
-    --fps 15
-)
-if [ "$USE_CPU" = "1" ]; then
-    CUDA_VISIBLE_DEVICES="" "${CMD[@]}" --amp fp32 2>&1 | tee "$OUT/render.log"
-else
-    "${CMD[@]}" --amp bf16 2>&1 | tee "$OUT/render.log"
+# ---- Step 1+2: metric eval + baseline comparison ----------------------------
+if [ "$RUN_EVAL" = "1" ]; then
+    echo "[eval] TAPVid-3D metrics on split=$SPLIT → $EVAL_DIR"
+    mkdir -p "$EVAL_DIR"
+    env ${CUDA_PREFIX} PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
+        uv run python scripts/eval_mamba3_tracker.py \
+        --ckpt "$LATEST_CKPT" --out-dir "$EVAL_DIR" \
+        --subsets $SUBSETS --split "$SPLIT" --amp "$AMP" \
+        2>&1 | tee "$EVAL_DIR/eval.log" || echo "[eval] WARNING: eval exited non-zero (often just labels-only clips)"
+    echo
+    echo "[compare] vs published baselines → $EVAL_DIR/comparison.{png,md}"
+    uv run python scripts/compare_tracker_baselines.py \
+        --eval-dir "$EVAL_DIR" --label "$(basename "$RUN_DIR") (step $STEP)" \
+        --out-dir "$EVAL_DIR" 2>&1 | tee -a "$EVAL_DIR/eval.log" || echo "[compare] WARNING: comparison failed"
+    echo
 fi
 
-# 3D-space trajectory plots (PNG, one per clip). Same model + clip set
-# as the 2D MP4 step above; uses matplotlib mplot3d so no extra deps.
-echo
-echo "[3d] rendering 3D-space track plots"
-CMD_3D=(
-    uv run python scripts/render_3d_tracks.py
-    --ckpt "$LATEST_CKPT"
-    --out-dir "$OUT"
-    --subsets $SUBSETS
-    --clips-per-subset "$CLIPS_PER_SUBSET"
-    --max-frames "$MAX_FRAMES"
-    --split "$SPLIT"
-)
-if [ "$USE_CPU" = "1" ]; then
-    CUDA_VISIBLE_DEVICES="" "${CMD_3D[@]}" --amp fp32 2>&1 | tee -a "$OUT/render.log"
-else
-    "${CMD_3D[@]}" --amp bf16 2>&1 | tee -a "$OUT/render.log"
-fi
+# ---- Step 3: per-clip tracking MP4s -----------------------------------------
+echo "[viz] tracking MP4s → $OUT"
+env ${CUDA_PREFIX} uv run python scripts/render_tracker_video.py \
+    --ckpt "$LATEST_CKPT" --out-dir "$OUT" --subsets $SUBSETS \
+    --clips-per-subset "$CLIPS_PER_SUBSET" --max-frames "$MAX_FRAMES" \
+    --split "$SPLIT" --fps 15 --amp "$AMP" 2>&1 | tee "$OUT/render.log"
 
-# Space-time diagrams (3 planar projections of (x,y,z) world coords
-# against frame index). Same clip set, same model.
+# ---- Step 4: per-clip 3D xyz-space trajectory plots -------------------------
 echo
-echo "[st] rendering space-time track plots (xy / yz / zx × time)"
-CMD_ST=(
-    uv run python scripts/render_space_time_tracks.py
-    --ckpt "$LATEST_CKPT"
-    --out-dir "$OUT"
-    --subsets $SUBSETS
-    --clips-per-subset "$CLIPS_PER_SUBSET"
-    --max-frames "$MAX_FRAMES"
-    --split "$SPLIT"
-)
-if [ "$USE_CPU" = "1" ]; then
-    CUDA_VISIBLE_DEVICES="" "${CMD_ST[@]}" --amp fp32 2>&1 | tee -a "$OUT/render.log"
-else
-    "${CMD_ST[@]}" --amp bf16 2>&1 | tee -a "$OUT/render.log"
-fi
+echo "[3d] 3D-space track plots (xyz)"
+env ${CUDA_PREFIX} uv run python scripts/render_3d_tracks.py \
+    --ckpt "$LATEST_CKPT" --out-dir "$OUT" --subsets $SUBSETS \
+    --clips-per-subset "$CLIPS_PER_SUBSET" --max-frames "$MAX_FRAMES" \
+    --split "$SPLIT" --amp "$AMP" 2>&1 | tee -a "$OUT/render.log"
 
+# ---- Step 5: per-clip space-time plots (xyt / yzt / zxt) --------------------
 echo
-echo "[plot] rendering training-curve + motion-ratio plots"
+echo "[st] space-time track plots (xy / yz / zx × time)"
+env ${CUDA_PREFIX} uv run python scripts/render_space_time_tracks.py \
+    --ckpt "$LATEST_CKPT" --out-dir "$OUT" --subsets $SUBSETS \
+    --clips-per-subset "$CLIPS_PER_SUBSET" --max-frames "$MAX_FRAMES" \
+    --split "$SPLIT" --amp "$AMP" 2>&1 | tee -a "$OUT/render.log"
+
+# ---- Step 6: training/val loss curves + motion-ratio ------------------------
+echo
+echo "[plot] training-curve + motion-ratio plots"
 uv run python scripts/plot_training_curves.py --run-dir "$RUN_DIR" 2>&1 | tee -a "$OUT/render.log"
 
 # Final summary — absolute paths so users can copy-paste and find them
@@ -139,6 +140,16 @@ echo "================================================================"
 echo "DONE — outputs for step $STEP"
 echo "================================================================"
 echo "run dir : $RUN_ABS"
+if [ "$RUN_EVAL" = "1" ] && [ -f "$EVAL_DIR/comparison.md" ]; then
+    echo
+    echo "eval + comparison ($(realpath "$EVAL_DIR")):"
+    echo "  $(realpath "$EVAL_DIR")/comparison.md      (table vs baselines)"
+    echo "  $(realpath "$EVAL_DIR")/comparison.png     (bar chart)"
+    echo "  $(realpath "$EVAL_DIR")/metric_results/*.json"
+    echo
+    echo "  --- comparison table ---"
+    sed 's/^/  /' "$EVAL_DIR/comparison.md"
+fi
 echo
 echo "MP4s    ($OUT_ABS):"
 for f in "$OUT"/*.mp4; do
