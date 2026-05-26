@@ -114,6 +114,11 @@ def main() -> int:
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--data-root", type=Path, default=Path("~/data"))
     ap.add_argument("--subsets", nargs="+", default=list(SUBSETS))
+    ap.add_argument("--split", choices=["all", "minival", "full_eval"], default="all",
+                    help="all = every .npz under <data_root>/tapvid3d/<subset>/ (default); "
+                         "minival = restrict to the 50-per-subset MINIVAL_FILES held-out set "
+                         "(use this when comparing to paper Table 3 minival baselines); "
+                         "full_eval = restrict to FULL_EVAL_FILES.")
     ap.add_argument("--max-clips-per-subset", type=int, default=0,
                     help="0 = all clips.")
     ap.add_argument("--max-frames", type=int, default=0,
@@ -130,9 +135,22 @@ def main() -> int:
     model = _build_model(state, device)
     print(f"[eval] loaded {args.ckpt} (step={state.get('step', '?')})")
 
+    # Resolve the named split into a per-subset allow-list of filenames.
+    allow: dict[str, set[str] | None] = {}
+    if args.split == "minival":
+        from mamba3_tracker.data.tapvid3d_splits import MINIVAL_FILES
+        allow = {s: set(MINIVAL_FILES.get(s, [])) for s in args.subsets}
+    elif args.split == "full_eval":
+        from mamba3_tracker.data.tapvid3d_splits import FULL_EVAL_FILES
+        allow = {s: set(FULL_EVAL_FILES.get(s, [])) for s in args.subsets}
+    else:
+        allow = {s: None for s in args.subsets}
+
     per_subset_clips: dict[str, list] = defaultdict(list)
     for sub in args.subsets:
         clips = list_clips(args.data_root, [sub])
+        if allow[sub] is not None:
+            clips = [p for p in clips if p.name in allow[sub]]
         if args.max_clips_per_subset:
             clips = clips[: args.max_clips_per_subset]
         per_subset_clips[sub] = clips
