@@ -61,12 +61,13 @@ USE_CPU="${USE_CPU:-1}"
 CLIPS_PER_SUBSET="${CLIPS_PER_SUBSET:-2}"
 MAX_FRAMES="${MAX_FRAMES:-32}"
 SUBSETS="${SUBSETS:-pstudio drivetrack}"
+SPLIT="${SPLIT:-all}"          # all | minival | full_eval — for eval-time viz use minival
 
 echo "run    : $RUN_DIR"
 echo "ckpt   : $LATEST_CKPT (step $STEP)"
 echo "output : $OUT"
 echo "device : $([ "$USE_CPU" = "1" ] && echo CPU || echo GPU)"
-echo "subsets: $SUBSETS  | clips/subset: $CLIPS_PER_SUBSET  | max-frames: $MAX_FRAMES"
+echo "subsets: $SUBSETS  | clips/subset: $CLIPS_PER_SUBSET  | max-frames: $MAX_FRAMES  | split: $SPLIT"
 echo
 
 CMD=(
@@ -76,6 +77,7 @@ CMD=(
     --subsets $SUBSETS
     --clips-per-subset "$CLIPS_PER_SUBSET"
     --max-frames "$MAX_FRAMES"
+    --split "$SPLIT"
     --fps 15
 )
 if [ "$USE_CPU" = "1" ]; then
@@ -95,6 +97,7 @@ CMD_3D=(
     --subsets $SUBSETS
     --clips-per-subset "$CLIPS_PER_SUBSET"
     --max-frames "$MAX_FRAMES"
+    --split "$SPLIT"
 )
 if [ "$USE_CPU" = "1" ]; then
     CUDA_VISIBLE_DEVICES="" "${CMD_3D[@]}" --amp fp32 2>&1 | tee -a "$OUT/render.log"
@@ -113,6 +116,7 @@ CMD_ST=(
     --subsets $SUBSETS
     --clips-per-subset "$CLIPS_PER_SUBSET"
     --max-frames "$MAX_FRAMES"
+    --split "$SPLIT"
 )
 if [ "$USE_CPU" = "1" ]; then
     CUDA_VISIBLE_DEVICES="" "${CMD_ST[@]}" --amp fp32 2>&1 | tee -a "$OUT/render.log"

@@ -40,6 +40,7 @@ import numpy as np
 import plotly.graph_objects as go
 import torch
 
+from mamba3_tracker.data.dataset import filter_to_split
 from mamba3_tracker.data.tapvid3d import SUBSETS, list_clips, load_clip
 from mamba3_tracker.model.tracker import Mamba3Tracker
 
@@ -232,6 +233,8 @@ def main() -> int:
     ap.add_argument("--data-root", type=Path, default=Path("~/data"))
     ap.add_argument("--subsets", nargs="+", default=list(SUBSETS))
     ap.add_argument("--clips-per-subset", type=int, default=2)
+    ap.add_argument("--split", choices=["all", "minival", "full_eval"], default="all",
+                    help="Restrict source clips to a named TAPVid-3D split.")
     ap.add_argument("--max-frames", type=int, default=0)
     ap.add_argument("--max-tracks", type=int, default=32)
     ap.add_argument("--amp", choices=["bf16", "fp32"], default="bf16")
@@ -247,7 +250,7 @@ def main() -> int:
     print(f"[3d] loaded {args.ckpt} (step={state.get('step', '?')})")
 
     for sub in args.subsets:
-        clips = list_clips(args.data_root, [sub])[: args.clips_per_subset]
+        clips = filter_to_split(list_clips(args.data_root, [sub]), args.split)[: args.clips_per_subset]
         print(f"[3d] {sub}: rendering {len(clips)} clips")
         for path in clips:
             try:

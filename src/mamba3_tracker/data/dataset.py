@@ -398,6 +398,26 @@ def default_train_val(
     return split_clips(list_clips(data_root, subsets), val_frac=val_frac, seed=seed)
 
 
+def filter_to_split(clips: list[Path], split: str) -> list[Path]:
+    """Filter a clip-path list to a named TAPVid-3D split.
+
+    split = "all"       → unchanged
+    split = "minival"   → keep only files in MINIVAL_FILES (150 clips)
+    split = "full_eval" → keep only files in FULL_EVAL_FILES (4419 clips)
+
+    Clip filenames are unique across subsets (pstudio=basketball_*, drivetrack=
+    tapvid3d_*, adt=Apartment_*/Lite_*), so a single flattened name-set suffices.
+    """
+    if split == "all":
+        return clips
+    from .tapvid3d_splits import FULL_EVAL_FILES, MINIVAL_FILES
+    table = MINIVAL_FILES if split == "minival" else FULL_EVAL_FILES
+    allow: set[str] = set()
+    for names in table.values():
+        allow.update(names)
+    return [p for p in clips if p.name in allow]
+
+
 def official_train_test_split(
     data_root: str | Path = "~/data",
     subsets: Iterable[str] = SUBSETS,
