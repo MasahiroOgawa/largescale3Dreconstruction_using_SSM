@@ -94,6 +94,20 @@ def peek_clip_F(path: str | Path) -> int:
         return int(d["images_jpeg_bytes"].shape[0])
 
 
+def has_images(path: str | Path) -> bool:
+    """True if the .npz contains image bytes (False for labels-only clips).
+
+    Reads only the zip directory (cheap, no decompression). Many TAPVid-3D
+    ADT clips ship labels-only on the HF mirror — they can be scored against
+    GT but not rendered/encoded, so renderers should skip them.
+    """
+    try:
+        with np.load(path, allow_pickle=True) as d:
+            return "images_jpeg_bytes" in d.files
+    except Exception:
+        return False
+
+
 def load_clip(
     path: str | Path,
     frames: tuple[int, int] | None = None,

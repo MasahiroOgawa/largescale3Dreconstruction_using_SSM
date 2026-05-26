@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from mamba3_tracker.data.dataset import filter_to_split
-from mamba3_tracker.data.tapvid3d import SUBSETS, list_clips, load_clip
+from mamba3_tracker.data.tapvid3d import SUBSETS, has_images, list_clips, load_clip
 from mamba3_tracker.model.tracker import Mamba3Tracker
 from mamba3_tracker.viz.track_video import render_tracking_video
 
@@ -117,7 +117,8 @@ def main() -> int:
     print(f"[viz] loaded {args.ckpt} (step={state.get('step', '?')})")
 
     for sub in args.subsets:
-        clips = filter_to_split(list_clips(args.data_root, [sub]), args.split)[: args.clips_per_subset]
+        clips = [p for p in filter_to_split(list_clips(args.data_root, [sub]), args.split)
+                 if has_images(p)][: args.clips_per_subset]
         print(f"[viz] {sub}: rendering {len(clips)} clips")
         for path in clips:
             try:
