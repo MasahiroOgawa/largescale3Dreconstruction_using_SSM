@@ -48,6 +48,7 @@ class Mamba3Tracker(nn.Module):
         dinov2_image_size: int = 448,
         dinov2_fuse_layers: list[int] | None = None,  # v16+: e.g. [2, 5, 8, 11]
         predict_scale: bool = False,           # v18+: emit per-clip scalar `s`
+        scale_param: str = "softplus",         # v20+: "exp" for log-scale parameterisation
     ) -> None:
         super().__init__()
         if encoder_kind == "pyramid":
@@ -76,7 +77,7 @@ class Mamba3Tracker(nn.Module):
         if self.predict_scale:
             if encoder_kind != "dinov2":
                 raise ValueError("predict_scale=True requires encoder_kind='dinov2' (needs CLS tokens)")
-            self.scale_head = ScaleHead(dim=dim)
+            self.scale_head = ScaleHead(dim=dim, param=scale_param)
             # Zero-init xyz_head's final layer so Δp̃ = 0 at startup. With
             # v18's path-length-normalised 3D loss, a random initial
             # Δp̃ ~ O(0.1 m) divided by a 1 mm GT step (e.g. pstudio

@@ -56,6 +56,7 @@ class TrackingLossOutput:
     pos_3D: Tensor
     pos_2D: Tensor
     vis: Tensor
+    scale: Tensor | None = None   # v20: log-scale supervision term; None for v11–v19
 
 
 def _project(xyz: Tensor, K: Tensor) -> Tensor:
@@ -287,6 +288,138 @@ class TrackingLossV18(nn.Module):
         )
         return TrackingLossOutput(
             total=total, pos_3D=pos_3D, pos_2D=pos_2D, vis=vis_loss,
+        )
+
+
+_TERMS_V20 = ("pos_3D", "scale", "pos_2D", "vis")
+
+
+def _per_clip_motion_scale(
+    gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
+    init_xyz: Tensor,         # (B, N, 3)  GT at each track's anchor
+    w_pos: Tensor,            # (B, F, N)  visible ∧ query mask (float)
+    eps: float = 1e-4,
+) -> Tensor:
+    """Per-clip metric motion scale: median over visible (t,n) of the
+    displacement from each track's anchor, ‖p*(t,n) − p*_anchor(n)‖.
+
+    One positive scalar per batch item. This is the target the ScaleHead
+    learns to predict from the scene (log-space). Floored at `eps` only as
+    a numerical guard for the log (degenerate zero-motion clips).
+    """
+    B = gt_tracks_XYZ.shape[0]
+    disp = (gt_tracks_XYZ - init_xyz.unsqueeze(1)).norm(dim=-1)              # (B, F, N)
+    out = gt_tracks_XYZ.new_full((B,), eps)
+    for b in range(B):
+        sel = w_pos[b].bool()
+        if sel.any():
+            out[b] = disp[b][sel].median()
+    return out.clamp_min(eps).detach()
+
+
+class TrackingLossV20(nn.Module):
+    """v20 loss: scale-invariant decomposition — shape and scale supervised
+    SEPARATELY so neither starves the other.
+
+    The v18/v19 failure was the multiplicative product `p̂ = p_anchor +
+    s · cumsum(Δp̃)`: the shape gradient ∂L/∂Δp̃ ∝ s, so when the ScaleHead
+    drove `s → 0` (optimal whenever the shape was still noisy), the shape
+    head stopped learning — a deadlock that collapsed pstudio/adt.
+
+    v20 breaks the coupling. With `scale*` = the clip's GT motion magnitude
+    (`_per_clip_motion_scale`) and `p̃* = (p* − p*_anchor) / scale*` the
+    unitless GT trajectory:
+
+      shape (pos_3D): ‖ cumsum(Δp̃) − p̃* ‖²
+                      gradient → xyz_head, NO `s` factor → never starved.
+      scale:          ( log s − log scale* )²
+                      gradient → ScaleHead, independent of shape quality.
+                      `s = exp(z)` (ScaleHead param="exp"), so log s = z;
+                      this directly teaches the scene→scale mapping.
+      pos_2D:         ‖ (π(p̂) − π(p*)) / image_size ‖²  with the metric
+                      reconstruction `p̂ = p*_anchor + scale* · cumsum(Δp̃)`
+                      (teacher-forced GT scale, so 2D supervises shape in
+                      pixel space without re-coupling to the scale head).
+      vis:            BCEWithLogits.
+
+    Inference (eval/render) uses the PREDICTED scale:
+        p̂ = p*_anchor + s_pred · cumsum(Δp̃),
+    which is exactly `reconstruct_trajectory_v18(pred.xyz, pred.scale, ...)`
+    — so the eval/render reconstruction path is unchanged from v18/v19.
+    """
+
+    def __init__(
+        self,
+        weights: Mapping[str, float],
+        image_size: int = 224,
+    ) -> None:
+        super().__init__()
+        missing = set(_TERMS_V20) - set(weights)
+        if missing:
+            raise ValueError(f"TrackingLossV20: missing weights for {sorted(missing)}")
+        self.w = {k: float(weights[k]) for k in _TERMS_V20}
+        self.image_size = float(image_size)
+
+    def forward(
+        self,
+        pred: TrackerOutputs,
+        gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
+        gt_visibility: Tensor,    # (B, F, N) bool
+        gt_query_mask: Tensor,    # (B, N) bool
+        gt_anchor_frame: Tensor,  # (B, N) long
+        K: Tensor,                # (B, 3, 3)
+    ) -> TrackingLossOutput:
+        if pred.scale is None:
+            raise RuntimeError("TrackingLossV20 requires pred.scale; set model.predict_scale=True")
+
+        B, F_, N, _ = gt_tracks_XYZ.shape
+        a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()
+        init_xyz = gt_tracks_XYZ.gather(
+            dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+        ).squeeze(1)                                                         # (B, N, 3)
+
+        vis_f = gt_visibility.float()
+        qm = gt_query_mask.unsqueeze(1).expand(B, F_, N).float()
+        w_pos = vis_f * qm
+        denom = w_pos.sum().clamp_min(1.0)
+
+        # Unitless shapes: predicted cumsum (no scale, no anchor offset) and GT.
+        zeros = init_xyz.new_zeros(B, N, 3)
+        p_tilde = reconstruct_trajectory(pred.xyz, zeros, a)                 # (B, F, N, 3)
+        scale_star = _per_clip_motion_scale(gt_tracks_XYZ, init_xyz, w_pos)  # (B,)
+        gt_tilde = (gt_tracks_XYZ - init_xyz.unsqueeze(1)) / scale_star.view(B, 1, 1, 1)
+
+        # Shape term — clean gradient to the trajectory head.
+        r_shape = (p_tilde - gt_tilde)
+        pos_3D = ((r_shape.pow(2).sum(dim=-1)) * w_pos).sum() / denom
+
+        # Scale term — direct supervision of log-scale (z) toward log scale*.
+        log_s = torch.log(pred.scale.clamp_min(1e-6))                        # (B,)
+        scale_loss = (log_s - torch.log(scale_star)).pow(2).mean()
+
+        # 2D term — project the metric reconstruction (GT scale teacher-forced).
+        p_hat_metric = init_xyz.unsqueeze(1) + scale_star.view(B, 1, 1, 1) * p_tilde
+        uv_hat = _project(p_hat_metric, K)
+        uv_gt = _project(gt_tracks_XYZ, K)
+        r_2D = (uv_hat - uv_gt) / self.image_size
+        finite_2D = torch.isfinite(r_2D).all(dim=-1).float()
+        w_2D = w_pos * finite_2D
+        denom_2D = w_2D.sum().clamp_min(1.0)
+        pos_2D = (torch.nan_to_num(r_2D.pow(2).sum(dim=-1), nan=0.0,
+                                   posinf=0.0, neginf=0.0) * w_2D).sum() / denom_2D
+
+        vis_loss = F.binary_cross_entropy_with_logits(
+            pred.vis_logits, vis_f, weight=qm, reduction="sum",
+        ) / qm.sum().clamp_min(1.0)
+
+        total = (
+            self.w["pos_3D"] * pos_3D
+            + self.w["scale"] * scale_loss
+            + self.w["pos_2D"] * pos_2D
+            + self.w["vis"]    * vis_loss
+        )
+        return TrackingLossOutput(
+            total=total, pos_3D=pos_3D, pos_2D=pos_2D, vis=vis_loss, scale=scale_loss,
         )
 
 

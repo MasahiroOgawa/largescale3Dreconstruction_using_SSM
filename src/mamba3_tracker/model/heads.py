@@ -73,22 +73,29 @@ class ScaleHead(nn.Module):
     """Predicts one positive scalar `s` per clip from per-frame CLS tokens.
 
     Input  cls_per_frame: (B, F, D) — DINO CLS token at each frame
-    Output                (B,)      — positive scalar, applied as
-                                      Δp̂(t,n) = s · Δp̃(t,n) in v18 loss.
+    Output                (B,)      — positive metric scale.
 
-    Design:
-      * LayerNorm on the time-mean of CLS — frozen DINO features have a
-        scene-dependent magnitude; normalising stabilises the input range.
-      * 2-layer MLP `D → D/2 → 1`.
-      * `softplus` keeps `s > 0` while remaining smooth at 0 (so the
-        gradient near init isn't dead).
-      * Final bias initialised to `log(exp(1) − 1) ≈ 0.5413` so the
-        starting scale is `softplus(0.5413) ≈ 1.0` — a natural initial
-        value before the model has seen any clip.
+    The MLP emits a raw real number `z` (any value); a positive-mapping
+    function turns it into `s`. Two parameterisations:
+
+      * param="softplus" (v18/v19):  s = softplus(z), bias init so s≈1.
+        Problem: ∂s/∂z = sigmoid(z) → 0 as s → 0, so once `s` drifts
+        toward zero the gradient to climb back out is ~100× attenuated —
+        the scale gets stuck at 0 (the v18/v19 pstudio/adt collapse).
+
+      * param="exp" (v20+):  s = exp(z), bias init 0 so s = 1.
+        ∂(log s)/∂z = 1 everywhere → learning is uniform across orders of
+        magnitude (0.01–100 m ↔ z ∈ [−4.6, +4.6]); `s` never hard-zeros
+        and can always recover. log-scale `z` is also the natural quantity
+        to supervise directly (see TrackingLossV20 scale term).
     """
 
-    def __init__(self, dim: int, hidden: int | None = None) -> None:
+    def __init__(self, dim: int, hidden: int | None = None,
+                 param: str = "softplus") -> None:
         super().__init__()
+        if param not in ("softplus", "exp"):
+            raise ValueError(f"ScaleHead param must be 'softplus' or 'exp', got {param!r}")
+        self.param = param
         hidden = hidden or max(dim // 2, 32)
         self.norm = nn.LayerNorm(dim)
         self.mlp = nn.Sequential(
@@ -99,8 +106,12 @@ class ScaleHead(nn.Module):
         with torch.no_grad():
             final = self.mlp[-1]
             final.weight.zero_()
-            final.bias.fill_(math.log(math.expm1(1.0)))
+            # init so s = 1 at startup: softplus(0.5413)=1, exp(0)=1.
+            final.bias.fill_(math.log(math.expm1(1.0)) if param == "softplus" else 0.0)
 
     def forward(self, cls_per_frame: Tensor) -> Tensor:
         x = self.norm(cls_per_frame.mean(dim=1))               # (B, D)
-        return F.softplus(self.mlp(x)).squeeze(-1)             # (B,)
+        z = self.mlp(x).squeeze(-1)                            # (B,) raw log-scale (exp) / pre-softplus
+        if self.param == "exp":
+            return torch.exp(z)
+        return F.softplus(z)

@@ -37,11 +37,13 @@ from mamba3_tracker.data.dataset import (
 from mamba3_tracker.data.tapvid3d import load_clip
 from mamba3_tracker.model.tracker import Mamba3Tracker
 from mamba3_tracker.train.config import dump_resolved, load_config
-from mamba3_tracker.train.loss import TrackingLoss, TrackingLossOutput, TrackingLossV18
+from mamba3_tracker.train.loss import (
+    TrackingLoss, TrackingLossOutput, TrackingLossV18, TrackingLossV20,
+)
 from mamba3_tracker.train.schedule import wsd
 
 
-_LOSS_KEYS = ("total", "pos_3D", "pos_2D", "vis")
+_LOSS_KEYS = ("total", "pos_3D", "pos_2D", "vis", "scale")
 
 
 def _save_ckpt(out_dir: Path, step: int, model, optim, sched, history, cfg) -> Path:
@@ -93,18 +95,24 @@ def _find_latest_ckpt(out_dir: Path) -> Path | None:
 
 
 def _loss_to_dict(out: TrackingLossOutput) -> dict[str, float]:
-    return {
+    d = {
         "total": float(out.total.item()),
         "pos_3D": float(out.pos_3D.item()),
         "pos_2D": float(out.pos_2D.item()),
         "vis": float(out.vis.item()),
     }
+    if out.scale is not None:
+        d["scale"] = float(out.scale.item())
+    return d
 
 
 def _fmt_loss_row(d: dict[str, float]) -> str:
-    return (f"loss={d['total']:.4f}  "
-            f"p3D={d['pos_3D']:.4f} p2D={d['pos_2D']:.4f}  "
-            f"vis={d['vis']:.4f}")
+    s = (f"loss={d['total']:.4f}  "
+         f"p3D={d['pos_3D']:.4f} p2D={d['pos_2D']:.4f}  "
+         f"vis={d['vis']:.4f}")
+    if "scale" in d:
+        s += f"  scale={d['scale']:.4f}"
+    return s
 
 
 @torch.no_grad()
@@ -125,7 +133,8 @@ def _validate(model, val_ds, loss_fn, device, amp_dtype, n_clips: int = 5) -> di
         )
         d = _loss_to_dict(out)
         for k in _LOSS_KEYS:
-            totals[k].append(d[k])
+            if k in d:
+                totals[k].append(d[k])
     model.train()
     return {k: sum(v) / len(v) for k, v in totals.items()}
 
@@ -376,6 +385,7 @@ def main() -> int:
         dinov2_image_size=int(model_cfg.get("dinov2_image_size", 448)),
         dinov2_fuse_layers=model_cfg.get("dinov2_fuse_layers"),
         predict_scale=bool(model_cfg.get("predict_scale", False)),
+        scale_param=str(model_cfg.get("scale_param", "softplus")),
     ).to(device)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
     n_total = sum(p.numel() for p in model.parameters()) / 1e6
@@ -389,7 +399,15 @@ def main() -> int:
         model.load_state_dict(state["model"], strict=False)
         print(f"[train] loaded init weights from {args.init_ckpt}")
 
-    loss_cls = TrackingLossV18 if bool(model_cfg.get("predict_scale", False)) else TrackingLoss
+    # Loss dispatch: v20 uses the decoupled shape+scale loss (requires the
+    # exp-parameterised ScaleHead); v18/v19 use the multiplicative-scale
+    # TrackingLossV18; everything earlier uses the plain TrackingLoss.
+    if "scale" in loss_cfg["weights"]:
+        loss_cls = TrackingLossV20
+    elif bool(model_cfg.get("predict_scale", False)):
+        loss_cls = TrackingLossV18
+    else:
+        loss_cls = TrackingLoss
     loss_fn = loss_cls(
         weights=loss_cfg["weights"],
         image_size=int(data_cfg["image_size"]),
