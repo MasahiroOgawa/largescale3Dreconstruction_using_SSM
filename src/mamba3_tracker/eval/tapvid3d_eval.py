@@ -31,8 +31,18 @@ def compute_clip_metrics_official(
     pred_visibility: np.ndarray,
     intrinsics: np.ndarray,
 ) -> dict[str, float]:
-    """Try the upstream tapnet evaluator; raise ImportError if missing."""
-    from tapnet.tapvid3d.evaluation import metrics as tapvid3d_metrics
+    """Run the official TAPVid-3D evaluator (median scaling, multi-threshold AJ).
+
+    Uses our vendored copy of the upstream metrics (numpy + einops only), so it
+    no longer silently falls back to the 5cm-threshold homegrown metric when the
+    heavy `tapnet` package is absent. `scaling="median"` rescales the clip's
+    predicted tracks by median(‖gt‖)/median(‖pred‖) before thresholding,
+    matching the published-baseline protocol and normalising out global scale.
+    """
+    try:
+        from tapnet.tapvid3d.evaluation import metrics as tapvid3d_metrics
+    except ImportError:
+        from . import tapvid3d_official_metrics as tapvid3d_metrics
 
     gt_tracks_NT3 = np.transpose(gt_tracks_XYZ, (1, 0, 2))
     gt_vis_NT = np.transpose(gt_visibility, (1, 0))
