@@ -99,6 +99,13 @@ if [ "$RUN_EVAL" = "1" ]; then
         --eval-dir "$EVAL_DIR" --label "$(basename "$RUN_DIR") (step $STEP)" \
         --out-dir "$EVAL_DIR" 2>&1 | tee -a "$EVAL_DIR/eval.log" || echo "[compare] WARNING: comparison failed"
     echo
+    # ALWAYS produce the global "where are we" plot — every minival-comparable
+    # run on disk, paper baselines, and SoTA reference (full-eval).
+    GLOBAL_CMP="outputs/eval_tracker/comparison_all_methods"
+    echo "[compare-all] every v* + baselines + SoTA reference → $GLOBAL_CMP/comparison.{png,md}"
+    uv run python scripts/compare_tracker_baselines.py \
+        --out-dir "$GLOBAL_CMP" 2>&1 | tee -a "$EVAL_DIR/eval.log" || echo "[compare-all] WARNING: failed"
+    echo
 fi
 
 # ---- Step 3: per-clip tracking MP4s -----------------------------------------

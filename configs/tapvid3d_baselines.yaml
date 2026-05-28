@@ -44,3 +44,29 @@ baselines:
     aria: 0.092
     drivetrack: 0.058
     pstudio: 0.098
+
+
+# Newer SoTA published ONLY on the full eval split (Table 3 unstarred), NOT
+# minival. Numbers are included as reference so the comparison plot shows
+# "where the field currently is" — but they are on a different (larger,
+# easier-on-average) test set and should not be read as a like-for-like
+# minival number. The plot renders these with a hatched/desaturated style
+# and a caveat label.
+#
+# Source: each method's published paper.
+sota_full_eval:
+  - name: "CoTracker3-online"
+    description: "Online causal transformer tracker (full eval, NOT minival)"
+    aria: 0.146
+    drivetrack: 0.107
+    pstudio: 0.213
+  - name: "CoTracker3-offline"
+    description: "Bidirectional refinement (full eval, NOT minival)"
+    aria: 0.163
+    drivetrack: 0.135
+    pstudio: 0.222
+  - name: "DELTA"
+    description: "Dense 3D tracker w/ flow + depth co-training (full eval, NOT minival)"
+    aria: 0.176
+    drivetrack: 0.130
+    pstudio: 0.244
