@@ -115,6 +115,50 @@ def _fmt_loss_row(d: dict[str, float]) -> str:
     return s
 
 
+def _per_head_grad_norm(model) -> dict[str, float]:
+    """Per-head L2 grad norm. Diagnoses which heads are actually learning —
+    if e.g. xyz_head grad is tiny while vis_head grad is normal, the loss
+    isn't producing useful position gradients (the v23 failure mode)."""
+    groups: dict[str, list] = {
+        "propagator": list(model.propagator.parameters()),
+        "xyz_head":   list(model.heads.xyz_head.parameters()),
+        "vis_head":   list(model.heads.vis_head.parameters()),
+    }
+    if getattr(model, "scale_head", None) is not None:
+        groups["scale_head"] = list(model.scale_head.parameters())
+    out: dict[str, float] = {}
+    for name, params in groups.items():
+        sq = 0.0
+        for p in params:
+            if p.grad is not None:
+                g = p.grad.detach()
+                sq += float((g * g).sum().item())
+        out[name] = sq ** 0.5
+    return out
+
+
+def _per_term_grad_diagnostic(model, loss_out, optim) -> dict[str, dict[str, float]]:
+    """{term_name: {head_name: grad_norm}} from individual term backwards.
+    Expensive (one extra backward per term) — call sparingly, e.g. at
+    val_every. Caller must have zeroed grads first; this leaves grads
+    zeroed when it returns."""
+    terms = {"pos_3D": loss_out.pos_3D, "pos_2D": loss_out.pos_2D,
+             "vis": loss_out.vis}
+    if loss_out.scale is not None:
+        terms["scale"] = loss_out.scale
+    out: dict[str, dict[str, float]] = {}
+    for name, t in terms.items():
+        model.zero_grad(set_to_none=True)
+        t.backward(retain_graph=True)
+        out[name] = _per_head_grad_norm(model)
+    model.zero_grad(set_to_none=True)
+    return out
+
+
+def _fmt_grad_row(g: dict[str, float]) -> str:
+    return "  ".join(f"{k}={v:.2e}" for k, v in g.items())
+
+
 @torch.no_grad()
 def _validate(model, val_ds, loss_fn, device, amp_dtype, n_clips: int = 5) -> dict:
     model.eval()
@@ -497,7 +541,11 @@ def main() -> int:
             queries[..., 2].long(),
             batch.K.to(device, non_blocking=True),
         )
-        loss_out.total.backward()
+        loss_out.total.backward(retain_graph=(step % val_every == 0 and step > 0))
+        # Per-head grad norms BEFORE clipping — diagnoses which heads are
+        # actually learning at this step (v23 showed near-zero p3D loss but
+        # we never confirmed whether xyz_head was getting useful gradient).
+        head_grad = _per_head_grad_norm(model)
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         # NaN-guard: skip optimiser step on non-finite grads (single NaN
         # corrupts every parameter via NaN + x = NaN otherwise — that's
@@ -517,12 +565,30 @@ def main() -> int:
             lr = sched.get_last_lr()[0]
             dt = time.perf_counter() - t0
             row = _loss_to_dict(loss_out)
+            gn = float(grad_norm.item()) if torch.isfinite(grad_norm) else float("nan")
             print(f"[train] step {step:6d}/{n_steps}  "
-                  f"{_fmt_loss_row(row)}  lr={lr:.2e}  elapsed={dt:.0f}s",
+                  f"{_fmt_loss_row(row)}  lr={lr:.2e}  "
+                  f"|grad|={gn:.2e}  {_fmt_grad_row(head_grad)}  elapsed={dt:.0f}s",
                   flush=True)
-            history.append({"step": step, "lr": lr, **row})
+            history.append({"step": step, "lr": lr, "grad_norm": gn,
+                            "head_grad": head_grad, **row})
 
         if step > 0 and step % val_every == 0:
+            # Per-loss-term × per-head grad diagnostic on the current batch.
+            # retain_graph=True was set above for exactly this step.
+            try:
+                term_grads = _per_term_grad_diagnostic(model, loss_out, optim)
+                tg_str = "  ".join(
+                    f"{t}:{','.join(f'{h}={g:.2e}' for h,g in v.items())}"
+                    for t, v in term_grads.items()
+                )
+                print(f"[train] step {step:6d}  TERM-GRAD  {tg_str}", flush=True)
+                history.append({"step": step, "term_grad": term_grads})
+            except RuntimeError as e:
+                # graph was freed (no retain_graph) or other backward issue
+                print(f"[train] step {step:6d}  TERM-GRAD  skipped: {e}",
+                      flush=True)
+
             v = _validate(model, val_ds, loss_fn, device, amp_dtype)
             print(f"[train] step {step:6d}  VAL     {_fmt_loss_row(v)}", flush=True)
             history.append({"step": step, "val": v})
