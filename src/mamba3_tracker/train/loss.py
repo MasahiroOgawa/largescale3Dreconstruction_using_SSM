@@ -298,23 +298,40 @@ def _per_clip_motion_scale(
     gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
     init_xyz: Tensor,         # (B, N, 3)  GT at each track's anchor
     w_pos: Tensor,            # (B, F, N)  visible ∧ query mask (float)
+    anchor_idx: Tensor | None = None,  # (B, N) long — required to mask anchor frames
     eps: float = 1e-4,
 ) -> Tensor:
-    """Per-clip metric motion scale: median over visible (t,n) of the
+    """Per-clip metric motion scale: RMS over visible NON-ANCHOR (t,n) of the
     displacement from each track's anchor, ‖p*(t,n) − p*_anchor(n)‖.
+
+    Two fixes vs the v20 version:
+      * Mask out anchor frames. At t = anchor_idx[b,n], ‖m*‖ ≡ 0 by
+        construction (m* is displacement *from* the anchor). Including
+        these zeros in the aggregation drags the median toward 0, which
+        in v20 produced occasional `scale_gt ≈ floor` → m*/scale_gt
+        blowing up by 10³× → pos_3D spikes of 10⁶+ on a few clips.
+      * RMS instead of median. RMS is dominated by large values, so it
+        reflects the true motion magnitude of the clip rather than being
+        depressed by the many small-displacement (t,n) pairs near the
+        anchor frame.
 
     One positive scalar per batch item. This is the target the ScaleHead
     learns to predict from the scene (log-space). Floored at `eps` only as
-    a numerical guard for the log (degenerate zero-motion clips).
+    a numerical guard for the log on genuinely-static clips.
     """
-    B = gt_tracks_XYZ.shape[0]
+    B, F_, N = w_pos.shape
     disp = (gt_tracks_XYZ - init_xyz.unsqueeze(1)).norm(dim=-1)              # (B, F, N)
-    out = gt_tracks_XYZ.new_full((B,), eps)
-    for b in range(B):
-        sel = w_pos[b].bool()
-        if sel.any():
-            out[b] = disp[b][sel].median()
-    return out.clamp_min(eps).detach()
+    if anchor_idx is not None:
+        t_idx = torch.arange(F_, device=disp.device).view(1, F_, 1).expand(B, F_, N)
+        a_idx = anchor_idx.view(B, 1, N).expand(B, F_, N)
+        non_anchor = (t_idx != a_idx).float()
+    else:
+        non_anchor = torch.ones_like(w_pos)
+    w = w_pos * non_anchor                                                    # (B, F, N)
+    sq = (disp * disp) * w
+    n  = w.sum(dim=(1, 2)).clamp_min(1.0)
+    rms = (sq.sum(dim=(1, 2)) / n).clamp_min(eps * eps).sqrt()
+    return rms.detach()
 
 
 class TrackingLossV20(nn.Module):
@@ -386,7 +403,9 @@ class TrackingLossV20(nn.Module):
         # Unitless shapes: predicted cumsum (no scale, no anchor offset) and GT.
         zeros = init_xyz.new_zeros(B, N, 3)
         p_tilde = reconstruct_trajectory(pred.xyz, zeros, a)                 # (B, F, N, 3)
-        scale_star = _per_clip_motion_scale(gt_tracks_XYZ, init_xyz, w_pos)  # (B,)
+        scale_star = _per_clip_motion_scale(
+            gt_tracks_XYZ, init_xyz, w_pos, anchor_idx=a,
+        )  # (B,)
         gt_tilde = (gt_tracks_XYZ - init_xyz.unsqueeze(1)) / scale_star.view(B, 1, 1, 1)
 
         # Shape term — clean gradient to the trajectory head.

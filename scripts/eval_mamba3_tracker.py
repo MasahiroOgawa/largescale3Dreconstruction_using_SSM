@@ -159,6 +159,11 @@ def main() -> int:
     metrics_root = args.out_dir / "metric_results"
     metrics_root.mkdir(parents=True, exist_ok=True)
     summary: dict[str, dict[str, float]] = {}
+    # Per-subset motion-ratio accumulators (Σ predicted 2D pixel travel from
+    # each track's anchor / Σ GT 2D pixel travel, over visible (t, n) pairs).
+    # Mirrors the in-training _motion_check in scripts/train_mamba3_tracker.py.
+    motion_pred_sums: dict[str, float] = defaultdict(float)
+    motion_gt_sums:   dict[str, float] = defaultdict(float)
 
     for sub, clips in per_subset_clips.items():
         per_clip: list[dict[str, float]] = []
@@ -173,20 +178,43 @@ def main() -> int:
                 intrin = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]])
                 m = compute_clip_metrics(gt_xyz, gt_vis, pred_tracks, pred_vis, intrin)
                 m["clip_id"] = clip.clip_id
+                # Motion ratio (pixel travel from anchor, visible-at-both pairs).
+                N_q = clip.queries_xyt.shape[0]
+                a_idx = clip.queries_xyt[:, 2].long().clamp(min=0, max=F - 1).numpy()
+                track_idx = np.arange(N_q)
+                def _proj_uv(xyz_NT3: np.ndarray) -> np.ndarray:
+                    Z = np.clip(xyz_NT3[..., 2:3], 1e-6, None)
+                    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+                    return (xyz_NT3[..., :2] / Z) * np.array([fx, fy]) + np.array([cx, cy])
+                uv_pred = _proj_uv(pred_tracks)                              # (N, F, 2)
+                uv_gt   = _proj_uv(np.transpose(gt_xyz, (1, 0, 2)))           # (N, F, 2)
+                ref_pred = uv_pred[track_idx, a_idx]                         # (N, 2)
+                ref_gt   = uv_gt[track_idx, a_idx]
+                travel_pred = np.linalg.norm(uv_pred - ref_pred[:, None, :], axis=-1)   # (N, F)
+                travel_gt   = np.linalg.norm(uv_gt   - ref_gt[:,   None, :], axis=-1)
+                vis_NT = np.transpose(gt_vis, (1, 0))                        # (N, F)
+                vis_anchor = vis_NT[track_idx, a_idx]                        # (N,)
+                finite = np.isfinite(travel_pred) & np.isfinite(travel_gt)
+                mask = (vis_NT > 0.5) & (vis_anchor[:, None] > 0.5) & finite
+                clip_pred_sum = float((travel_pred * mask).sum())
+                clip_gt_sum   = float((travel_gt   * mask).sum())
+                motion_pred_sums[sub] += clip_pred_sum
+                motion_gt_sums[sub]   += clip_gt_sum
+                m["motion_ratio_clip"] = (clip_pred_sum / clip_gt_sum) if clip_gt_sum > 0 else float("nan")
                 per_clip.append(m)
                 print(f"[eval] {sub}/{clip.clip_id}: AJ={m['average_jaccard']:.4f} "
-                      f"APD3D={m['average_pts_within_thresh']:.4f} OA={m['occlusion_accuracy']:.4f}",
+                      f"APD3D={m['average_pts_within_thresh']:.4f} OA={m['occlusion_accuracy']:.4f} "
+                      f"motion={m['motion_ratio_clip']:.2%}",
                       flush=True)
             except Exception as e:
                 print(f"[eval] {sub}/{path.stem}: FAIL {type(e).__name__}: {e}", flush=True)
-            # Long-clip evals at 896 input fragment the CUDA allocator across
-            # clips and can OOM later in the loop even when each individual
-            # clip would fit. Empty the cache between clips so the allocator
-            # gets a clean slate; cheap and reliable mitigation.
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         (metrics_root / f"{sub}.json").write_text(json.dumps(per_clip, indent=2))
         agg = aggregate(per_clip)
+        # Subset-level motion ratio = Σ pred / Σ gt (over all clips & pairs).
+        agg["motion_ratio"] = (motion_pred_sums[sub] / motion_gt_sums[sub]
+                                if motion_gt_sums[sub] > 0 else float("nan"))
         summary[sub] = agg
         print(f"[eval] {sub} mean: {agg}", flush=True)
 
