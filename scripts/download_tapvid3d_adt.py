@@ -50,23 +50,51 @@ def _streamed_download(url: str, dest: Path) -> None:
                 pbar.update(len(chunk))
 
 
-def _extract_to(archive: Path, dest: Path) -> int:
+def _is_labels_only_npz(path: Path) -> bool:
+    """True if the npz is missing `images_jpeg_bytes` (the official Google
+    release ships labels-only files for some clips; the HF mirror tarballs
+    re-host them with images included)."""
+    try:
+        import numpy as np
+        with np.load(path, allow_pickle=True) as d:
+            return "images_jpeg_bytes" not in d.files
+    except Exception:
+        return False
+
+
+def _extract_to(archive: Path, dest: Path) -> tuple[int, int]:
+    """Extract .npz files from archive into dest. Returns (n_new, n_replaced).
+
+    Skips files already on disk that already have images. Overwrites files
+    on disk that are labels-only (no `images_jpeg_bytes`) so re-running the
+    download fixes minival ADT clips that originally landed as labels-only.
+    """
     dest.mkdir(parents=True, exist_ok=True)
-    n = 0
+    n_new = 0
+    n_replaced = 0
     with tarfile.open(archive, "r:gz") as tf:
         for m in tf:
             if not m.isfile() or not m.name.endswith(".npz"):
                 continue
             target = dest / Path(m.name).name
             if target.exists() and target.stat().st_size > 0:
-                continue
+                if not _is_labels_only_npz(target):
+                    continue
+                # labels-only on disk → overwrite with the with-images version
+                target.unlink()
+                kind = "replace"
+            else:
+                kind = "new"
             extracted = tf.extractfile(m)
             if extracted is None:
                 continue
             with open(target, "wb") as out:
                 shutil.copyfileobj(extracted, out)
-            n += 1
-    return n
+            if kind == "new":
+                n_new += 1
+            else:
+                n_replaced += 1
+    return n_new, n_replaced
 
 
 def main() -> int:
@@ -91,16 +119,18 @@ def main() -> int:
     print(f"[adt] target: {adt_dir}")
     print(f"[adt] batches: {batches}")
 
-    total_npz = 0
+    total_new = 0
+    total_replaced = 0
     for n in batches:
         url = f"{HF_BASE}/adt_batch_{n}.tar.gz"
         tar_path = cache_dir / f"adt_batch_{n}.tar.gz"
         print(f"\n[adt] batch {n}: {url}")
         _streamed_download(url, tar_path)
         print(f"[adt] extracting {tar_path.name} ...")
-        n_extracted = _extract_to(tar_path, adt_dir)
-        total_npz += n_extracted
-        print(f"[adt] +{n_extracted} .npz files")
+        n_new, n_replaced = _extract_to(tar_path, adt_dir)
+        total_new += n_new
+        total_replaced += n_replaced
+        print(f"[adt] +{n_new} new, ~{n_replaced} replaced (labels-only → with-images)")
         if not args.keep_tarballs:
             tar_path.unlink()
             print(f"[adt] removed {tar_path.name} (use --keep-tarballs to retain)")
@@ -108,7 +138,7 @@ def main() -> int:
     if cache_dir.exists() and not any(cache_dir.iterdir()):
         cache_dir.rmdir()
 
-    print(f"\n[adt] done. {total_npz} new .npz files under {adt_dir}")
+    print(f"\n[adt] done. +{total_new} new, ~{total_replaced} labels-only replaced under {adt_dir}")
     print(f"[adt] total .npz now: {len(list(adt_dir.glob('*.npz')))}")
     return 0
 
