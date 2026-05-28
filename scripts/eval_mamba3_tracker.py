@@ -195,7 +195,14 @@ def main() -> int:
                 vis_NT = np.transpose(gt_vis, (1, 0))                        # (N, F)
                 vis_anchor = vis_NT[track_idx, a_idx]                        # (N,)
                 finite = np.isfinite(travel_pred) & np.isfinite(travel_gt)
-                mask = (vis_NT > 0.5) & (vis_anchor[:, None] > 0.5) & finite
+                # Exclude predicted-Z<=0 frames: those points are behind the
+                # camera and cannot appear on the image, so projecting them
+                # is meaningless — they otherwise drag the motion ratio to
+                # billions on ADT clips with near-anchor depths.
+                pred_z = pred_tracks[..., 2]                                  # (N, F)
+                gt_z   = np.transpose(gt_xyz, (1, 0, 2))[..., 2]              # (N, F)
+                z_ok   = (pred_z > 0) & (gt_z > 0)
+                mask = (vis_NT > 0.5) & (vis_anchor[:, None] > 0.5) & finite & z_ok
                 clip_pred_sum = float((travel_pred * mask).sum())
                 clip_gt_sum   = float((travel_gt   * mask).sum())
                 motion_pred_sums[sub] += clip_pred_sum

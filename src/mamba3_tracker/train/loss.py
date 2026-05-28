@@ -369,6 +369,7 @@ class TrackingLossV20(nn.Module):
         self,
         weights: Mapping[str, float],
         image_size: int = 224,
+        mask_z_negative: bool = False,
     ) -> None:
         super().__init__()
         missing = set(_TERMS_V20) - set(weights)
@@ -376,6 +377,12 @@ class TrackingLossV20(nn.Module):
             raise ValueError(f"TrackingLossV20: missing weights for {sorted(missing)}")
         self.w = {k: float(weights[k]) for k in _TERMS_V20}
         self.image_size = float(image_size)
+        # v22+: geometrically reject Z<=0 in 2D loss and tie visibility to Z>0
+        # (a point with predicted Z<=0 is behind the camera, hence not on-image;
+        # if GT says visible at that frame, that mismatch must show up as vis
+        # loss). Replaces adding a duplicate metric-3D term that would just
+        # make the total loss fluctuate (per user 2026-05-28).
+        self.mask_z_negative = bool(mask_z_negative)
 
     def forward(
         self,
@@ -422,14 +429,36 @@ class TrackingLossV20(nn.Module):
         uv_gt = _project(gt_tracks_XYZ, K)
         r_2D = (uv_hat - uv_gt) / self.image_size
         finite_2D = torch.isfinite(r_2D).all(dim=-1).float()
-        w_2D = w_pos * finite_2D
+        z_pred = p_hat_metric[..., 2]
+        if self.mask_z_negative:
+            # A predicted point at Z<=0 is behind the camera and cannot appear
+            # on the image; its 2D projection is geometrically meaningless. Drop
+            # those entries from the 2D loss entirely (not just clamped via the
+            # _project floor) so they neither contribute residual nor blow up.
+            z_ok = (z_pred > 0).float()
+        else:
+            z_ok = torch.ones_like(z_pred)
+        w_2D = w_pos * finite_2D * z_ok
         denom_2D = w_2D.sum().clamp_min(1.0)
         pos_2D = (torch.nan_to_num(r_2D.pow(2).sum(dim=-1), nan=0.0,
                                    posinf=0.0, neginf=0.0) * w_2D).sum() / denom_2D
 
-        vis_loss = F.binary_cross_entropy_with_logits(
-            pred.vis_logits, vis_f, weight=qm, reduction="sum",
-        ) / qm.sum().clamp_min(1.0)
+        if self.mask_z_negative:
+            # Visibility couples to projectability. Effective predicted
+            # "visible" probability is sigmoid(vis_logits) AND Z>0 — predicting
+            # Z<0 is implicitly predicting "invisible" at that frame, so a GT
+            # visible point with predicted Z<0 produces a high BCE on its own,
+            # giving Z a gradient toward >0 through the visibility term.
+            # `sigmoid(z / 0.05)` is a smooth Z>0 indicator with a ~5cm
+            # transition width (so the gradient is well-defined everywhere).
+            z_safe = torch.sigmoid(z_pred / 0.05)
+            p_vis_eff = (torch.sigmoid(pred.vis_logits) * z_safe).clamp(1e-7, 1 - 1e-7)
+            vis_bce = -(vis_f * p_vis_eff.log() + (1 - vis_f) * (1 - p_vis_eff).log())
+            vis_loss = (vis_bce * qm).sum() / qm.sum().clamp_min(1.0)
+        else:
+            vis_loss = F.binary_cross_entropy_with_logits(
+                pred.vis_logits, vis_f, weight=qm, reduction="sum",
+            ) / qm.sum().clamp_min(1.0)
 
         total = (
             self.w["pos_3D"] * pos_3D

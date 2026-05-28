@@ -408,9 +408,13 @@ def main() -> int:
         loss_cls = TrackingLossV18
     else:
         loss_cls = TrackingLoss
+    extra_loss_kwargs: dict = {}
+    if loss_cls is TrackingLossV20 and "mask_z_negative" in loss_cfg:
+        extra_loss_kwargs["mask_z_negative"] = bool(loss_cfg["mask_z_negative"])
     loss_fn = loss_cls(
         weights=loss_cfg["weights"],
         image_size=int(data_cfg["image_size"]),
+        **extra_loss_kwargs,
     ).to(device)
     print(f"[train] loss class: {loss_cls.__name__}")
     optim = AdamW(model.parameters(),
