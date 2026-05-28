@@ -32,22 +32,57 @@ HF_BASE = "https://huggingface.co/datasets/ZhengGuangze/TAPVid-3D/resolve/main"
 NUM_BATCHES = 10  # adt_batch_0 .. adt_batch_9
 
 
-def _streamed_download(url: str, dest: Path) -> None:
-    if dest.exists() and dest.stat().st_size > 1024:
-        print(f"[adt] {dest.name} already present ({dest.stat().st_size / 1e9:.1f} GB), skipping")
-        return
+def _streamed_download(url: str, dest: Path, max_attempts: int = 8) -> None:
+    """Download `url` to `dest` with Range-based resume + retry on connection
+    drops. HuggingFace's CDN was dropping the connection mid-stream on these
+    17 GB tarballs; this resumes from however many bytes are already on disk."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with requests.get(url, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        with open(dest, "wb") as f, tqdm(
-            total=total, unit="B", unit_scale=True, desc=dest.name, leave=False
-        ) as pbar:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                if not chunk:
-                    continue
-                f.write(chunk)
-                pbar.update(len(chunk))
+
+    def _expected_total() -> int:
+        with requests.head(url, allow_redirects=True, timeout=60) as r:
+            r.raise_for_status()
+            return int(r.headers.get("content-length", 0))
+
+    expected = None
+    for attempt in range(1, max_attempts + 1):
+        have = dest.stat().st_size if dest.exists() else 0
+        if expected is None:
+            try:
+                expected = _expected_total()
+            except Exception as e:
+                print(f"[adt] attempt {attempt}: HEAD failed ({e}); will infer size from GET")
+        if expected and have >= expected:
+            print(f"[adt] {dest.name} fully present ({have / 1e9:.1f} GB)")
+            return
+        if have:
+            print(f"[adt] resuming {dest.name} from {have / 1e9:.2f} GB "
+                  f"(attempt {attempt}/{max_attempts})")
+        headers = {"Range": f"bytes={have}-"} if have else {}
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                if expected is None:
+                    expected = have + int(r.headers.get("content-length", 0))
+                with open(dest, "ab") as f, tqdm(
+                    total=expected, initial=have, unit="B", unit_scale=True,
+                    desc=dest.name, leave=False,
+                ) as pbar:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        pbar.update(len(chunk))
+            # Success — verify size, return.
+            if not expected or dest.stat().st_size >= expected:
+                return
+            print(f"[adt] {dest.name} short read ({dest.stat().st_size}/{expected}); retrying")
+        except (requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as e:
+            print(f"[adt] attempt {attempt}/{max_attempts} failed: {type(e).__name__}: {e}")
+            if attempt == max_attempts:
+                raise
+    raise RuntimeError(f"[adt] {dest.name}: exhausted {max_attempts} attempts")
 
 
 def _is_labels_only_npz(path: Path) -> bool:

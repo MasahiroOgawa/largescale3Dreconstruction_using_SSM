@@ -33,7 +33,9 @@ version: v23
 #    mismatch between training-time supervision and eval-time normalisation.
 #
 # Everything else identical to v22: DINOv3-small @ 896, exp ScaleHead,
-# official A1 split, 7000 steps, Z>0 rule on 2D + visibility.
+# official A1 split, Z>0 rule on 2D + visibility. Trained at the full
+# v20-style 30k-step budget (vs v22's 7k) since v21/v22 told us 7k was
+# undertrained — apples-to-apples comparison with v20 at matched compute.
 
 model:
   dim: 384
@@ -59,11 +61,11 @@ data:
     seed: 42
 
 train:
-  steps: 7000
-  warmup: 250
-  decay: 700
-  ckpt_every: 500
-  val_every: 500
+  steps: 30000
+  warmup: 1000
+  decay: 3000
+  ckpt_every: 1000
+  val_every: 1000
   log_every: 50
   lr: 2.0e-4
   weight_decay: 0.05

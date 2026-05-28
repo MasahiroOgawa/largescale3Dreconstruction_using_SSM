@@ -403,6 +403,7 @@ class TrackingLossV20(nn.Module):
         image_size: int = 224,
         mask_z_negative: bool = False,
         scale_source: str = "motion_rms",
+        loss_form: str = "L2",
     ) -> None:
         super().__init__()
         missing = set(_TERMS_V20) - set(weights)
@@ -427,6 +428,19 @@ class TrackingLossV20(nn.Module):
                 f"'anchor_depth_median', got {scale_source!r}"
             )
         self.scale_source = scale_source
+        # v24: loss_form for pos_3D and pos_2D terms.
+        #   "L2"    (v20-v23): r² — gradient 2r vanishes as r→0. With depth-
+        #            normalised residuals (~0.02), L2 gradient is ~0.04 and the
+        #            shape head never learns past random init.
+        #   "log1p" (v24): log(|r|+1) element-wise summed over xyz/uv. Gradient
+        #            sign(r)/(|r|+1) → ±1 at small r, so the shape head gets
+        #            constant push even when residuals are already small.
+        #            Saturates large-residual gradient → outlier-robust.
+        if loss_form not in ("L2", "log1p"):
+            raise ValueError(
+                f"TrackingLossV20: loss_form must be 'L2' or 'log1p', got {loss_form!r}"
+            )
+        self.loss_form = loss_form
 
     def forward(
         self,
@@ -464,7 +478,12 @@ class TrackingLossV20(nn.Module):
 
         # Shape term — clean gradient to the trajectory head.
         r_shape = (p_tilde - gt_tilde)
-        pos_3D = ((r_shape.pow(2).sum(dim=-1)) * w_pos).sum() / denom
+        if self.loss_form == "log1p":
+            # log(|r|+1) summed over xyz; gradient sign(r)/(|r|+1) is ~1 at the
+            # small (~0.02) depth-normalised residuals where L2's 2r vanishes.
+            pos_3D = (torch.log1p(r_shape.abs()).sum(dim=-1) * w_pos).sum() / denom
+        else:
+            pos_3D = ((r_shape.pow(2).sum(dim=-1)) * w_pos).sum() / denom
 
         # Scale term — direct supervision of log-scale (z) toward log scale*.
         log_s = torch.log(pred.scale.clamp_min(1e-6))                        # (B,)
@@ -487,8 +506,15 @@ class TrackingLossV20(nn.Module):
             z_ok = torch.ones_like(z_pred)
         w_2D = w_pos * finite_2D * z_ok
         denom_2D = w_2D.sum().clamp_min(1.0)
-        pos_2D = (torch.nan_to_num(r_2D.pow(2).sum(dim=-1), nan=0.0,
-                                   posinf=0.0, neginf=0.0) * w_2D).sum() / denom_2D
+        if self.loss_form == "log1p":
+            # r_2D is already image-width normalised — log(|r_2D|+1) per-axis
+            # summed gives the same non-vanishing gradient behaviour as p3D.
+            pos_2D_per = torch.log1p(r_2D.abs()).sum(dim=-1)
+            pos_2D = (torch.nan_to_num(pos_2D_per, nan=0.0, posinf=0.0,
+                                        neginf=0.0) * w_2D).sum() / denom_2D
+        else:
+            pos_2D = (torch.nan_to_num(r_2D.pow(2).sum(dim=-1), nan=0.0,
+                                       posinf=0.0, neginf=0.0) * w_2D).sum() / denom_2D
 
         if self.mask_z_negative:
             # Visibility couples to projectability. Effective predicted
