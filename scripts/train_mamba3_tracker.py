@@ -411,6 +411,8 @@ def main() -> int:
     extra_loss_kwargs: dict = {}
     if loss_cls is TrackingLossV20 and "mask_z_negative" in loss_cfg:
         extra_loss_kwargs["mask_z_negative"] = bool(loss_cfg["mask_z_negative"])
+    if loss_cls is TrackingLossV20 and "scale_source" in loss_cfg:
+        extra_loss_kwargs["scale_source"] = str(loss_cfg["scale_source"])
     loss_fn = loss_cls(
         weights=loss_cfg["weights"],
         image_size=int(data_cfg["image_size"]),

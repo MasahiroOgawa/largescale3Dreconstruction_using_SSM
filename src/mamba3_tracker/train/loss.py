@@ -334,6 +334,38 @@ def _per_clip_motion_scale(
     return rms.detach()
 
 
+def _per_clip_anchor_depth_scale(
+    init_xyz: Tensor,         # (B, N, 3)  GT XYZ at each track's anchor frame
+    qmask: Tensor,            # (B, N)     query mask (bool or float)
+    eps: float = 1e-2,
+) -> Tensor:
+    """Per-clip scene-depth scale: median anchor-frame Z over query tracks.
+
+    Why depth, not motion-RMS (v20/v21/v22):
+      * Image motion ≈ 3D motion / depth, so depth is the projective scale a
+        feature tracker can actually observe from a monocular video.
+      * Bounded below by physics (no visible point sits at the optical centre),
+        so log(scale_gt) is well-defined regardless of how much the scene moves
+        — eliminates the near-singular `(log s − log scale_gt)²` spike that
+        v20/v21/v22 suffer on near-static clips.
+      * Median aligns with TAPVid-3D's official `scaling="median"` evaluator
+        normalisation: train- and eval-time scale conventions match exactly.
+
+    Returns one positive scalar per batch item.
+    """
+    z = init_xyz[..., 2]                                                 # (B, N)
+    valid = qmask.float() * torch.isfinite(z).float() * (z > 0).float()  # (B, N)
+    # Sentinel-fill invalid entries with +inf so they sort to the end; pick the
+    # floor((n_valid - 1) / 2)-th sorted value per row.
+    z_sentinel = torch.where(valid > 0, z, torch.full_like(z, float("inf")))
+    sorted_z, _ = torch.sort(z_sentinel, dim=-1)
+    n_valid = valid.sum(dim=-1).long().clamp_min(1)                       # (B,)
+    mid = ((n_valid - 1) // 2).clamp_min(0)                                # (B,)
+    med = sorted_z.gather(1, mid.unsqueeze(-1)).squeeze(-1)                # (B,)
+    med = torch.where(torch.isfinite(med), med, torch.full_like(med, eps))
+    return med.clamp_min(eps).detach()
+
+
 class TrackingLossV20(nn.Module):
     """v20 loss: scale-invariant decomposition — shape and scale supervised
     SEPARATELY so neither starves the other.
@@ -370,6 +402,7 @@ class TrackingLossV20(nn.Module):
         weights: Mapping[str, float],
         image_size: int = 224,
         mask_z_negative: bool = False,
+        scale_source: str = "motion_rms",
     ) -> None:
         super().__init__()
         missing = set(_TERMS_V20) - set(weights)
@@ -383,6 +416,17 @@ class TrackingLossV20(nn.Module):
         # loss). Replaces adding a duplicate metric-3D term that would just
         # make the total loss fluctuate (per user 2026-05-28).
         self.mask_z_negative = bool(mask_z_negative)
+        # v23: scale_gt source. "motion_rms" (v20/v21/v22) uses RMS of GT motion
+        # — degenerate on near-static clips → log-MSE spikes to ~80. "anchor_depth_median"
+        # uses median anchor-frame Z (scene depth) — bounded by physics, matches
+        # TAPVid-3D `scaling="median"` evaluator normalisation, and is the natural
+        # projective invariant (image motion ≈ 3D motion / depth).
+        if scale_source not in ("motion_rms", "anchor_depth_median"):
+            raise ValueError(
+                f"TrackingLossV20: scale_source must be 'motion_rms' or "
+                f"'anchor_depth_median', got {scale_source!r}"
+            )
+        self.scale_source = scale_source
 
     def forward(
         self,
@@ -410,9 +454,12 @@ class TrackingLossV20(nn.Module):
         # Unitless shapes: predicted cumsum (no scale, no anchor offset) and GT.
         zeros = init_xyz.new_zeros(B, N, 3)
         p_tilde = reconstruct_trajectory(pred.xyz, zeros, a)                 # (B, F, N, 3)
-        scale_star = _per_clip_motion_scale(
-            gt_tracks_XYZ, init_xyz, w_pos, anchor_idx=a,
-        )  # (B,)
+        if self.scale_source == "anchor_depth_median":
+            scale_star = _per_clip_anchor_depth_scale(init_xyz, gt_query_mask)  # (B,)
+        else:
+            scale_star = _per_clip_motion_scale(
+                gt_tracks_XYZ, init_xyz, w_pos, anchor_idx=a,
+            )  # (B,)
         gt_tilde = (gt_tracks_XYZ - init_xyz.unsqueeze(1)) / scale_star.view(B, 1, 1, 1)
 
         # Shape term — clean gradient to the trajectory head.

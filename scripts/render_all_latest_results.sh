@@ -24,7 +24,7 @@
 # Env vars (all optional):
 #   SPLIT=minival          which TAPVid-3D split to eval+visualise (default minival;
 #                          use the held-out test set for v19+ official-protocol runs)
-#   USE_CPU=0              run on GPU (default 1 = CPU, safe during training)
+#   USE_CPU=1              run on CPU (default 0 = GPU; set 1 when concurrent training is using the GPU)
 #   RUN_EVAL=0            skip the metric eval + comparison, viz only (default 1)
 #   SUBSETS="pstudio drivetrack adt"   subsets to process (default all three)
 #   CLIPS_PER_SUBSET=3    clips per subset for the per-clip visualisations
@@ -67,7 +67,7 @@ OUT="${RUN_DIR}/viz_step${STEP}"
 mkdir -p "$OUT"
 LATEST_CKPT="$CKPT"
 
-USE_CPU="${USE_CPU:-1}"
+USE_CPU="${USE_CPU:-0}"
 RUN_EVAL="${RUN_EVAL:-1}"
 CLIPS_PER_SUBSET="${CLIPS_PER_SUBSET:-3}"
 MAX_FRAMES="${MAX_FRAMES:-48}"
