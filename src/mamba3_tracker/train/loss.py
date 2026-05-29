@@ -404,6 +404,7 @@ class TrackingLossV20(nn.Module):
         mask_z_negative: bool = False,
         scale_source: str = "motion_rms",
         loss_form: str = "L2",
+        metric_2d_uses_pred_scale: bool = False,
     ) -> None:
         super().__init__()
         missing = set(_TERMS_V20) - set(weights)
@@ -448,6 +449,14 @@ class TrackingLossV20(nn.Module):
                 f"TrackingLossV20: loss_form must be 'L2', 'log1p', or 'L1', got {loss_form!r}"
             )
         self.loss_form = loss_form
+        # v26: by default (False) the 2D loss reconstructs with scale_star (the
+        # GT-derived median depth) — same as inference uses s_pred, so training
+        # never sees the cost of mispredicting scale, leading to a train/inference
+        # mismatch (small pos_2D in training but bad tracking on test videos).
+        # When True (v26+), reconstruct with `pred.scale` instead — gradient
+        # flows back through scale_head from the 2D loss, forcing s_pred to be
+        # consistent with what the 2D projection requires. Per user 2026-05-29.
+        self.metric_2d_uses_pred_scale = bool(metric_2d_uses_pred_scale)
 
     def forward(
         self,
@@ -502,8 +511,14 @@ class TrackingLossV20(nn.Module):
         log_s = torch.log(pred.scale.clamp_min(1e-6))                        # (B,)
         scale_loss = (log_s - torch.log(scale_star)).pow(2).mean()
 
-        # 2D term — project the metric reconstruction (GT scale teacher-forced).
-        p_hat_metric = init_xyz.unsqueeze(1) + scale_star.view(B, 1, 1, 1) * p_tilde
+        # 2D term — project the metric reconstruction. v26: optionally use
+        # s_pred instead of scale_star so the 2D loss matches the inference
+        # reconstruction; training then sees and corrects mispredicted scale.
+        if self.metric_2d_uses_pred_scale:
+            scale_for_2d = pred.scale.view(B, 1, 1, 1)
+        else:
+            scale_for_2d = scale_star.view(B, 1, 1, 1)
+        p_hat_metric = init_xyz.unsqueeze(1) + scale_for_2d * p_tilde
         uv_hat = _project(p_hat_metric, K)
         uv_gt = _project(gt_tracks_XYZ, K)
         r_2D = (uv_hat - uv_gt) / self.image_size

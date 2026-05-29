@@ -459,6 +459,8 @@ def main() -> int:
         extra_loss_kwargs["scale_source"] = str(loss_cfg["scale_source"])
     if loss_cls is TrackingLossV20 and "loss_form" in loss_cfg:
         extra_loss_kwargs["loss_form"] = str(loss_cfg["loss_form"])
+    if loss_cls is TrackingLossV20 and "metric_2d_uses_pred_scale" in loss_cfg:
+        extra_loss_kwargs["metric_2d_uses_pred_scale"] = bool(loss_cfg["metric_2d_uses_pred_scale"])
     loss_fn = loss_cls(
         weights=loss_cfg["weights"],
         image_size=int(data_cfg["image_size"]),
