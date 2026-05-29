@@ -29,8 +29,15 @@ def _load_history(run_dir: Path) -> tuple[list[dict], list[dict]]:
 
 
 def _term_keys(train: list[dict]) -> list[str]:
-    skip = {"step", "lr"}
-    keys = {k for r in train for k in r.keys()} - skip
+    """Loss terms only — scalar columns, excluding meta and nested grad logs."""
+    skip = {"step", "lr", "grad_norm", "head_grad", "term_grad", "val"}
+    keys: set[str] = set()
+    for r in train:
+        for k, v in r.items():
+            if k in skip:
+                continue
+            if isinstance(v, (int, float)):
+                keys.add(k)
     ordered = ["total"] + sorted(k for k in keys if k != "total")
     return ordered
 
@@ -64,6 +71,38 @@ def plot_training_curve(run_dir: Path, out_path: Path) -> None:
     for j in range(n, rows * cols):
         axes[j // cols][j % cols].axis("off")
     fig.suptitle(f"{run_dir.name} — training curves", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    print(f"[plot] wrote {out_path}")
+
+
+def plot_grad_curves(run_dir: Path, out_path: Path) -> None:
+    """Per-head gradient L2 norms over training. Diagnoses which heads are
+    actually learning — e.g. v23 had xyz_head ~50× smaller than scale_head,
+    v24 brought them to within 2× of each other."""
+    rows = json.loads((run_dir / "loss_history.json").read_text())
+    train = [r for r in rows if "lr" in r and "head_grad" in r]
+    if not train:
+        print(f"[plot] no head_grad in {run_dir.name} (older run pre-grad-logging) — skipping")
+        return
+    steps = [r["step"] for r in train]
+    head_names = sorted({k for r in train for k in r["head_grad"].keys()})
+    has_total = any("grad_norm" in r for r in train)
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    if has_total:
+        gn = [r.get("grad_norm") for r in train]
+        ax.plot(steps, gn, label="|grad| (total, post-clip)",
+                linewidth=1.6, color="black", alpha=0.7)
+    for name in head_names:
+        ys = [r["head_grad"].get(name) for r in train]
+        ax.plot(steps, ys, label=name, linewidth=1)
+    ax.set_xlabel("step")
+    ax.set_ylabel("L2 gradient norm")
+    ax.set_title(f"{run_dir.name} — per-head gradient norms")
+    ax.set_yscale("log")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(fontsize=9, ncol=2)
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
@@ -117,6 +156,7 @@ def main() -> None:
     plots_dir = run_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
     plot_training_curve(run_dir, plots_dir / "training_curve.png")
+    plot_grad_curves(run_dir, plots_dir / "grad_norms.png")
     plot_motion_ratio(run_dir, plots_dir / "motion_ratio.png")
 
 
