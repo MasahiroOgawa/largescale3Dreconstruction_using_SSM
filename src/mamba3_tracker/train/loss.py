@@ -428,17 +428,24 @@ class TrackingLossV20(nn.Module):
                 f"'anchor_depth_median', got {scale_source!r}"
             )
         self.scale_source = scale_source
-        # v24: loss_form for pos_3D and pos_2D terms.
+        # loss_form for pos_3D and pos_2D terms (v24+).
         #   "L2"    (v20-v23): r² — gradient 2r vanishes as r→0. With depth-
         #            normalised residuals (~0.02), L2 gradient is ~0.04 and the
         #            shape head never learns past random init.
-        #   "log1p" (v24): log(|r|+1) element-wise summed over xyz/uv. Gradient
-        #            sign(r)/(|r|+1) → ±1 at small r, so the shape head gets
-        #            constant push even when residuals are already small.
-        #            Saturates large-residual gradient → outlier-robust.
-        if loss_form not in ("L2", "log1p"):
+        #   "log1p" (v24): log(|r|+1) element-wise summed. Gradient
+        #            sign(r)/(|r|+1) → ±1 at small r (fixes starvation),
+        #            saturates at large r (outlier-robust but no outlier push).
+        #            Empirically: bucket-median p3D flat across 11k steps —
+        #            the m=0 trap is escaped but optimisation doesn't converge.
+        #   "L1"    (v25): |r| element-wise summed. Gradient sign(r) constant 1
+        #            at all r — fixes the v23 m=0 trap (where L2's 2·(m*/depth)
+        #            ≈ 0.04 push left m=0 as a quasi-stable solution). Loss
+        #            VALUE grows linearly with r (vs log1p's saturation), so
+        #            large-residual clips contribute proportionally more to the
+        #            batch sum.
+        if loss_form not in ("L2", "log1p", "L1"):
             raise ValueError(
-                f"TrackingLossV20: loss_form must be 'L2' or 'log1p', got {loss_form!r}"
+                f"TrackingLossV20: loss_form must be 'L2', 'log1p', or 'L1', got {loss_form!r}"
             )
         self.loss_form = loss_form
 
@@ -482,6 +489,12 @@ class TrackingLossV20(nn.Module):
             # log(|r|+1) summed over xyz; gradient sign(r)/(|r|+1) is ~1 at the
             # small (~0.02) depth-normalised residuals where L2's 2r vanishes.
             pos_3D = (torch.log1p(r_shape.abs()).sum(dim=-1) * w_pos).sum() / denom
+        elif self.loss_form == "L1":
+            # |r| summed over xyz; gradient sign(r), constant 1 at all r.
+            # Loss VALUE = |r| grows linearly with residual — large-residual
+            # clips contribute proportionally more to the aggregated batch loss
+            # than under log1p (which saturates).
+            pos_3D = (r_shape.abs().sum(dim=-1) * w_pos).sum() / denom
         else:
             pos_3D = ((r_shape.pow(2).sum(dim=-1)) * w_pos).sum() / denom
 
@@ -510,6 +523,10 @@ class TrackingLossV20(nn.Module):
             # r_2D is already image-width normalised — log(|r_2D|+1) per-axis
             # summed gives the same non-vanishing gradient behaviour as p3D.
             pos_2D_per = torch.log1p(r_2D.abs()).sum(dim=-1)
+            pos_2D = (torch.nan_to_num(pos_2D_per, nan=0.0, posinf=0.0,
+                                        neginf=0.0) * w_2D).sum() / denom_2D
+        elif self.loss_form == "L1":
+            pos_2D_per = r_2D.abs().sum(dim=-1)
             pos_2D = (torch.nan_to_num(pos_2D_per, nan=0.0, posinf=0.0,
                                         neginf=0.0) * w_2D).sum() / denom_2D
         else:
