@@ -21,17 +21,25 @@
 #   scripts/render_all_latest_results.sh outputs/track_v19_<dt>          # specific run dir
 #   scripts/render_all_latest_results.sh outputs/track_v19_<dt>/ckpt_5000.pt   # specific ckpt
 #
-# Env vars (all optional):
-#   SPLIT=minival          which TAPVid-3D split to eval+visualise (default minival;
-#                          use the held-out test set for v19+ official-protocol runs)
-#   USE_CPU=1              run on CPU (default 0 = GPU; set 1 when concurrent training is using the GPU)
-#   RUN_EVAL=0            skip the metric eval + comparison, viz only (default 1)
-#   SUBSETS="pstudio drivetrack adt"   subsets to process (default all three)
-#   CLIPS_PER_SUBSET=3    clips per subset for the per-clip visualisations
-#   MAX_FRAMES=48         frame cap per clip for the visualisations
-#   QUICK=1               fast preview during/after training (~1-2 min): skip
-#                          eval+comparison, skip 3D+space-time plots, render
-#                          1 tracker MP4 per subset, always do loss-curve plot.
+# Flags (each mirrors an env var; either works):
+#   --quick                fast preview (~1-2 min): skip eval+comparison, skip
+#                          3D+space-time plots, render 1 tracker MP4 per subset,
+#                          always do loss-curve plot. Sets QUICK=1.
+#   --use-cpu, --use_cpu   run on CPU (set when GPU busy with training). Sets USE_CPU=1.
+#   --no-eval              skip the metric eval + comparison, viz only. Sets RUN_EVAL=0.
+#   --split <name>         which TAPVid-3D split (minival / full_eval / all).
+#   --subsets "a b c"      subsets to process.
+#   --clips-per-subset N   clips per subset for per-clip visualisations.
+#   --max-frames N         frame cap per clip for the visualisations.
+#
+# Env vars (all optional; equivalent to flags above):
+#   SPLIT=minival          (default minival; use held-out test for v19+ runs)
+#   USE_CPU=1              (default 0 = GPU)
+#   RUN_EVAL=0             (default 1)
+#   SUBSETS="pstudio drivetrack adt"   (default all three)
+#   CLIPS_PER_SUBSET=3     (default 3)
+#   MAX_FRAMES=48          (default 48)
+#   QUICK=1                (default 0)
 #
 # Argument resolution:
 #   no arg                 -> ls -td outputs/track_v*_*/ | head -1 ; latest ckpt
@@ -40,7 +48,26 @@
 
 set -euo pipefail
 
-ARG="${1:-}"
+# Parse flags. Each flag mirrors the corresponding env var; the env var still
+# works when set in the environment. Anything not a flag is treated as the
+# positional path argument (run dir or .pt ckpt).
+ARG=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --quick)             QUICK=1; shift ;;
+        --use-cpu|--use_cpu) USE_CPU=1; shift ;;
+        --no-eval)           RUN_EVAL=0; shift ;;
+        --split)             SPLIT="$2"; shift 2 ;;
+        --subsets)           SUBSETS="$2"; shift 2 ;;
+        --clips-per-subset)  CLIPS_PER_SUBSET="$2"; shift 2 ;;
+        --max-frames)        MAX_FRAMES="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '1,40p' "$0"; exit 0 ;;
+        --) shift; ARG="${1:-}"; break ;;
+        -*) echo "error: unknown flag: $1" >&2; exit 1 ;;
+        *)  ARG="$1"; shift ;;
+    esac
+done
 
 if [ -z "$ARG" ]; then
     RUN_DIR="$(ls -td outputs/track_v*_*/ 2>/dev/null | head -1)"
