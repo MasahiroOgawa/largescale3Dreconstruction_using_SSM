@@ -107,7 +107,7 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text())
-    supported = ("scale_est_v1", "scale_est_v2", "scale_est_v3")
+    supported = ("scale_est_v1", "scale_est_v2", "scale_est_v3", "scale_est_v4")
     if cfg.get("version") not in supported:
         raise ValueError(f"version must be one of {supported}, got {cfg.get('version')!r}")
     if args.steps is not None: cfg["train"]["steps"] = args.steps
@@ -127,6 +127,7 @@ def main() -> int:
         state_dim=int(cfg["model"].get("state_dim", 64)),
         head_hidden=int(cfg["model"].get("head_hidden", 384)),
         param=str(cfg["model"].get("param", "softplus")),
+        use_patches=bool(cfg["model"].get("use_patches", False)),
     ).to(device)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
@@ -135,7 +136,16 @@ def main() -> int:
 
     train_clips, _ = official_train_test_split(args.data_root, subsets=cfg["data"]["subsets"])
     rng = random.Random(42)
-    val_clips = rng.sample(train_clips, min(15, len(train_clips)))
+    # Stratified val sample: 5 clips per subset (15 total) so all 3 subsets
+    # appear in every val pass. Random sampling under-represents pstudio.
+    by_sub: dict[str, list] = defaultdict(list)
+    for c in train_clips:
+        by_sub[_which_subset(Path(c))].append(c)
+    val_clips = []
+    for sub in ("pstudio", "drivetrack", "adt"):
+        pool = by_sub.get(sub, [])
+        if pool:
+            val_clips.extend(rng.sample(pool, min(5, len(pool))))
     print(f"[scale-est] {len(train_clips)} train clips, {len(val_clips)} val (sampled from train)",
           flush=True)
 

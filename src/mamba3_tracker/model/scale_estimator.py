@@ -41,6 +41,7 @@ class ScaleEstimator(nn.Module):
         state_dim: int = 64,
         head_hidden: int = 384,
         param: str = "softplus",
+        use_patches: bool = False,
     ) -> None:
         super().__init__()
         self.encoder = DINOv2Encoder(
@@ -50,8 +51,15 @@ class ScaleEstimator(nn.Module):
         )
         D = self.encoder.dim
         self.dim = D
+        # v4: optionally enrich each per-frame token with the spatial
+        # mean-pool of patch features (ground plane, object-size priors that
+        # CLS alone discards). When enabled, patch_proj fuses CLS + patch_mean
+        # back to D before the temporal cross-attention.
+        self.use_patches = bool(use_patches)
+        if self.use_patches:
+            self.patch_proj = nn.Linear(2 * D, D)
         # Learnable "scale query" — one token that cross-attends to the
-        # per-frame CLS sequence to produce a single per-clip representation.
+        # per-frame sequence to produce a single per-clip representation.
         self.query = nn.Parameter(torch.randn(1, 1, D) * 0.02)
         self.q_norm = nn.LayerNorm(D)
         self.kv_norm = nn.LayerNorm(D)
@@ -79,10 +87,18 @@ class ScaleEstimator(nn.Module):
 
     def forward(self, video: Tensor) -> Tensor:
         """video: (B, F, 3, H, W). Returns s_pred (B,) in metres."""
-        _, cls_per_frame = self.encoder.forward_video_with_cls(video)
-        B = cls_per_frame.shape[0]
+        pyramid, cls_per_frame = self.encoder.forward_video_with_cls(video)
+        if self.use_patches:
+            # pyramid[0]: (B, F, D, h, w). Spatial mean-pool per frame.
+            patch_mean = pyramid[0].mean(dim=(-1, -2))               # (B, F, D)
+            kv_in = self.patch_proj(
+                torch.cat([cls_per_frame, patch_mean], dim=-1)
+            )                                                         # (B, F, D)
+        else:
+            kv_in = cls_per_frame
+        B = kv_in.shape[0]
         q = self.query.expand(B, 1, self.dim)
-        kv = self.kv_norm(cls_per_frame)
+        kv = self.kv_norm(kv_in)
         qn = self.q_norm(q)
         delta = self.cross_attn(qn, kv)
         q_out = self.out_norm(q + delta)             # (B, 1, D)
