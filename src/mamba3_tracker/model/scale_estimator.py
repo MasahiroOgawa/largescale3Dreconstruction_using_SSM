@@ -40,6 +40,7 @@ class ScaleEstimator(nn.Module):
         num_heads: int = 6,
         state_dim: int = 64,
         head_hidden: int = 384,
+        param: str = "softplus",
     ) -> None:
         super().__init__()
         self.encoder = DINOv2Encoder(
@@ -63,6 +64,14 @@ class ScaleEstimator(nn.Module):
             nn.GELU(),
             nn.Linear(head_hidden, 1),
         )
+        if param not in ("softplus", "exp"):
+            raise ValueError(f"param must be 'softplus' or 'exp', got {param!r}")
+        self.param = param
+        # v2: zero-bias init on final linear so s_init = exp(0) = 1 m.
+        # Aligned with ScaleHead's v20+ exp pattern (see model/heads.py).
+        # Softplus path keeps its default init for back-compat with v1.
+        if self.param == "exp":
+            nn.init.zeros_(self.head[-1].bias)
 
     @property
     def image_size(self) -> int:
@@ -78,7 +87,12 @@ class ScaleEstimator(nn.Module):
         delta = self.cross_attn(qn, kv)
         q_out = self.out_norm(q + delta)             # (B, 1, D)
         z = self.head(q_out).squeeze(-1).squeeze(-1) # (B,)
-        return F.softplus(z) + 1e-3                  # positive scale
+        # v2: exp(z) keeps ∂s/∂z = s nonzero everywhere, no v18/v19-style
+        # gradient-decay trap. Output is unbounded above; AdamW + grad-clip
+        # keep it numerically tame.
+        if self.param == "exp":
+            return torch.exp(z)
+        return F.softplus(z) + 1e-3                  # legacy v1 path
 
 
 def gt_scale_from_batch(

@@ -102,8 +102,9 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text())
-    if cfg.get("version") != "scale_est_v1":
-        raise ValueError(f"unsupported version: {cfg.get('version')!r}")
+    supported = ("scale_est_v1", "scale_est_v2")
+    if cfg.get("version") not in supported:
+        raise ValueError(f"version must be one of {supported}, got {cfg.get('version')!r}")
     if args.steps is not None: cfg["train"]["steps"] = args.steps
     if args.batch is not None: cfg["train"]["batch"] = args.batch
 
@@ -120,6 +121,7 @@ def main() -> int:
         num_heads=int(cfg["model"].get("num_heads", 6)),
         state_dim=int(cfg["model"].get("state_dim", 64)),
         head_hidden=int(cfg["model"].get("head_hidden", 384)),
+        param=str(cfg["model"].get("param", "softplus")),
     ).to(device)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
