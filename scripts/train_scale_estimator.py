@@ -43,14 +43,19 @@ def _which_subset(path: Path) -> str:
 
 
 @torch.no_grad()
-def _validate(model, val_ds, device, amp_dtype) -> dict[str, float]:
-    """MAE + relative-error stats over val clips, both overall and per-subset."""
+def _validate(model, val_ds, val_clips, device, amp_dtype) -> dict[str, float]:
+    """MAE + relative-error stats over val clips, both overall and per-subset.
+
+    `val_clips` is the list of clip paths used to build `val_ds`; we pair them
+    by index so per-subset labels work (TAPVid3DDataset doesn't expose the
+    clip path on each returned sample).
+    """
     model.eval()
     per_sub_abs: dict[str, list[float]] = defaultdict(list)
     per_sub_rel: dict[str, list[float]] = defaultdict(list)
     for i in range(len(val_ds)):
         sample = val_ds[i]
-        sub = _which_subset(Path(sample.clip_path)) if hasattr(sample, "clip_path") else "unknown"
+        sub = _which_subset(Path(val_clips[i])) if i < len(val_clips) else "unknown"
         batch = collate_tracking([sample])
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(device.type == "cuda")):
             s_pred = model(batch.images.to(device, non_blocking=True))     # (1,)
@@ -102,7 +107,7 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text())
-    supported = ("scale_est_v1", "scale_est_v2")
+    supported = ("scale_est_v1", "scale_est_v2", "scale_est_v3")
     if cfg.get("version") not in supported:
         raise ValueError(f"version must be one of {supported}, got {cfg.get('version')!r}")
     if args.steps is not None: cfg["train"]["steps"] = args.steps
@@ -165,6 +170,9 @@ def main() -> int:
     log_every = int(cfg["train"]["log_every"])
     val_every = int(cfg["train"]["val_every"])
     ckpt_every = int(cfg["train"]["ckpt_every"])
+    loss_form = str(cfg["train"].get("loss_form", "L1"))
+    if loss_form not in ("L1", "log_L1"):
+        raise ValueError(f"train.loss_form must be 'L1' or 'log_L1', got {loss_form!r}")
 
     model.train()
     step = 0
@@ -179,7 +187,13 @@ def main() -> int:
                 batch.tracks_XYZ.to(device), batch.queries_xyt.to(device),
                 batch.query_mask.to(device),
             )
-            loss = (s_pred - s_gt).abs().mean()
+            if loss_form == "log_L1":
+                # v3: equalises relative error across subsets — drivetrack
+                # (s_gt ~ 20-50m) no longer dominates over adt (~1m) in the
+                # gradient. matches the "% target across all depths" geometry.
+                loss = (torch.log(s_pred) - torch.log(s_gt)).abs().mean()
+            else:
+                loss = (s_pred - s_gt).abs().mean()
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             if torch.isfinite(gn) and torch.isfinite(loss):
@@ -207,7 +221,7 @@ def main() -> int:
                 (args.out_dir / "loss_history.json").write_text(json.dumps(history, indent=2))
 
             if step > 0 and step % val_every == 0:
-                v = _validate(model, val_ds, device, amp_dtype)
+                v = _validate(model, val_ds, val_clips, device, amp_dtype)
                 history.append({"step": step, "val": v})
                 vs = "  ".join(f"{k}={v[k]:.3f}" for k in sorted(v))
                 print(f"[scale-est] step {step:6d}  VAL  {vs}", flush=True)
