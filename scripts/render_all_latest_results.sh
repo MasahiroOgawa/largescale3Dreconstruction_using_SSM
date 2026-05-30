@@ -29,6 +29,9 @@
 #   SUBSETS="pstudio drivetrack adt"   subsets to process (default all three)
 #   CLIPS_PER_SUBSET=3    clips per subset for the per-clip visualisations
 #   MAX_FRAMES=48         frame cap per clip for the visualisations
+#   QUICK=1               fast preview during/after training (~1-2 min): skip
+#                          eval+comparison, skip 3D+space-time plots, render
+#                          1 tracker MP4 per subset, always do loss-curve plot.
 #
 # Argument resolution:
 #   no arg                 -> ls -td outputs/track_v*_*/ | head -1 ; latest ckpt
@@ -71,6 +74,13 @@ USE_CPU="${USE_CPU:-0}"
 RUN_EVAL="${RUN_EVAL:-1}"
 CLIPS_PER_SUBSET="${CLIPS_PER_SUBSET:-3}"
 MAX_FRAMES="${MAX_FRAMES:-48}"
+QUICK="${QUICK:-0}"
+# Quick mode: skip the expensive eval and the secondary plot suites, keep only
+# the tracker-MP4 viz at 1 clip per subset plus the loss-curve plot.
+if [ "$QUICK" = "1" ]; then
+    RUN_EVAL=0
+    CLIPS_PER_SUBSET=1
+fi
 SUBSETS="${SUBSETS:-pstudio drivetrack adt}"
 SPLIT="${SPLIT:-minival}"      # all | minival | full_eval — minival = held-out test set for v19+
 AMP=$([ "$USE_CPU" = "1" ] && echo fp32 || echo bf16)
@@ -115,21 +125,25 @@ env ${CUDA_PREFIX} uv run python scripts/render_tracker_video.py \
     --clips-per-subset "$CLIPS_PER_SUBSET" --max-frames "$MAX_FRAMES" \
     --split "$SPLIT" --fps 15 --amp "$AMP" 2>&1 | tee "$OUT/render.log"
 
-# ---- Step 4: per-clip 3D xyz-space trajectory plots -------------------------
-echo
-echo "[3d] 3D-space track plots (xyz)"
-env ${CUDA_PREFIX} uv run python scripts/render_3d_tracks.py \
-    --ckpt "$LATEST_CKPT" --out-dir "$OUT" --subsets $SUBSETS \
-    --clips-per-subset "$CLIPS_PER_SUBSET" --max-frames "$MAX_FRAMES" \
-    --split "$SPLIT" --amp "$AMP" 2>&1 | tee -a "$OUT/render.log"
+# ---- Steps 4+5: per-clip 3D + space-time plots — skipped in QUICK mode -----
+if [ "$QUICK" != "1" ]; then
+    echo
+    echo "[3d] 3D-space track plots (xyz)"
+    env ${CUDA_PREFIX} uv run python scripts/render_3d_tracks.py \
+        --ckpt "$LATEST_CKPT" --out-dir "$OUT" --subsets $SUBSETS \
+        --clips-per-subset "$CLIPS_PER_SUBSET" --max-frames "$MAX_FRAMES" \
+        --split "$SPLIT" --amp "$AMP" 2>&1 | tee -a "$OUT/render.log"
 
-# ---- Step 5: per-clip space-time plots (xyt / yzt / zxt) --------------------
-echo
-echo "[st] space-time track plots (xy / yz / zx × time)"
-env ${CUDA_PREFIX} uv run python scripts/render_space_time_tracks.py \
-    --ckpt "$LATEST_CKPT" --out-dir "$OUT" --subsets $SUBSETS \
-    --clips-per-subset "$CLIPS_PER_SUBSET" --max-frames "$MAX_FRAMES" \
-    --split "$SPLIT" --amp "$AMP" 2>&1 | tee -a "$OUT/render.log"
+    echo
+    echo "[st] space-time track plots (xy / yz / zx × time)"
+    env ${CUDA_PREFIX} uv run python scripts/render_space_time_tracks.py \
+        --ckpt "$LATEST_CKPT" --out-dir "$OUT" --subsets $SUBSETS \
+        --clips-per-subset "$CLIPS_PER_SUBSET" --max-frames "$MAX_FRAMES" \
+        --split "$SPLIT" --amp "$AMP" 2>&1 | tee -a "$OUT/render.log"
+else
+    echo
+    echo "[quick] skipping 3D + space-time plots (QUICK=1)"
+fi
 
 # ---- Step 6: training/val loss curves + motion-ratio ------------------------
 echo
