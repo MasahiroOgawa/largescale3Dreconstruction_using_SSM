@@ -107,7 +107,7 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text())
-    supported = ("scale_est_v1", "scale_est_v2", "scale_est_v3", "scale_est_v4")
+    supported = ("scale_est_v1", "scale_est_v2", "scale_est_v3", "scale_est_v4", "scale_est_v5")
     if cfg.get("version") not in supported:
         raise ValueError(f"version must be one of {supported}, got {cfg.get('version')!r}")
     if args.steps is not None: cfg["train"]["steps"] = args.steps
@@ -128,6 +128,7 @@ def main() -> int:
         head_hidden=int(cfg["model"].get("head_hidden", 384)),
         param=str(cfg["model"].get("param", "softplus")),
         use_patches=bool(cfg["model"].get("use_patches", False)),
+        fuse_layers=cfg["model"].get("fuse_layers", None),
     ).to(device)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
@@ -188,6 +189,8 @@ def main() -> int:
     step = 0
     t0 = time.perf_counter()
     history: list = []
+    best_mae = float("inf")
+    best_step = -1
     while step < n_steps:
         for batch in loader:
             if step >= n_steps: break
@@ -236,6 +239,17 @@ def main() -> int:
                 vs = "  ".join(f"{k}={v[k]:.3f}" for k in sorted(v))
                 print(f"[scale-est] step {step:6d}  VAL  {vs}", flush=True)
                 (args.out_dir / "loss_history.json").write_text(json.dumps(history, indent=2))
+                # Save the best-MAE ckpt separately so we can eval the model at
+                # its best val rather than the noisy final step (v4 drifted from
+                # 1.79 m at step 3500 to 3.08 m at step 4500).
+                if v["mae"] < best_mae:
+                    best_mae = v["mae"]
+                    best_step = step
+                    torch.save({
+                        "step": step, "val": v, "model": model.state_dict(),
+                    }, args.out_dir / "ckpt_best.pt")
+                    print(f"[scale-est] step {step:6d}  NEW BEST mae={v['mae']:.3f}  → ckpt_best.pt",
+                          flush=True)
 
             if step > 0 and step % ckpt_every == 0:
                 p = _save_ckpt(args.out_dir, step, model, optim, sched, history)
@@ -243,7 +257,8 @@ def main() -> int:
             step += 1
 
     final = _save_ckpt(args.out_dir, n_steps, model, optim, sched, history)
-    print(f"[scale-est] DONE — {final}", flush=True)
+    print(f"[scale-est] DONE — {final}  (best val mae={best_mae:.3f} at step {best_step})",
+          flush=True)
     return 0
 
 

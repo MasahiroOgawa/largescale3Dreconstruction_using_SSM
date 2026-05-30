@@ -42,12 +42,13 @@ class ScaleEstimator(nn.Module):
         head_hidden: int = 384,
         param: str = "softplus",
         use_patches: bool = False,
+        fuse_layers: list[int] | None = None,
     ) -> None:
         super().__init__()
         self.encoder = DINOv2Encoder(
             model_name=dinov2_model,
             image_size=dinov2_image_size,
-            fuse_layers=None,
+            fuse_layers=fuse_layers,
         )
         D = self.encoder.dim
         self.dim = D
