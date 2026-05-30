@@ -1,0 +1,108 @@
+"""Standalone scene-scale estimator (per-clip median anchor depth).
+
+Built as an isolated experiment to test whether scale prediction works
+cleanly on its own — far simpler than per-pixel monocular depth, just a
+single scalar regression per clip from DINO features. If this trains well,
+it confirms scale estimation isn't the bottleneck in our joint tracker;
+remaining loss noise is on the position/shape side.
+
+Architecture (deliberately minimal):
+    video  (B, F, 3, H, W)
+      → DINOv3 (frozen)                 → cls_per_frame (B, F, D)
+      → Mamba3 cross-attention from a learnable query token over the
+        temporal CLS sequence            → q (B, 1, D)
+      → MLP                              → z (B,)
+      → softplus(z) + eps                → s_pred ∈ ℝ⁺   (metres)
+
+Loss:
+    L_scale = mean_clip |s_pred − s_gt|
+where s_gt = median anchor-frame Z over query tracks (same per-clip
+"scene depth" target used by TrackingLossV20 with scale_source =
+'anchor_depth_median').
+"""
+
+from __future__ import annotations
+
+import torch
+from torch import Tensor, nn
+import torch.nn.functional as F
+
+from mamba3_attn.mamba3.cross_attention import Mamba3CrossAttention
+
+from .dino_encoder import DINOv2Encoder
+
+
+class ScaleEstimator(nn.Module):
+    def __init__(
+        self,
+        dinov2_model: str = "facebook/dinov3-vits16-pretrain-lvd1689m",
+        dinov2_image_size: int = 896,
+        num_heads: int = 6,
+        state_dim: int = 64,
+        head_hidden: int = 384,
+    ) -> None:
+        super().__init__()
+        self.encoder = DINOv2Encoder(
+            model_name=dinov2_model,
+            image_size=dinov2_image_size,
+            fuse_layers=None,
+        )
+        D = self.encoder.dim
+        self.dim = D
+        # Learnable "scale query" — one token that cross-attends to the
+        # per-frame CLS sequence to produce a single per-clip representation.
+        self.query = nn.Parameter(torch.randn(1, 1, D) * 0.02)
+        self.q_norm = nn.LayerNorm(D)
+        self.kv_norm = nn.LayerNorm(D)
+        self.cross_attn = Mamba3CrossAttention(
+            dim_q=D, dim_kv=D, num_heads=num_heads, state_dim=state_dim,
+        )
+        self.out_norm = nn.LayerNorm(D)
+        self.head = nn.Sequential(
+            nn.Linear(D, head_hidden),
+            nn.GELU(),
+            nn.Linear(head_hidden, 1),
+        )
+
+    @property
+    def image_size(self) -> int:
+        return int(self.encoder.coarse_image_size)
+
+    def forward(self, video: Tensor) -> Tensor:
+        """video: (B, F, 3, H, W). Returns s_pred (B,) in metres."""
+        _, cls_per_frame = self.encoder.forward_video_with_cls(video)
+        B = cls_per_frame.shape[0]
+        q = self.query.expand(B, 1, self.dim)
+        kv = self.kv_norm(cls_per_frame)
+        qn = self.q_norm(q)
+        delta = self.cross_attn(qn, kv)
+        q_out = self.out_norm(q + delta)             # (B, 1, D)
+        z = self.head(q_out).squeeze(-1).squeeze(-1) # (B,)
+        return F.softplus(z) + 1e-3                  # positive scale
+
+
+def gt_scale_from_batch(
+    tracks_XYZ: Tensor,        # (B, F, N, 3)
+    queries_xyt: Tensor,       # (B, N, 3) — (x, y, t_anchor)
+    query_mask: Tensor,        # (B, N) bool
+    eps: float = 1e-2,
+) -> Tensor:
+    """GT per-clip scene-scale = median anchor-frame Z over query tracks.
+
+    Matches v23+ `_per_clip_anchor_depth_scale` exactly so the standalone
+    estimator and the joint tracker's ScaleHead see the same target.
+    """
+    B, F_, N, _ = tracks_XYZ.shape
+    a = queries_xyt[..., 2].clamp(min=0, max=F_ - 1).long()       # (B, N)
+    init_xyz = tracks_XYZ.gather(
+        dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+    ).squeeze(1)                                                  # (B, N, 3)
+    z = init_xyz[..., 2]                                          # (B, N)
+    valid = query_mask.float() * torch.isfinite(z).float() * (z > 0).float()
+    z_sentinel = torch.where(valid > 0, z, torch.full_like(z, float("inf")))
+    sorted_z, _ = torch.sort(z_sentinel, dim=-1)
+    n_valid = valid.sum(dim=-1).long().clamp_min(1)
+    mid = ((n_valid - 1) // 2).clamp_min(0)
+    med = sorted_z.gather(1, mid.unsqueeze(-1)).squeeze(-1)
+    med = torch.where(torch.isfinite(med), med, torch.full_like(med, eps))
+    return med.clamp_min(eps).detach()
