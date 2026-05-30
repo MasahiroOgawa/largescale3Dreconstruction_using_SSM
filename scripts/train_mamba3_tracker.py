@@ -461,6 +461,10 @@ def main() -> int:
         extra_loss_kwargs["loss_form"] = str(loss_cfg["loss_form"])
     if loss_cls is TrackingLossV20 and "metric_2d_uses_pred_scale" in loss_cfg:
         extra_loss_kwargs["metric_2d_uses_pred_scale"] = bool(loss_cfg["metric_2d_uses_pred_scale"])
+    if loss_cls is TrackingLossV20 and "amp_3d" in loss_cfg:
+        extra_loss_kwargs["amp_3d"] = float(loss_cfg["amp_3d"])
+    if loss_cls is TrackingLossV20 and "amp_2d" in loss_cfg:
+        extra_loss_kwargs["amp_2d"] = float(loss_cfg["amp_2d"])
     loss_fn = loss_cls(
         weights=loss_cfg["weights"],
         image_size=int(data_cfg["image_size"]),

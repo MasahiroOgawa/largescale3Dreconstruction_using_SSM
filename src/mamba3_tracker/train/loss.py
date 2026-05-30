@@ -405,6 +405,8 @@ class TrackingLossV20(nn.Module):
         scale_source: str = "motion_rms",
         loss_form: str = "L2",
         metric_2d_uses_pred_scale: bool = False,
+        amp_3d: float = 1.0,
+        amp_2d: float = 1.0,
     ) -> None:
         super().__init__()
         missing = set(_TERMS_V20) - set(weights)
@@ -457,6 +459,14 @@ class TrackingLossV20(nn.Module):
         # flows back through scale_head from the 2D loss, forcing s_pred to be
         # consistent with what the 2D projection requires. Per user 2026-05-29.
         self.metric_2d_uses_pred_scale = bool(metric_2d_uses_pred_scale)
+        # v27: amplification multipliers applied to pos_3D and pos_2D BEFORE the
+        # weighted sum. Default 1.0 preserves v20-v26 behaviour. Used in v27 to
+        # un-normalise the position losses to their physical scales: pos_2D
+        # ≈ pixels (× image_size ≈ 1000) and pos_3D ≈ "100m scale" (× 100) so
+        # both dominate the weighted total. The scale_head still gets gradient
+        # via the 2D path (v26 fix) so dropping scale_loss to near-zero is safe.
+        self.amp_3d = float(amp_3d)
+        self.amp_2d = float(amp_2d)
 
     def forward(
         self,
@@ -565,14 +575,21 @@ class TrackingLossV20(nn.Module):
                 pred.vis_logits, vis_f, weight=qm, reduction="sum",
             ) / qm.sum().clamp_min(1.0)
 
+        # v27: amplify pos_3D and pos_2D BEFORE the weighted sum so they
+        # dominate the total. amp_*=1.0 (default) preserves v20-v26 behaviour.
+        pos_3D_amp = self.amp_3d * pos_3D
+        pos_2D_amp = self.amp_2d * pos_2D
         total = (
-            self.w["pos_3D"] * pos_3D
+            self.w["pos_3D"] * pos_3D_amp
             + self.w["scale"] * scale_loss
-            + self.w["pos_2D"] * pos_2D
+            + self.w["pos_2D"] * pos_2D_amp
             + self.w["vis"]    * vis_loss
         )
+        # Report the AMPLIFIED per-term values in the loss output so the
+        # training log and plots reflect what the optimizer is actually seeing.
         return TrackingLossOutput(
-            total=total, pos_3D=pos_3D, pos_2D=pos_2D, vis=vis_loss, scale=scale_loss,
+            total=total, pos_3D=pos_3D_amp, pos_2D=pos_2D_amp,
+            vis=vis_loss, scale=scale_loss,
         )
 
 
