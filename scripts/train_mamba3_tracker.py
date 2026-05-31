@@ -418,6 +418,28 @@ def main() -> int:
         pin_memory=True, persistent_workers=False,
     )
 
+    # v28+: optionally load a pretrained ScaleEstimator and pass it to the
+    # tracker as a frozen scale source (skips the on-tracker scale_head).
+    frozen_scale = None
+    fs_ckpt = model_cfg.get("frozen_scale_estimator_ckpt")
+    if fs_ckpt is not None:
+        from mamba3_tracker.model.scale_estimator import ScaleEstimator
+        fs_cfg = model_cfg.get("frozen_scale_estimator_cfg", {})
+        frozen_scale = ScaleEstimator(
+            dinov2_model=str(fs_cfg.get("dinov2_model",
+                "facebook/dinov3-vits16-pretrain-lvd1689m")),
+            dinov2_image_size=int(fs_cfg.get("dinov2_image_size", 896)),
+            num_heads=int(fs_cfg.get("num_heads", 6)),
+            state_dim=int(fs_cfg.get("state_dim", 64)),
+            head_hidden=int(fs_cfg.get("head_hidden", 384)),
+            param=str(fs_cfg.get("param", "exp")),
+            use_patches=bool(fs_cfg.get("use_patches", True)),
+            fuse_layers=fs_cfg.get("fuse_layers"),
+        )
+        state = torch.load(fs_ckpt, map_location="cpu", weights_only=False)
+        frozen_scale.load_state_dict(state["model"])
+        print(f"[train] loaded frozen scale estimator from {fs_ckpt} "
+              f"(val mae at save = {state.get('val', {}).get('mae', '?')})")
     model = Mamba3Tracker(
         dim=int(model_cfg["dim"]), num_heads=int(model_cfg["num_heads"]),
         state_dim=int(model_cfg["state_dim"]),
@@ -430,6 +452,7 @@ def main() -> int:
         dinov2_fuse_layers=model_cfg.get("dinov2_fuse_layers"),
         predict_scale=bool(model_cfg.get("predict_scale", False)),
         scale_param=str(model_cfg.get("scale_param", "softplus")),
+        frozen_scale_estimator=frozen_scale,
     ).to(device)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
     n_total = sum(p.numel() for p in model.parameters()) / 1e6

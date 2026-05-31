@@ -49,6 +49,7 @@ class Mamba3Tracker(nn.Module):
         dinov2_fuse_layers: list[int] | None = None,  # v16+: e.g. [2, 5, 8, 11]
         predict_scale: bool = False,           # v18+: emit per-clip scalar `s`
         scale_param: str = "softplus",         # v20+: "exp" for log-scale parameterisation
+        frozen_scale_estimator: nn.Module | None = None,  # v28+: external pretrained scale source
     ) -> None:
         super().__init__()
         if encoder_kind == "pyramid":
@@ -74,10 +75,22 @@ class Mamba3Tracker(nn.Module):
         self.image_size = self.encoder.coarse_image_size
 
         self.predict_scale = bool(predict_scale)
+        # v28: a frozen external scale-estimator can replace the trained scale_head.
+        # When supplied, its forward(video) is used as `pred.scale` and its
+        # parameters are kept frozen (no gradient). The trained scale_head path
+        # is skipped entirely.
+        self.frozen_scale_estimator = frozen_scale_estimator
+        if self.frozen_scale_estimator is not None:
+            for p in self.frozen_scale_estimator.parameters():
+                p.requires_grad_(False)
+            self.frozen_scale_estimator.eval()
         if self.predict_scale:
             if encoder_kind != "dinov2":
                 raise ValueError("predict_scale=True requires encoder_kind='dinov2' (needs CLS tokens)")
-            self.scale_head = ScaleHead(dim=dim, param=scale_param)
+            if self.frozen_scale_estimator is None:
+                self.scale_head = ScaleHead(dim=dim, param=scale_param)
+            else:
+                self.scale_head = None  # replaced by external frozen module
             # Zero-init xyz_head's final layer so Δp̃ = 0 at startup. With
             # v18's path-length-normalised 3D loss, a random initial
             # Δp̃ ~ O(0.1 m) divided by a 1 mm GT step (e.g. pstudio
@@ -112,7 +125,14 @@ class Mamba3Tracker(nn.Module):
         """
         if self.predict_scale:
             pyramid, cls_per_frame = self.encoder.forward_video_with_cls(video)
-            scale = self.scale_head(cls_per_frame)                     # (B,)
+            if self.frozen_scale_estimator is not None:
+                # v28: external frozen scale estimator (e.g. pretrained
+                # ScaleEstimator from configs/scale_est_v4.yaml). Always in
+                # eval, no gradient flow through it.
+                with torch.no_grad():
+                    scale = self.frozen_scale_estimator(video)         # (B,)
+            else:
+                scale = self.scale_head(cls_per_frame)                 # (B,)
         else:
             pyramid = self.encoder.forward_video(video)
             scale = None
