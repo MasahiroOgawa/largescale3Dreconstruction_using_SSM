@@ -91,9 +91,12 @@ def _save_ckpt(out_dir: Path, step: int, model, optim, sched, history) -> Path:
         "history": history,
     }, p_tmp)
     p_tmp.rename(p_final)
+    # Rotate: keep only the current step ckpt + ckpt_best.pt (the separate
+    # best-MAE snapshot saved by the val loop).
     for old in out_dir.glob("ckpt_*.pt"):
-        if old != p_final:
-            old.unlink(missing_ok=True)
+        if old.name == p_final.name or old.name == "ckpt_best.pt":
+            continue
+        old.unlink(missing_ok=True)
     return p_final
 
 
