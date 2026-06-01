@@ -110,7 +110,7 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text())
-    supported = ("scale_est_v1", "scale_est_v2", "scale_est_v3", "scale_est_v4", "scale_est_v5", "scale_est_v6")
+    supported = ("scale_est_v1", "scale_est_v2", "scale_est_v3", "scale_est_v4", "scale_est_v5", "scale_est_v6", "scale_est_v7")
     if cfg.get("version") not in supported:
         raise ValueError(f"version must be one of {supported}, got {cfg.get('version')!r}")
     if args.steps is not None: cfg["train"]["steps"] = args.steps
@@ -138,20 +138,14 @@ def main() -> int:
     print(f"[scale-est] params: trainable={n_trainable/1e6:.2f}M  total={n_total/1e6:.2f}M  "
           f"image_size={model.image_size}", flush=True)
 
-    train_clips, _ = official_train_test_split(args.data_root, subsets=cfg["data"]["subsets"])
-    rng = random.Random(42)
-    # Stratified val sample: 5 clips per subset (15 total) so all 3 subsets
-    # appear in every val pass. Random sampling under-represents pstudio.
-    by_sub: dict[str, list] = defaultdict(list)
-    for c in train_clips:
-        by_sub[_which_subset(Path(c))].append(c)
-    val_clips = []
-    for sub in ("pstudio", "drivetrack", "adt"):
-        pool = by_sub.get(sub, [])
-        if pool:
-            val_clips.extend(rng.sample(pool, min(5, len(pool))))
-    print(f"[scale-est] {len(train_clips)} train clips, {len(val_clips)} val (sampled from train)",
-          flush=True)
+    # Train on FULL_EVAL (4418 clips), validate on MINIVAL (150 held-out clips).
+    # Earlier setup used 15 random clips FROM TRAIN as val — that measured
+    # training-distribution fit, not generalisation, and val MAE was 4× too
+    # optimistic vs broader train sample. Per user 2026-06-01.
+    train_clips, test_clips = official_train_test_split(args.data_root, subsets=cfg["data"]["subsets"])
+    val_clips = list(test_clips)
+    print(f"[scale-est] {len(train_clips)} train clips (FULL_EVAL), "
+          f"{len(val_clips)} val=test clips (MINIVAL, held-out)", flush=True)
 
     train_ds = TAPVid3DDataset(
         train_clips, window_size=int(cfg["train"]["window"]),
