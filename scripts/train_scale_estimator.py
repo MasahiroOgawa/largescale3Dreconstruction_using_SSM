@@ -110,7 +110,7 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text())
-    supported = ("scale_est_v1", "scale_est_v2", "scale_est_v3", "scale_est_v4", "scale_est_v5", "scale_est_v6", "scale_est_v7")
+    supported = ("scale_est_v1", "scale_est_v2", "scale_est_v3", "scale_est_v4", "scale_est_v5", "scale_est_v6", "scale_est_v7", "scale_est_v8")
     if cfg.get("version") not in supported:
         raise ValueError(f"version must be one of {supported}, got {cfg.get('version')!r}")
     if args.steps is not None: cfg["train"]["steps"] = args.steps
