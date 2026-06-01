@@ -453,6 +453,7 @@ def main() -> int:
         predict_scale=bool(model_cfg.get("predict_scale", False)),
         scale_param=str(model_cfg.get("scale_param", "softplus")),
         frozen_scale_estimator=frozen_scale,
+        freeze_scale_estimator=bool(model_cfg.get("freeze_scale_estimator", True)),
     ).to(device)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
     n_total = sum(p.numel() for p in model.parameters()) / 1e6

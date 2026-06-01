@@ -50,6 +50,7 @@ class Mamba3Tracker(nn.Module):
         predict_scale: bool = False,           # v18+: emit per-clip scalar `s`
         scale_param: str = "softplus",         # v20+: "exp" for log-scale parameterisation
         frozen_scale_estimator: nn.Module | None = None,  # v28+: external pretrained scale source
+        freeze_scale_estimator: bool = True,   # v29: set False in stage-2 to fine-tune
     ) -> None:
         super().__init__()
         if encoder_kind == "pyramid":
@@ -75,12 +76,14 @@ class Mamba3Tracker(nn.Module):
         self.image_size = self.encoder.coarse_image_size
 
         self.predict_scale = bool(predict_scale)
-        # v28: a frozen external scale-estimator can replace the trained scale_head.
-        # When supplied, its forward(video) is used as `pred.scale` and its
-        # parameters are kept frozen (no gradient). The trained scale_head path
-        # is skipped entirely.
+        # v28: an external pretrained scale-estimator can replace the trained
+        # scale_head. When supplied, its forward(video) is used as `pred.scale`.
+        # v29: the freeze_scale_estimator flag controls whether the external
+        # module's parameters are frozen (True, default — stage-1 shape-only
+        # training) or trainable (False — stage-2 fine-tuning).
         self.frozen_scale_estimator = frozen_scale_estimator
-        if self.frozen_scale_estimator is not None:
+        self.freeze_scale_estimator = bool(freeze_scale_estimator)
+        if self.frozen_scale_estimator is not None and self.freeze_scale_estimator:
             for p in self.frozen_scale_estimator.parameters():
                 p.requires_grad_(False)
             self.frozen_scale_estimator.eval()
@@ -126,10 +129,14 @@ class Mamba3Tracker(nn.Module):
         if self.predict_scale:
             pyramid, cls_per_frame = self.encoder.forward_video_with_cls(video)
             if self.frozen_scale_estimator is not None:
-                # v28: external frozen scale estimator (e.g. pretrained
-                # ScaleEstimator from configs/scale_est_v4.yaml). Always in
-                # eval, no gradient flow through it.
-                with torch.no_grad():
+                # v28: external pretrained scale estimator. v29: gradient flows
+                # through it iff freeze_scale_estimator is False (stage-2
+                # joint fine-tune); otherwise no-grad save memory and prevent
+                # updates (stage-1 shape-only training).
+                if self.freeze_scale_estimator:
+                    with torch.no_grad():
+                        scale = self.frozen_scale_estimator(video)     # (B,)
+                else:
                     scale = self.frozen_scale_estimator(video)         # (B,)
             else:
                 scale = self.scale_head(cls_per_frame)                 # (B,)
