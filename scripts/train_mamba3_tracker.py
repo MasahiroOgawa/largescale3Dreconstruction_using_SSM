@@ -39,6 +39,7 @@ from mamba3_tracker.model.tracker import Mamba3Tracker
 from mamba3_tracker.train.config import dump_resolved, load_config
 from mamba3_tracker.train.loss import (
     TrackingLoss, TrackingLossOutput, TrackingLossV18, TrackingLossV20,
+    TrackingLossV31,
 )
 from mamba3_tracker.train.schedule import wsd
 
@@ -169,11 +170,15 @@ def _validate(model, val_ds, loss_fn, device, amp_dtype, n_clips: int = 5) -> di
         qmask = batch.query_mask.to(device)
         with torch.autocast(device_type=device.type, dtype=amp_dtype):
             pred = model(batch.images.to(device), queries, qmask)
+        loss_kwargs: dict = {}
+        if batch.depth is not None:
+            loss_kwargs["depth"] = batch.depth.to(device)
         out = loss_fn(
             pred,
             batch.tracks_XYZ.to(device), batch.visibility.to(device),
             qmask, queries[..., 2].long(),
             batch.K.to(device),
+            **loss_kwargs,
         )
         d = _loss_to_dict(out)
         for k in _LOSS_KEYS:
@@ -401,14 +406,19 @@ def main() -> int:
         raise ValueError(f"data.split.source = {source!r} not in {{minival, legacy, official}}")
     print(f"[train] data root: {args.data_root}")
 
+    da3_depth_root = data_cfg.get("da3_depth_root")
+    if da3_depth_root is not None:
+        print(f"[train] DA3 depth cache: {da3_depth_root}")
     train_ds = TAPVid3DDataset(train_clips, window_size=int(train_cfg["window"]),
                                augment=True, seed=int(train_cfg["seed"]),
                                max_queries=int(data_cfg["num_tracks"]),
-                               image_size=int(data_cfg["image_size"]))
+                               image_size=int(data_cfg["image_size"]),
+                               da3_depth_root=da3_depth_root)
     val_ds = TAPVid3DDataset(val_clips, window_size=int(train_cfg["window"]),
                              augment=False, seed=0,
                              max_queries=int(data_cfg["num_tracks"]),
-                             image_size=int(data_cfg["image_size"]))
+                             image_size=int(data_cfg["image_size"]),
+                             da3_depth_root=da3_depth_root)
     # `persistent_workers=False` so the worker process is torn down each epoch
     # and PyTorch's caching allocator inside it is freed. See
     # memory/feedback_tapvid_dataloader_window_only.md.
@@ -454,6 +464,7 @@ def main() -> int:
         scale_param=str(model_cfg.get("scale_param", "softplus")),
         frozen_scale_estimator=frozen_scale,
         freeze_scale_estimator=bool(model_cfg.get("freeze_scale_estimator", True)),
+        head_mode=str(model_cfg.get("head_mode", "xyz")),
     ).to(device)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
     n_total = sum(p.numel() for p in model.parameters()) / 1e6
@@ -467,10 +478,13 @@ def main() -> int:
         model.load_state_dict(state["model"], strict=False)
         print(f"[train] loaded init weights from {args.init_ckpt}")
 
-    # Loss dispatch: v20 uses the decoupled shape+scale loss (requires the
-    # exp-parameterised ScaleHead); v18/v19 use the multiplicative-scale
-    # TrackingLossV18; everything earlier uses the plain TrackingLoss.
-    if "scale" in loss_cfg["weights"]:
+    # Loss dispatch: v31 is the 2D-tracker + DA3-depth path (head_mode='uv');
+    # v20 uses the decoupled shape+scale loss (requires the exp-parameterised
+    # ScaleHead); v18/v19 use the multiplicative-scale TrackingLossV18;
+    # everything earlier uses the plain TrackingLoss.
+    if cfg["version"] == "v31":
+        loss_cls = TrackingLossV31
+    elif "scale" in loss_cfg["weights"]:
         loss_cls = TrackingLossV20
     elif bool(model_cfg.get("predict_scale", False)):
         loss_cls = TrackingLossV18
@@ -565,6 +579,9 @@ def main() -> int:
                 batch.images.to(device, non_blocking=True),
                 queries, qmask,
             )
+        loss_kwargs: dict = {}
+        if batch.depth is not None:
+            loss_kwargs["depth"] = batch.depth.to(device, non_blocking=True)
         loss_out = loss_fn(
             pred,
             batch.tracks_XYZ.to(device, non_blocking=True),
@@ -572,6 +589,7 @@ def main() -> int:
             qmask,
             queries[..., 2].long(),
             batch.K.to(device, non_blocking=True),
+            **loss_kwargs,
         )
         loss_out.total.backward(retain_graph=(step % val_every == 0 and step > 0))
         # Per-head grad norms BEFORE clipping — diagnoses which heads are

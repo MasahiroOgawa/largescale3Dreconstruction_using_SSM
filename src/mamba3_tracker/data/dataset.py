@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -24,6 +25,7 @@ class TrackingBatch:
     K: torch.Tensor               # (B, 3, 3)
     clip_ids: list[str]
     subsets: list[str]
+    depth: torch.Tensor | None = None  # v31: (B, F, Hd, Wd) cached DA3 metric depth
 
 
 class TAPVid3DDataset(Dataset):
@@ -44,12 +46,16 @@ class TAPVid3DDataset(Dataset):
         max_queries: int = 512,
         augment: bool = False,
         image_size: int = 448,
+        da3_depth_root: str | Path | None = None,
     ) -> None:
         self.clip_paths = list(clip_paths)
         self.window_size = window_size
         self.max_queries = max_queries
         self.augment = augment
         self.image_size = image_size
+        self.da3_depth_root = (
+            Path(da3_depth_root).expanduser() if da3_depth_root is not None else None
+        )
         self._rng = random.Random(seed)
 
     def __len__(self) -> int:
@@ -131,7 +137,7 @@ class TAPVid3DDataset(Dataset):
         K[0, 2] *= sx
         K[1, 2] *= sy
 
-        return {
+        item = {
             "images": images,
             "queries_xyt": queries,
             "tracks_XYZ": tracks,
@@ -140,6 +146,23 @@ class TAPVid3DDataset(Dataset):
             "clip_id": clip.clip_id,
             "subset": clip.subset,
         }
+        if self.da3_depth_root is not None:
+            depth_path = self.da3_depth_root / clip.subset / (clip.clip_id + ".npz")
+            with np.load(depth_path) as dd:
+                if "depth_q" in dd:
+                    q = np.asarray(dd["depth_q"][start:end])             # (F, Hd, Wd) uint16
+                    d_min = float(dd["d_min"])
+                    d_max = float(dd["d_max"])
+                    scale = max(d_max - d_min, 1e-6)
+                    depth_window = torch.from_numpy(
+                        d_min + q.astype(np.float32) * (scale / 65535.0)
+                    )                                                    # (F, Hd, Wd) float32
+                else:                                                    # legacy float32 cache
+                    depth_window = torch.from_numpy(
+                        np.asarray(dd["depth"][start:end])
+                    ).float()
+            item["depth"] = depth_window
+        return item
 
 
 def _photometric_aug(images: torch.Tensor, rng: random.Random) -> torch.Tensor:
@@ -172,6 +195,10 @@ def collate_tracking(items: list[dict]) -> TrackingBatch:
         vis[b, :, :n] = it["visibility"]
         qmask[b, :n] = True
 
+    depth = None
+    if "depth" in items[0]:
+        depth = torch.stack([it["depth"] for it in items], dim=0)
+
     return TrackingBatch(
         images=images,
         queries_xyt=queries,
@@ -181,6 +208,7 @@ def collate_tracking(items: list[dict]) -> TrackingBatch:
         K=K,
         clip_ids=[it["clip_id"] for it in items],
         subsets=[it["subset"] for it in items],
+        depth=depth,
     )
 
 

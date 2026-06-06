@@ -51,6 +51,7 @@ class Mamba3Tracker(nn.Module):
         scale_param: str = "softplus",         # v20+: "exp" for log-scale parameterisation
         frozen_scale_estimator: nn.Module | None = None,  # v28+: external pretrained scale source
         freeze_scale_estimator: bool = True,   # v29: set False in stage-2 to fine-tune
+        head_mode: str = "xyz",                # v31: "uv" for 2D-tracking + external depth
     ) -> None:
         super().__init__()
         if encoder_kind == "pyramid":
@@ -72,7 +73,10 @@ class Mamba3Tracker(nn.Module):
             num_heads=num_heads, state_dim=state_dim,
             num_iters=num_iters, use_correlation=use_correlation,
         )
-        self.heads = TrackHeads(dim=dim)
+        if head_mode not in ("xyz", "uv"):
+            raise ValueError(f"head_mode must be 'xyz' or 'uv', got {head_mode!r}")
+        self.head_mode = head_mode
+        self.heads = TrackHeads(dim=dim, output_mode=head_mode)
         self.image_size = self.encoder.coarse_image_size
 
         self.predict_scale = bool(predict_scale)
@@ -100,11 +104,13 @@ class Mamba3Tracker(nn.Module):
             # near the anchor) explodes to a 10⁴ squared residual.
             # Δp̃ = 0 caps the startup loss at the collapse-floor
             # value (≈ 1 per visible (t, n)) and lets the optimiser
-            # ramp up cleanly.
-            with torch.no_grad():
-                final_xyz = self.heads.xyz_head[-1]
-                final_xyz.weight.zero_()
-                final_xyz.bias.zero_()
+            # ramp up cleanly.  (v31 head_mode='uv' has no xyz_head; the
+            # uv_head's zero-init lives inside TrackHeads instead.)
+            if self.head_mode == "xyz":
+                with torch.no_grad():
+                    final_xyz = self.heads.xyz_head[-1]
+                    final_xyz.weight.zero_()
+                    final_xyz.bias.zero_()
         else:
             self.scale_head = None
 
@@ -146,6 +152,10 @@ class Mamba3Tracker(nn.Module):
         q_history = self.propagator(
             pyramid, queries_xyt, query_mask, image_size=self.image_size,
         )
-        out = self.heads(q_history)
+        if self.head_mode == "uv":
+            anchor_uv = queries_xyt[..., :2]                   # (B, N, 2)
+            out = self.heads(q_history, anchor_uv=anchor_uv)
+        else:
+            out = self.heads(q_history)
         out.scale = scale
         return out

@@ -42,6 +42,7 @@ def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
         dinov2_image_size=int(m.get("dinov2_image_size", 448)),
         dinov2_fuse_layers=m.get("dinov2_fuse_layers"),
         predict_scale=bool(m.get("predict_scale", False)),
+        head_mode=str(m.get("head_mode", "xyz")),
     ).to(device)
     model.load_state_dict(state["model"], strict=False)   # frozen DINO weights load via from_pretrained
     model.eval()
@@ -49,14 +50,17 @@ def _build_model(state: dict, device: torch.device) -> Mamba3Tracker:
 
 
 @torch.no_grad()
-def _infer_clip(model, clip, device, amp_dtype, max_frames: int = 0) -> tuple[np.ndarray, np.ndarray]:
+def _infer_clip(
+    model, clip, device, amp_dtype, max_frames: int = 0,
+    da3_depth_root: Path | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """Return (pred_tracks_NT3, pred_visibility_NT) for one clip.
 
-    v11: the model emits per-frame motion `Δp̂(t, n) = pred.xyz[t, n]`.
-    `Δp̂(0, n)` is discarded; `p̂(0, n) = clip.tracks_XYZ[0, n]` (GT initial
-    position — placeholder for a future feature-detector head). For t ≥ 1
-    the trajectory is reconstructed by cumulative summation:
-        p̂(t, n) = p̂(0, n) + Σ_{s=1..t} Δp̂(s, n).
+    v11-v30: the model emits per-frame motion `Δp̂(t, n) = pred.xyz[t, n]`,
+    reconstructed by anchor-aligned cumulative summation.
+    v31 (head_mode='uv'): the model emits `pred.uv` per (t, n) in pixel
+    coords; absolute (X, Y, Z) comes from DA3-cached depth at `pred.uv`
+    via pinhole unprojection.
     """
     F = int(clip.images.shape[0]) if max_frames in (0, None) else min(int(clip.images.shape[0]), max_frames)
     images = clip.images[:F].clone()
@@ -83,8 +87,40 @@ def _infer_clip(model, clip, device, amp_dtype, max_frames: int = 0) -> tuple[np
     with torch.autocast(device_type=device.type, dtype=amp_dtype):
         pred = model(images, queries, qmask)
 
-    delta = pred.xyz[0].float().cpu()                        # (F, N_q, 3)
     pred_vis = torch.sigmoid(pred.vis_logits[0].float()).cpu()  # (F, N_q)
+
+    if getattr(model, "head_mode", "xyz") == "uv":
+        if da3_depth_root is None:
+            raise RuntimeError(
+                "v31 eval requires --da3-depth-root with cached depth .npz files"
+            )
+        uv = pred.uv[0].float().cpu()                            # (F, N_q, 2)
+        depth_path = Path(da3_depth_root).expanduser() / clip.subset / (clip.clip_id + ".npz")
+        with np.load(depth_path) as dd:
+            if "depth_q" in dd:
+                q = np.asarray(dd["depth_q"][:F])
+                d_min = float(dd["d_min"])
+                d_max = float(dd["d_max"])
+                scale = max(d_max - d_min, 1e-6)
+                depth_full = d_min + q.astype(np.float32) * (scale / 65535.0)
+            else:
+                depth_full = np.asarray(dd["depth"][:F], dtype=np.float32)
+        depth_t = torch.from_numpy(depth_full).unsqueeze(0)              # (1, F, Hd, Wd)
+        # Build K scaled to the resized pixel coords (uv lives there).
+        K = clip.K.clone()
+        K[0, 0] *= sx
+        K[1, 1] *= sy
+        K[0, 2] *= sx
+        K[1, 2] *= sy
+        from mamba3_tracker.train.loss import _unproject_with_depth
+        xyz = _unproject_with_depth(
+            uv.unsqueeze(0), depth_t, K.unsqueeze(0), float(img_size),
+        )[0]                                                              # (F, N_q, 3)
+        pred_tracks_NT3 = xyz.transpose(0, 1).numpy()
+        pred_vis_NT = pred_vis.transpose(0, 1).numpy()
+        return pred_tracks_NT3, pred_vis_NT
+
+    delta = pred.xyz[0].float().cpu()                        # (F, N_q, 3)
     if pred.scale is not None:                                # v18: pre-multiply by learned scalar
         delta = float(pred.scale[0].float().cpu().item()) * delta
 
@@ -124,6 +160,10 @@ def main() -> int:
     ap.add_argument("--max-frames", type=int, default=0,
                     help="0 = full clip. Use a small value for quick smoke runs.")
     ap.add_argument("--amp", choices=["bf16", "fp16", "fp32"], default="bf16")
+    ap.add_argument("--da3-depth-root", type=Path, default=None,
+                    help="v31 only: root of pre-computed DA3 depth cache "
+                         "(<root>/<subset>/<clip>.npz). Required when the "
+                         "checkpoint was trained with head_mode='uv'.")
     args = ap.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -170,7 +210,10 @@ def main() -> int:
         for i, path in enumerate(clips):
             try:
                 clip = load_clip(path)
-                pred_tracks, pred_vis = _infer_clip(model, clip, device, amp_dtype, args.max_frames)
+                pred_tracks, pred_vis = _infer_clip(
+                    model, clip, device, amp_dtype, args.max_frames,
+                    da3_depth_root=args.da3_depth_root,
+                )
                 F = pred_tracks.shape[1]
                 gt_xyz = clip.tracks_XYZ[:F].numpy()
                 gt_vis = clip.visibility[:F].float().numpy()

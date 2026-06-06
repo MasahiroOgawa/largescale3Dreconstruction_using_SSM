@@ -25,10 +25,11 @@ from torch import Tensor, nn
 
 @dataclass
 class TrackerOutputs:
-    xyz: Tensor          # (B, F, N, 3)
+    xyz: Tensor          # (B, F, N, 3) — v11-v30: 3D position output
     vis_logits: Tensor   # (B, F, N)
     spawn_logits: Tensor # (B, F, N)
     scale: Tensor | None = None  # (B,) clip-level positive scalar, v18+; None for v11–v17
+    uv: Tensor | None = None     # (B, F, N, 2) — v31: 2D pixel-coord output; None for v11-v30
 
 
 def _mlp(in_dim: int, hidden: int, out_dim: int) -> nn.Sequential:
@@ -40,30 +41,62 @@ def _mlp(in_dim: int, hidden: int, out_dim: int) -> nn.Sequential:
 
 
 class TrackHeads(nn.Module):
-    def __init__(self, dim: int = 384, hidden: int = 128) -> None:
+    def __init__(
+        self,
+        dim: int = 384,
+        hidden: int = 128,
+        output_mode: str = "xyz",   # v31: "uv" outputs delta-from-anchor 2D coords
+    ) -> None:
         super().__init__()
+        if output_mode not in ("xyz", "uv"):
+            raise ValueError(f"output_mode must be 'xyz' or 'uv', got {output_mode!r}")
+        self.output_mode = output_mode
         self.norm = nn.LayerNorm(dim)
-        self.xyz_head = _mlp(dim, hidden, 3)
+        if output_mode == "xyz":
+            self.xyz_head = _mlp(dim, hidden, 3)
+        else:  # "uv"
+            # v31: delta-uv head. Zero-init final layer so delta = 0 at step 0,
+            # i.e. uv_pred = anchor_uv on first iteration. Matches the v18+
+            # xyz_head zero-init pattern (see tracker.py).
+            self.uv_head = _mlp(dim, hidden, 2)
+            with torch.no_grad():
+                self.uv_head[-1].weight.zero_()
+                self.uv_head[-1].bias.zero_()
         self.vis_head = _mlp(dim, hidden, 1)
         self.spawn_head = _mlp(dim, hidden, 1)
 
-    def forward(self, q_history: Tensor) -> TrackerOutputs:
+    def forward(self, q_history: Tensor, anchor_uv: Tensor | None = None) -> TrackerOutputs:
         """
         Args:
             q_history: (B, F, N, D)
+            anchor_uv: (B, N, 2) — only used in output_mode="uv". Pixel coords
+                of each query at its anchor frame, broadcast across all F
+                frames to add to delta_uv.
 
         Returns:
-            TrackerOutputs with xyz (B,F,N,3) and logits (B,F,N) each.
+            TrackerOutputs. In "xyz" mode: xyz is populated. In "uv" mode: uv
+            is populated (xyz left as a zero placeholder so downstream code
+            depending on `.xyz` doesn't crash; loss should branch on uv).
         """
         x = self.norm(q_history)
-        # No nan_to_num here — a previous attempt at "safety clamping" silently
-        # masked an upstream bf16 overflow and produced NaN parameters in every
-        # checkpoint from step ~250 onward. We'd rather a NaN crash the
-        # training immediately than corrupt 20k steps' worth of weights without
-        # warning. The training script's grad-NaN guard handles the
-        # numerical-instability case at the right layer.
+        B, F_, N, _ = q_history.shape
+        if self.output_mode == "xyz":
+            return TrackerOutputs(
+                xyz=self.xyz_head(x),
+                vis_logits=self.vis_head(x).squeeze(-1),
+                spawn_logits=self.spawn_head(x).squeeze(-1),
+            )
+        # v31: uv = anchor_uv + delta_uv. anchor_uv broadcast over F.
+        if anchor_uv is None:
+            raise RuntimeError("TrackHeads(output_mode='uv') requires anchor_uv to be passed")
+        delta_uv = self.uv_head(x)                                # (B, F, N, 2)
+        uv = anchor_uv.unsqueeze(1) + delta_uv                    # (B, F, N, 2)
+        # zero placeholder so TrackerOutputs.xyz isn't None where other code
+        # accesses .xyz (the v31 loss branches on .uv being non-None).
+        zeros_xyz = x.new_zeros(B, F_, N, 3)
         return TrackerOutputs(
-            xyz=self.xyz_head(x),
+            xyz=zeros_xyz,
+            uv=uv,
             vis_logits=self.vis_head(x).squeeze(-1),
             spawn_logits=self.spawn_head(x).squeeze(-1),
         )

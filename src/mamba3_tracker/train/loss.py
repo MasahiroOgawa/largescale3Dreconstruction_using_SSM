@@ -671,3 +671,126 @@ class TrackingLoss(nn.Module):
         return TrackingLossOutput(
             total=total, pos_3D=pos_3D, pos_2D=pos_2D, vis=vis_loss,
         )
+
+
+def _unproject_with_depth(
+    uv: Tensor,            # (B, F, N, 2) pixel coords on the encoder-resolution image
+    depth_map: Tensor,     # (B, F, Hd, Wd) per-frame metric depth (DA3-Large, frozen)
+    K: Tensor,             # (B, 3, 3) intrinsics matching the encoder-resolution image
+    image_size: float,     # encoder square resolution (depth_map covers same FOV)
+) -> Tensor:
+    """Differentiably sample `depth_map` at `uv` and unproject to camera-frame XYZ.
+
+    The DA3 depth map is at the model's own working resolution (e.g. 504), while
+    `uv` lives in the encoder's pixel-coord grid (e.g. 896). `F.grid_sample`
+    handles the resolution mismatch — the gradient flows back to `uv` via
+    bilinear interpolation weights, and `depth_map` itself is the frozen DA3
+    output (no gradient needed through it).
+    """
+    B, F_, N, _ = uv.shape
+    Hd, Wd = depth_map.shape[-2:]
+    grid = 2.0 * (uv / image_size) - 1.0                                    # (B, F, N, 2)
+    grid = grid.view(B * F_, 1, N, 2)
+    z = F.grid_sample(
+        depth_map.view(B * F_, 1, Hd, Wd),
+        grid, mode="bilinear", padding_mode="border", align_corners=False,
+    ).view(B, F_, N)
+    fx = K[:, 0, 0].view(B, 1, 1)
+    fy = K[:, 1, 1].view(B, 1, 1)
+    cx = K[:, 0, 2].view(B, 1, 1)
+    cy = K[:, 1, 2].view(B, 1, 1)
+    u = uv[..., 0]
+    v = uv[..., 1]
+    x = (u - cx) / fx * z
+    y = (v - cy) / fy * z
+    return torch.stack([x, y, z], dim=-1)                                   # (B, F, N, 3)
+
+
+class TrackingLossV31(nn.Module):
+    """v31 loss: 2D-track loss + 3D-unproject loss (DA3 metric depth) + visibility.
+
+    The 2D pixel-tracker emits `uv_pred = anchor_uv + delta_uv` per (t, n).
+    A frozen pretrained metric-depth model (DA3-Large) supplies the absolute
+    scale. We sample that depth differentiably at `uv_pred` and unproject with
+    per-clip intrinsics K to get `xyz_pred`. Gradients flow to the uv_head from
+    BOTH 2D and 3D loss terms (via F.grid_sample for the 3D branch).
+
+    Three terms — all L1 (v25's empirical finding: constant gradient is what
+    this regime needs):
+
+      L_pos_3D = mean over visible (t, n)   |xyz_pred − xyz*| / scale_gt
+      L_pos_2D = mean over visible (t, n)   |uv_pred − uv*|  / image_size
+      L_vis    = BCE(vis_logits, gt_visibility)
+
+    `scale_gt` is per-clip median anchor-frame Z (`_per_clip_anchor_depth_scale`),
+    matching scale_est v8 and the v23+ depth-normalised loss — puts pstudio
+    (~3 m), drivetrack (~20 m), and adt (~1 m) on the same gradient footing.
+    """
+
+    def __init__(
+        self,
+        weights: Mapping[str, float],
+        image_size: int = 224,
+    ) -> None:
+        super().__init__()
+        missing = set(_TERMS) - set(weights)
+        if missing:
+            raise ValueError(f"TrackingLossV31: missing weights for {sorted(missing)}")
+        self.w = {k: float(weights[k]) for k in _TERMS}
+        self.image_size = float(image_size)
+
+    def forward(
+        self,
+        pred: TrackerOutputs,
+        gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
+        gt_visibility: Tensor,    # (B, F, N) bool
+        gt_query_mask: Tensor,    # (B, N) bool
+        gt_anchor_frame: Tensor,  # (B, N) long
+        K: Tensor,                # (B, 3, 3)
+        depth: Tensor,            # (B, F, Hd, Wd) cached DA3-Large metric depth
+    ) -> TrackingLossOutput:
+        if pred.uv is None:
+            raise RuntimeError(
+                "TrackingLossV31 requires pred.uv; set model.head_mode='uv'"
+            )
+
+        B, F_, N, _ = gt_tracks_XYZ.shape
+        a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()
+        init_xyz = gt_tracks_XYZ.gather(
+            dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+        ).squeeze(1)                                                          # (B, N, 3)
+
+        vis_f = gt_visibility.float()
+        qm = gt_query_mask.unsqueeze(1).expand(B, F_, N).float()
+        w_pos = vis_f * qm
+
+        scale_gt = _per_clip_anchor_depth_scale(init_xyz, gt_query_mask)      # (B,)
+
+        uv_gt = _project(gt_tracks_XYZ, K)                                    # (B, F, N, 2)
+        r_2D = (pred.uv - uv_gt) / self.image_size                            # (B, F, N, 2)
+        finite_2D = torch.isfinite(r_2D).all(dim=-1).float()
+        w_2D = w_pos * finite_2D
+        denom_2D = w_2D.sum().clamp_min(1.0)
+        pos_2D = (torch.nan_to_num(r_2D.abs().sum(dim=-1), nan=0.0,
+                                    posinf=0.0, neginf=0.0) * w_2D).sum() / denom_2D
+
+        xyz_pred = _unproject_with_depth(pred.uv, depth, K, self.image_size)  # (B, F, N, 3)
+        r_3D = (xyz_pred - gt_tracks_XYZ) / scale_gt.view(B, 1, 1, 1)
+        finite_3D = torch.isfinite(r_3D).all(dim=-1).float()
+        w_3D = w_pos * finite_3D
+        denom_3D = w_3D.sum().clamp_min(1.0)
+        pos_3D = (torch.nan_to_num(r_3D.abs().sum(dim=-1), nan=0.0,
+                                    posinf=0.0, neginf=0.0) * w_3D).sum() / denom_3D
+
+        vis_loss = F.binary_cross_entropy_with_logits(
+            pred.vis_logits, vis_f, weight=qm, reduction="sum",
+        ) / qm.sum().clamp_min(1.0)
+
+        total = (
+            self.w["pos_3D"] * pos_3D
+            + self.w["pos_2D"] * pos_2D
+            + self.w["vis"]    * vis_loss
+        )
+        return TrackingLossOutput(
+            total=total, pos_3D=pos_3D, pos_2D=pos_2D, vis=vis_loss,
+        )
