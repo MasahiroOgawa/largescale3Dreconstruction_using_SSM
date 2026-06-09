@@ -122,9 +122,14 @@ def _per_head_grad_norm(model) -> dict[str, float]:
     isn't producing useful position gradients (the v23 failure mode)."""
     groups: dict[str, list] = {
         "propagator": list(model.propagator.parameters()),
-        "xyz_head":   list(model.heads.xyz_head.parameters()),
         "vis_head":   list(model.heads.vis_head.parameters()),
     }
+    # v11-v30 emit xyz; v31 (head_mode='uv') emits uv. Only one of these
+    # heads exists at any time — pick whichever the model has.
+    if hasattr(model.heads, "xyz_head"):
+        groups["xyz_head"] = list(model.heads.xyz_head.parameters())
+    if hasattr(model.heads, "uv_head"):
+        groups["uv_head"] = list(model.heads.uv_head.parameters())
     if getattr(model, "scale_head", None) is not None:
         groups["scale_head"] = list(model.scale_head.parameters())
     out: dict[str, float] = {}
