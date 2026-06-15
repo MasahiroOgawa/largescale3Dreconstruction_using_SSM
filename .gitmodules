@@ -4,3 +4,6 @@
 [submodule "third_party/mamba-ssm"]
 	path = third_party/mamba-ssm
 	url = https://github.com/state-spaces/mamba.git
+[submodule "third_party/SEA-RAFT"]
+	path = third_party/SEA-RAFT
+	url = https://github.com/princeton-vl/SEA-RAFT
