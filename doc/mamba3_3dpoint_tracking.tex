@@ -1,0 +1,313 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{array}
+\usepackage{bm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black}
+
+\title{Flow-Conditioned Mamba-3 for 3D Point Tracking}
+\author{Masahiro Ogawa}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present a small learned model for 3D point tracking that conditions
+on optical-flow vectors and metric-depth values as direct input
+features rather than raw image patches. A frozen SEA-RAFT flow model
+provides dense 2D correspondence between consecutive frames; a frozen
+DA3-Large model provides absolute metric depth. These two sources of
+information determine per-point 3D positions up to estimation error.
+A small Mamba-3 state-space module then refines the initial 2D
+positions by processing the flow-and-depth observation sequence
+causally over time. The learned component has approximately 0.5M
+parameters compared with 22M in the prior image-encoder-based variant
+(v31). We evaluate on TAPVid-3D (minival, three subsets) and compare
+against the training-free SEA-RAFT baseline (v31 replacement) and
+published BootsTAPIR and SpatialTracker numbers.
+\end{abstract}
+
+\tableofcontents
+
+%% ================================================================
+\section{Problem: 3D Point Tracking}
+%% ================================================================
+
+Given a video $\bm{I} = (I_1, \dots, I_F)$ with $F$ frames, a set of
+$N$ query points $\{(x_n, y_n, a_n)\}_{n=1}^{N}$, and camera intrinsic
+matrix $\bm{K}$, the goal is to output for each query $n$ and each
+frame $t$ a 3D camera-frame position
+$\hat{\bm{p}}_{t,n} \in \mathbb{R}^3$ and a visibility score
+$\hat{v}_{t,n} \in [0, 1]$.
+
+We use the TAPVid-3D protocol: queries are specified in the original
+image's pixel coordinates, ground-truth positions are in the camera
+frame of the first frame, and evaluation uses 3D Average Jaccard
+(3D-AJ), Average Percentage of correct 3D points within a threshold
+(APD3D), and Occlusion Accuracy (OA)~\cite{tapvid3d}.
+
+%% ================================================================
+\section{Observations: Optical Flow and Metric Depth}
+%% ================================================================
+
+\subsection{SEA-RAFT Optical Flow}
+
+We run a frozen pretrained SEA-RAFT model~\cite{searaft}
+(checkpoint: \texttt{Tartan-C-T-TSKH-spring540x960-M}) on consecutive
+frame pairs to obtain dense forward flow fields
+\begin{equation}
+  \bm{f}_t \in \mathbb{R}^{H \times W \times 2}, \qquad t = 1, \dots, F-1,
+\end{equation}
+where $\bm{f}_t(u, v)$ is the pixel displacement from $(u, v)$ in
+frame $t$ to the corresponding point in frame $t+1$.
+
+\subsection{Baseline 2D Track: Flow Chaining}
+
+Starting from the query position $(x_n, y_n)$ at anchor frame $a_n$,
+we propagate forward and backward by bilinearly sampling the flow:
+\begin{align}
+  \bm{q}_{t+1, n}^{(0)} &= \bm{q}_{t,n}^{(0)} +
+    \bm{f}_t\bigl(\bm{q}_{t,n}^{(0)}\bigr), \quad t \geq a_n, \\
+  \bm{q}_{t-1, n}^{(0)} &= \bm{q}_{t,n}^{(0)} +
+    \bm{g}_{t-1}\bigl(\bm{q}_{t,n}^{(0)}\bigr), \quad t \leq a_n,
+\end{align}
+where $\bm{g}_t$ is the backward flow (frame $t+1 \to t$). Forward-backward
+consistency determines a binary visibility mask $v_{t,n}^{(0)} \in \{0, 1\}$.
+We refer to this as the \emph{SEA-RAFT baseline} (v-SEARAFT in
+Table~\ref{tab:results}).
+
+\subsection{DA3 Metric Depth}
+
+A frozen DA3-Large depth model~\cite{da3} has been applied
+offline to all clips, producing per-frame depth maps
+$D_t \in \mathbb{R}^{H_d \times W_d}$ stored as quantized
+\texttt{uint16} arrays under \texttt{$\sim$/data/tapvid3d\_da3/}.
+We dequantize on load:
+\begin{equation}
+  D_t = d_{\min} + \frac{q_t}{65535}\,(d_{\max} - d_{\min}).
+\end{equation}
+Sampling depth at a 2D position $\bm{q}_{t,n}$ via bilinear interpolation
+gives a per-point scalar $z_{t,n} = D_t(\bm{q}_{t,n})$.
+
+\subsection{Unprojection}
+
+The initial 3D position estimate follows directly from the pinhole
+camera model:
+\begin{equation}\label{eq:unproject}
+  \bm{p}_{t,n}^{(0)} =
+  \begin{pmatrix}
+    (u_{t,n} - c_x) / f_x \\
+    (v_{t,n} - c_y) / f_y \\
+    1
+  \end{pmatrix}
+  z_{t,n},
+  \qquad
+  \bm{K} = \begin{pmatrix} f_x & 0 & c_x \\ 0 & f_y & c_y \\ 0 & 0 & 1 \end{pmatrix}.
+\end{equation}
+This is already a strong baseline: SEA-RAFT supplies plausible $u, v$,
+DA3-Large supplies absolute scale $z$. Table~\ref{tab:results} shows
+this achieves mean 3D-AJ of 5.2\% on TAPVid-3D minival,
+an 11$\times$ improvement over the preceding learned variant (v31).
+
+%% ================================================================
+\section{Model: Flow-Conditioned Mamba-3 Tracker (v32)}
+%% ================================================================
+
+\subsection{Motivation}
+
+The SEA-RAFT baseline still suffers from cumulative drift on long clips
+(notably drivetrack with large fast camera motion: 1.6\% vs.\ a
+published baseline of 5.1\%). The root cause is that naive chaining
+propagates errors monotonically: if the flow at step $t$ is off by
+$\epsilon$, the error at step $t + k$ is at least $k\epsilon$ without
+any correction.
+
+A Mamba-3 SSM can suppress drift by maintaining a recurrent state that
+aggregates evidence from past frames. Crucially, the flow-and-depth
+observations at each frame are already informative enough that no
+image encoder is needed: the model is trained to learn a temporal
+denoising prior directly from the observation sequence.
+
+\subsection{Input Features}
+
+For each track $n$ and frame $t$ we construct a six-dimensional
+observation vector:
+\begin{equation}\label{eq:phi}
+  \bm{\phi}_{t,n} =
+  \Bigl[
+    \underbrace{\bm{q}_{t,n}^{(0)} / S}_{\text{normalised 2D pos.} \in \mathbb{R}^2},\;\;
+    \underbrace{\bm{f}_t(\bm{q}_{t,n}^{(0)}) / S}_{\text{flow vector} \in \mathbb{R}^2},\;\;
+    \underbrace{z_{t,n} / z_{\text{ref}}}_{\text{depth} \in \mathbb{R}^1},\;\;
+    \underbrace{v_{t,n}^{(0)}}_{\text{vis flag} \in \mathbb{R}^1}
+  \Bigr] \in \mathbb{R}^6,
+\end{equation}
+where $S$ is the image side length (896), $z_{\text{ref}}$ is the
+median anchor depth over the batch, and $v_{t,n}^{(0)} \in \{0,1\}$
+is the forward-backward consistency mask.
+
+\subsection{Architecture}
+
+\paragraph{Embedding.}
+Each observation is mapped to a $D$-dimensional feature:
+\begin{equation}
+  \bm{e}_{t,n} = \mathrm{MLP}_\mathrm{embed}(\bm{\phi}_{t,n}) \in \mathbb{R}^D,
+  \qquad D = 128.
+\end{equation}
+
+\paragraph{Causal Temporal Mamba-3.}
+We process each track independently as a length-$F$ sequence using $L$
+stacked Mamba-3 cross-attention layers in \emph{self-attention mode}
+(query and key-value come from the same sequence). Let
+$\bm{E}^{(0)}_n = (\bm{e}_{1,n}, \dots, \bm{e}_{F,n}) \in \mathbb{R}^{F \times D}$;
+then for $\ell = 1, \dots, L$:
+\begin{equation}\label{eq:mamba}
+  \bm{E}^{(\ell)}_n = \mathrm{LN}\Bigl(
+    \bm{E}^{(\ell-1)}_n + \mathrm{Mamba3}\bigl(
+      \mathrm{LN}(\bm{E}^{(\ell-1)}_n),\;
+      \mathrm{LN}(\bm{E}^{(\ell-1)}_n)
+    \bigr)
+  \Bigr),
+\end{equation}
+where Mamba3$(\bm{Q}, \bm{KV})$ is the variant-B cross-attention from
+\texttt{doc/attention/mamba3\_attention.tex}, \S 9:
+\begin{equation}
+  \bm{Y} = \bigl(\bm{L}_\mathrm{cross} \odot \bm{C}^q \bm{B}^{kv\top}\bigr)\,\bm{V}^{kv},
+  \qquad
+  L_\mathrm{cross}[i,j] = \gamma_j \prod_{k=j+1}^{F} \alpha_k \cdot \mathbf{1}[j \leq i].
+\end{equation}
+The causal mask $\mathbf{1}[j \leq i]$ ensures frame $t$ attends only
+to past frames, giving the model a left-to-right inductive bias.
+All $N$ tracks are processed in parallel by reshaping to $(B \cdot N, F, D)$.
+
+\paragraph{Output Heads.}
+After $L$ layers a final LayerNorm produces the refined feature
+$\bm{h}_{t,n} \in \mathbb{R}^D$. Two small MLPs read out:
+\begin{align}
+  \Delta\bm{q}_{t,n} &= \mathrm{MLP}_{uv}(\bm{h}_{t,n}) \in \mathbb{R}^2,
+  & \text{(zero-init final layer)} \\
+  \hat{v}_{t,n}^{\text{logit}} &= \mathrm{MLP}_{vis}(\bm{h}_{t,n}) \in \mathbb{R}.
+\end{align}
+The predicted 2D position is
+\begin{equation}
+  \hat{\bm{q}}_{t,n} = \bm{q}_{a_n,n}^{(0)} + \Delta\bm{q}_{t,n},
+\end{equation}
+and the final 3D position follows from~\eqref{eq:unproject}
+evaluated at $\hat{\bm{q}}_{t,n}$ with depth $D_t(\hat{\bm{q}}_{t,n})$.
+
+The zero-initialisation of the final $\mathrm{MLP}_{uv}$ layer ensures
+$\hat{\bm{q}}_{t,n} = \bm{q}_{a_n,n}^{(0)}$ at the start of training,
+so the initial loss is bounded by the SEA-RAFT baseline loss rather
+than a random-prediction loss.
+
+\subsection{Parameter Count}
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Component & Parameters & Notes \\
+\midrule
+$\mathrm{MLP}_\mathrm{embed}$ (6$\to$128)   & $\approx$ 17k & two linear layers \\
+Mamba-3 layers $\times 2$  & $\approx$ 430k & dim=128, state=64, heads=4 \\
+$\mathrm{MLP}_{uv}$, $\mathrm{MLP}_{vis}$ & $\approx$ 33k & \\
+LayerNorms             & $\approx$ 2k & \\
+\midrule
+\textbf{Total trainable} & $\approx$ \textbf{480k} & vs.\ 22M in v31 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%% ================================================================
+\section{Training}
+%% ================================================================
+
+\subsection{Loss}
+
+We reuse the v31 loss function (TrackingLossV31):
+\begin{equation}
+  \mathcal{L} = w_{3D}\,\mathcal{L}_{3D} + w_{2D}\,\mathcal{L}_{2D} + w_\text{vis}\,\mathcal{L}_\text{vis},
+\end{equation}
+with $w_{3D} = w_{2D} = w_\text{vis} = 1$.
+
+The 3D term normalises by the median anchor depth $\bar{z}$ over the
+batch (a fixed reference to make the loss scale-invariant):
+\begin{equation}
+  \mathcal{L}_{3D} = \frac{1}{|\mathcal{V}|}
+  \sum_{(t,n) \in \mathcal{V}}
+  \frac{\|\hat{\bm{p}}_{t,n} - \bm{p}_{t,n}^*\|_1}{\bar{z}},
+\end{equation}
+where $\mathcal{V}$ is the set of visible (frame, track) pairs.
+The 2D term measures pixel residual normalised by image size $S$:
+\begin{equation}
+  \mathcal{L}_{2D} = \frac{1}{|\mathcal{V}|}
+  \sum_{(t,n) \in \mathcal{V}}
+  \frac{\|\hat{\bm{q}}_{t,n} - \bm{q}_{t,n}^*\|_1}{S},
+\end{equation}
+where $\bm{q}_{t,n}^* = \pi(\bm{p}_{t,n}^*, \bm{K})$ is the GT 2D
+projection. The visibility term is binary cross-entropy.
+
+\subsection{Data and Optimiser}
+
+Training uses the TAPVid-3D official split (FULL\_EVAL as training set,
+MINIVAL held out for evaluation). We sample 8-frame windows from each
+clip during training. Optimiser: AdamW, $\eta = 3 \times 10^{-4}$,
+weight decay $0.05$, gradient clip $1.0$. Schedule: warmup 500 steps,
+cosine decay for 2000 steps before linear tail to 20k total.
+SEA-RAFT and DA3 parameters are frozen throughout.
+
+%% ================================================================
+\section{Results}
+\label{sec:results}
+%% ================================================================
+
+\begin{table}[h]
+\centering
+\caption{TAPVid-3D \textbf{minival} 3D-AJ (\%) — higher is better.
+Baselines marked * are paper numbers from~\protect\cite{tapvid3d}.
+Full-eval SoTA is on a different (larger) test set.}
+\label{tab:results}
+\begin{tabular}{lrrrr}
+\toprule
+Method & pstudio & drivetrack & adt & mean \\
+\midrule
+BootsTAPIR + ZoeDepth*   & 10.2 & 5.1  & 8.6  & 8.0 \\
+BootsTAPIR + COLMAP*     & 6.2  & 9.3  & 7.3  & 7.6 \\
+SpatialTracker*          & 9.8  & 5.8  & 9.2  & 8.3 \\
+\midrule
+v31 (Mamba-3+DA3, learned)    & 0.5  & 0.2  & 0.7  & 0.5 \\
+SEA-RAFT + DA3 (training-free) & 7.5  & 1.6  & 6.6  & 5.2 \\
+\textbf{v32 (flow-cond.\ Mamba-3)} &
+  \textbf{---}  & \textbf{---}  & \textbf{---}  & \textbf{---} \\
+\midrule
+\textit{CoTracker3-online (full-eval)} & 21.3 & 10.7 & 14.6 & 15.5 \\
+\textit{DELTA (full-eval)}             & 24.4 & 13.0 & 17.6 & 18.3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent Table~\ref{tab:results} will be updated with v32 numbers after
+the 20k-step training run completes.
+
+%% ================================================================
+\begin{thebibliography}{9}
+\bibitem{tapvid3d}
+  Doersch et~al.,
+  \textit{TAPVid-3D: A Benchmark for Tracking Any 3D Point},
+  NeurIPS 2024.
+
+\bibitem{searaft}
+  Wang et~al.,
+  \textit{SEA-RAFT: Simple, Efficient, Accurate RAFT for Optical Flow},
+  ECCV 2024 (Oral).
+
+\bibitem{da3}
+  Ke et~al.,
+  \textit{Depth Anything V3},
+  arXiv 2025.
+\end{thebibliography}
+
+\end{document}
