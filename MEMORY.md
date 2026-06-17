@@ -18,3 +18,4 @@
 - [Output dirs named `<eval_title>_<datetime>`](memory/feedback_output_dir_naming.md) — eval/render artifact dirs get a `YYYYMMDD-HHMM` suffix so re-runs don't clobber prior outputs
 - [SEA-RAFT flow tracker baseline](memory/project_searaft_flow_baseline.md) — training-free SEA-RAFT+DA3 replaces v31's collapsed Mamba-3; fixes zero-motion collapse, mean minival 3D-AJ 5.2%
 - [v32 flow-conditioned tracker](memory/project_v32_flow_conditioned_tracker.md) — learned Mamba-3 SSM on top of SEA-RAFT flow HURTS (3.4% vs 5.2%); training-free baseline stays best
+- [v33 depth-refined tracker](memory/project_v33_depth_refined_tracker.md) — depth-only Mamba-3 refinement (2D frozen) ALSO hurts (3.2% vs 5.2%); val L1 drops but AJ falls — loss/metric misalignment + overfit
