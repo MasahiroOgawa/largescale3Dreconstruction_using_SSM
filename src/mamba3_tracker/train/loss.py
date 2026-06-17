@@ -794,3 +794,62 @@ class TrackingLossV31(nn.Module):
         return TrackingLossOutput(
             total=total, pos_3D=pos_3D, pos_2D=pos_2D, vis=vis_loss,
         )
+
+
+class TrackingLossV33(nn.Module):
+    """v33 loss: 3D-position-only (depth-along-ray refiner).
+
+    The model emits a refined 3D track `pred.xyz` directly — the SEA-RAFT 2D
+    position and FB-consistency visibility are frozen and NOT model outputs, so
+    there is nothing to supervise for 2D or visibility (their gradients would be
+    zero anyway). The only learnable signal is the per-track depth correction,
+    supervised by the 3D position error:
+
+        L_pos_3D = mean over visible (t, n)   |xyz_pred - xyz*| / scale_gt   (L1)
+
+    `scale_gt` is the per-clip median anchor-frame Z (matches V31 / the official
+    median-scaling evaluator). pos_2D and vis are reported as zero for logging
+    parity with TrackingLossV31.
+    """
+
+    def __init__(self, weights: Mapping[str, float], image_size: int = 896) -> None:
+        super().__init__()
+        if "pos_3D" not in weights:
+            raise ValueError("TrackingLossV33: missing weight for 'pos_3D'")
+        self.w_pos_3D = float(weights["pos_3D"])
+        self.image_size = float(image_size)
+
+    def forward(
+        self,
+        pred: TrackerOutputs,
+        gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
+        gt_visibility: Tensor,    # (B, F, N) bool
+        gt_query_mask: Tensor,    # (B, N) bool
+        gt_anchor_frame: Tensor,  # (B, N) long
+        K: Tensor,                # (B, 3, 3) — unused (xyz already in camera frame)
+    ) -> TrackingLossOutput:
+        if pred.xyz is None:
+            raise RuntimeError("TrackingLossV33 requires pred.xyz")
+
+        B, F_, N, _ = gt_tracks_XYZ.shape
+        a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()
+        init_xyz = gt_tracks_XYZ.gather(
+            dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+        ).squeeze(1)                                                          # (B, N, 3)
+
+        vis_f = gt_visibility.float()
+        qm = gt_query_mask.unsqueeze(1).expand(B, F_, N).float()
+        w_pos = vis_f * qm
+
+        scale_gt = _per_clip_anchor_depth_scale(init_xyz, gt_query_mask)      # (B,)
+        r_3D = (pred.xyz - gt_tracks_XYZ) / scale_gt.view(B, 1, 1, 1)
+        finite_3D = torch.isfinite(r_3D).all(dim=-1).float()
+        w_3D = w_pos * finite_3D
+        denom_3D = w_3D.sum().clamp_min(1.0)
+        pos_3D = (torch.nan_to_num(r_3D.abs().sum(dim=-1), nan=0.0,
+                                    posinf=0.0, neginf=0.0) * w_3D).sum() / denom_3D
+
+        zero = pos_3D.new_zeros(())
+        return TrackingLossOutput(
+            total=self.w_pos_3D * pos_3D, pos_3D=pos_3D, pos_2D=zero, vis=zero,
+        )
