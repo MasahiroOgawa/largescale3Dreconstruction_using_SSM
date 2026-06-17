@@ -281,7 +281,7 @@ SpatialTracker*          & 9.8  & 5.8  & 9.2  & 8.3 \\
 v31 (Mamba-3+DA3, learned)    & 0.5  & 0.2  & 0.7  & 0.5 \\
 SEA-RAFT + DA3 (training-free) & 7.5  & 1.6  & 6.6  & 5.2 \\
 \textbf{v32 (flow-cond.\ Mamba-3)} &
-  \textbf{---}  & \textbf{---}  & \textbf{---}  & \textbf{---} \\
+  \textbf{5.7}  & \textbf{0.4}  & \textbf{4.2}  & \textbf{3.4} \\
 \midrule
 \textit{CoTracker3-online (full-eval)} & 21.3 & 10.7 & 14.6 & 15.5 \\
 \textit{DELTA (full-eval)}             & 24.4 & 13.0 & 17.6 & 18.3 \\
@@ -289,8 +289,21 @@ SEA-RAFT + DA3 (training-free) & 7.5  & 1.6  & 6.6  & 5.2 \\
 \end{tabular}
 \end{table}
 
-\noindent Table~\ref{tab:results} will be updated with v32 numbers after
-the 20k-step training run completes.
+\noindent \textbf{Result (20k steps, $\sim$9.3\,h).} Contrary to the
+hypothesis, the learned refinement \emph{degrades} 3D-AJ on every subset
+relative to the training-free SEA-RAFT+DA3 baseline (mean 3.4\% vs.\ 5.2\%).
+It does avoid the v31 zero-motion collapse — \texttt{uv\_head} gradients stay
+live throughout and the eval motion ratios match SEA-RAFT to within 0.1\%
+(100.6/106.9/117.6\%). That near-identical motion magnitude is the diagnosis:
+the residual $\Delta uv$ is tiny in aggregate yet consistently adds small
+systematic error, most plausibly by nudging $uv$ across DA3 depth
+discontinuities (object boundaries) so points flip out of the AJ
+within-threshold band. Because SEA-RAFT's $uv$ is already near the ground-truth
+2D track, the 2D loss term has almost nothing to correct and training mostly
+perturbs a near-optimal input. A residual position delta on an already-good
+flow estimate is the wrong lever; promising alternatives are a learned
+\emph{consistency gate} (refine only where forward–backward consistency is low)
+or a depth-edge-aware 3D loss rather than an unconditional $\Delta uv$.
 
 %% ================================================================
 \begin{thebibliography}{9}
