@@ -36,6 +36,33 @@ it cannot see that DA3's raw metric depth is ~40% scale-biased and that v33
 corrects it. v33's raw error ≈ its median-scaled error → its output is already
 near the correct absolute scale.
 
+**SOTA comparison — SpatialTracker, drivetrack (provisional).** Google releases
+precomputed baseline predictions at
+`https://storage.googleapis.com/dm-tapnet/tapvid3d/release_predictions_files/spatracker/drivetrack/<clip>.npz`
+(keys `tracks_XYZ (F,N,3)`, `visibility (F,N)`) — **only the spatracker method, only
+drivetrack**. Download via the public bucket (object GET works; listing is 401).
+Scored with the SAME pipeline (`eval_metric3d.py --method external --pred-dir
+~/data/tapvid3d_baseline_preds/spatracker`), all 50 drivetrack minival clips, absolute metric:
+
+| method (drivetrack) | metric-AJ | metric-APD3D | err mean/med (m) |
+|---|---|---|---|
+| SpatialTracker (SOTA) | 0.068 | 0.106 | 6.84 / 6.03 |
+| SEA-RAFT+DA3 (ours) | 0.005 | 0.012 | 11.70 / 11.07 |
+| **v33 (ours)** | **0.082** | **0.134** | 6.89 / **5.50** |
+
+Under identical scoring, **v33 beats SpatialTracker on drivetrack** in metric-AJ
+(+20%), metric-APD3D (+26%), median error (5.50 vs 6.03 m); ties mean error
+(~6.85 m). Encouraging for the paper, BUT two blockers before any claim:
+1. **Only drivetrack** — spatracker preds are released for drivetrack alone;
+   pstudio/adt require running SpatialTracker ourselves.
+2. **Validation gap (must resolve first):** our pipeline scores the released
+   SpatialTracker preds at median-AJ 0.008 vs the paper's drivetrack 0.058 (~7×
+   low). The preds look coordinate-compatible (‖pred‖≈‖gt‖, raw err sane), and our
+   drivetrack numbers are systematically low across methods, so the RELATIVE
+   comparison under identical scoring is fair — but we must reproduce the paper's
+   SpatialTracker number (run official `evaluate_model.py`, check frame/query-order
+   convention of released preds) before publishing, else reviewers reject it.
+
 **How to apply / paper decision gate.** The "v33 is a failure" conclusion in
 [[project_v33_depth_refined_tracker]] is metric-dependent and must be qualified:
 v33 is the better model for absolute-metric 3D tracking. A paper framing is

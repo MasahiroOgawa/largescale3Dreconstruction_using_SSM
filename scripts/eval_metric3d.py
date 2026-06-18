@@ -102,10 +102,23 @@ def _metric_err(pred_NF3, gt_NF3, vis_NF):
     return float(d.mean()), float(np.median(d))
 
 
+def _load_external(pred_dir: Path, subset: str, clip_id: str):
+    """Load a released baseline prediction npz -> (pred (N,F,3), vis (N,F))."""
+    p = Path(pred_dir).expanduser() / subset / (clip_id + ".npz")
+    with np.load(p) as d:
+        tr = np.asarray(d["tracks_XYZ"], dtype=np.float32)   # (F,N,3)
+        vis = np.asarray(d["visibility"]).astype(np.float32)  # (F,N)
+    return np.transpose(tr, (1, 0, 2)), np.transpose(vis, (1, 0))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--method", choices=["searaft", "v33"], required=True)
+    ap.add_argument("--method", choices=["searaft", "v33", "external"], required=True)
     ap.add_argument("--ckpt", type=Path, default=None, help="required for --method v33")
+    ap.add_argument("--pred-dir", type=Path, default=None,
+                    help="required for --method external: dir with <subset>/<clip>.npz "
+                         "(keys tracks_XYZ (F,N,3), visibility (F,N))")
+    ap.add_argument("--label", type=str, default=None, help="display name (default = method)")
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--data-root", type=Path, default=Path("~/data"))
     ap.add_argument("--da3-depth-root", type=Path, default=Path("~/data/tapvid3d_da3"))
@@ -125,8 +138,14 @@ def main() -> int:
     args.data_root = args.data_root.expanduser()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    flow_model = FlowModel(device, url=args.url, iters=args.iters, scale=args.scale)
+    flow_model = None
     model = None
+    if args.method == "external":
+        if args.pred_dir is None:
+            ap.error("--method external requires --pred-dir")
+        print(f"[metric3d] external predictions from {args.pred_dir}")
+    else:
+        flow_model = FlowModel(device, url=args.url, iters=args.iters, scale=args.scale)
     if args.method == "v33":
         if args.ckpt is None:
             ap.error("--method v33 requires --ckpt")
@@ -141,7 +160,8 @@ def main() -> int:
         model.load_state_dict(state["model"])
         model.eval()
         print(f"[metric3d] v33 ckpt {args.ckpt} (step={state.get('step', '?')})")
-    print(f"[metric3d] method={args.method}  SEA-RAFT iters={flow_model.args.iters} scale={flow_model.args.scale}")
+    if flow_model is not None:
+        print(f"[metric3d] method={args.method}  SEA-RAFT iters={flow_model.args.iters} scale={flow_model.args.scale}")
 
     if args.split == "minival":
         from mamba3_tracker.data.tapvid3d_splits import MINIVAL_FILES as ALLOW
@@ -170,13 +190,21 @@ def main() -> int:
         for path in clips:
             try:
                 clip = load_clip(path)
-                pred_NF3, pred_vis = _infer(args.method, flow_model, model, clip, args.image_size,
-                                            args.fb_alpha, args.fb_beta, args.da3_depth_root,
-                                            args.max_frames, device)
-                F_ = pred_NF3.shape[1]
+                if args.method == "external":
+                    pred_NF3, pred_vis = _load_external(args.pred_dir, sub, path.stem)
+                else:
+                    pred_NF3, pred_vis = _infer(args.method, flow_model, model, clip, args.image_size,
+                                                args.fb_alpha, args.fb_beta, args.da3_depth_root,
+                                                args.max_frames, device)
+                # Align frame/point counts (released preds may truncate frames).
+                Fg = int(clip.tracks_XYZ.shape[0])
+                F_ = min(pred_NF3.shape[1], Fg) if not args.max_frames else min(pred_NF3.shape[1], Fg, args.max_frames)
+                N_ = min(pred_NF3.shape[0], int(clip.tracks_XYZ.shape[1]))
+                pred_NF3 = pred_NF3[:N_, :F_]
+                pred_vis = pred_vis[:N_, :F_]
                 n_frames_total += F_
-                gt_xyz = clip.tracks_XYZ[:F_].numpy()            # (F,N,3)
-                gt_vis = clip.visibility[:F_].float().numpy()    # (F,N)
+                gt_xyz = clip.tracks_XYZ[:F_, :N_].numpy()       # (F,N,3)
+                gt_vis = clip.visibility[:F_, :N_].float().numpy()  # (F,N)
                 gt_NF3 = np.transpose(gt_xyz, (1, 0, 2))
                 gt_vis_NF = np.transpose(gt_vis, (1, 0))
                 K = clip.K.numpy()
