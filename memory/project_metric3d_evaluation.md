@@ -16,12 +16,21 @@ metric-AJ / metric-APD3D, plus mean/median real 3D error in metres. Runner:
 `scripts/eval_metric3d.py` (full minival, `--method searaft|v33`); roll-up:
 `scripts/compare_metric3d.py`.
 
-**Full 150-clip minival result (verified; median-AJ reproduces prior eval exactly):**
+**Full 150-clip minival result.** NOTE: median-AJ below is the CORRECTED value
+after the 256-px intrinsics fix (commit a706255). The earlier 0.052/0.032 were an
+artifact of passing full-resolution intrinsics (depth-relative thresholds too
+tight); absolute metric-AJ and metres are unaffected by the fix.
 
-| | median-AJ | metric-AJ | metric-APD3D | err mean/med (m) |
+| | median-AJ (corrected) | metric-AJ | metric-APD3D | err mean/med (m) |
 |---|---|---|---|---|
-| SEA-RAFT+DA3 | **0.052** | 0.147 | 0.254 | 4.29 / 4.01 |
-| v33 | 0.032 | **0.180** | **0.306** | **2.67 / 2.13** |
+| SEA-RAFT+DA3 | **0.117** | 0.147 | 0.254 | 4.29 / 4.01 |
+| v33 | 0.074 | **0.180** | **0.306** | **2.67 / 2.13** |
+
+Corrected median-AJ vs 2024 published baselines (SpatialTracker 0.083,
+BootsTAPIR+ZoeDepth 0.080): our training-free SEA-RAFT+DA3 (0.117) EXCEEDS them
+(we use 2025 DA3-Metric-Large depth vs their 2024 ZoeDepth), but is far below
+current SOTA TAPIP3D (~0.30, 2025) and SpatialTrackerV2 (2025). v33 (0.074) <
+SEA-RAFT on median-AJ (depth refiner trades relative structure for absolute scale).
 
 **The verdict reverses under the metric that matters.** v33 loses on the
 median-scaled leaderboard metric (3.2% vs 5.2%) but WINS every absolute-metric
@@ -66,15 +75,23 @@ Key consequences:
   absolute-metric comparison is sound and convention-free.
 - **v33 (0.082) genuinely beats the real SpatialTracker (0.0685) in absolute
   metric-AJ on drivetrack** (+20%; metric-APD3D 0.134 vs 0.106).
-- BUG to fix: our `eval_metric3d`/`eval_*` pass full-/896-res intrinsics to the
-  metric, so our previously-reported MEDIAN-scaled 3D-AJ (SEA-RAFT 5.2%, v33 3.2%,
-  etc.) used the wrong threshold convention and are NOT paper-comparable (too low).
-  Fix: resize intrinsics by `256/min(orig_H,orig_W)` for the median metric call.
-  Absolute-metric numbers are unaffected.
+- FIXED (commit a706255): `eval_metric3d` now resizes intrinsics by
+  `256/min(orig_H,orig_W)` for the median metric call (load_clip K/resolution
+  verified identical to raw npz). Corrected median-AJ above. Absolute unaffected.
 
-Remaining blocker: **only drivetrack** — spatracker preds are released for
-drivetrack alone; pstudio/adt require running SpatialTracker ourselves, and a
-metric-capable baseline (BootsTAPIR+ZoeDepth) would strengthen the comparison.
+Baseline-prediction availability (probed GCS bucket, listing 401 but object GET
+works): **only `spatracker/drivetrack` is downloadable** — no pstudio/adt for any
+method, no BootsTAPIR. So old-baseline comparison on other subsets needs running
+the models. Current SOTA is **TAPIP3D (~0.30, Apr 2025)** and SpatialTrackerV2
+(Jul 2025), NOT SpatialTracker V1 (2024). Plan: user ran **TAPIP3D inference on
+TAPVid-3D minival** on another PC; ingest its per-clip preds (`<subset>/<clip>.npz`,
+keys tracks_XYZ (F,N,3) cam-frame metric, visibility (F,N), GT query order) via
+`eval_metric3d.py --method external`. Validity gates: (1) TAPIP3D must use
+MONOCULAR depth not GT/sensor depth, else absolute comparison is unfair; (2)
+cross-check our scoring reproduces TAPIP3D's published per-subset minival 3D-AJ
+before trusting absolute numbers. Open: final official-invocation cross-check on
+our OWN saved predictions (the SEA-RAFT 0.117 > 2024-baselines result is
+surprising and should be re-confirmed by saving preds + validate_official_metric).
 
 **How to apply / paper decision gate.** The "v33 is a failure" conclusion in
 [[project_v33_depth_refined_tracker]] is metric-dependent and must be qualified:
