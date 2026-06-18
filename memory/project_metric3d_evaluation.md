@@ -52,16 +52,29 @@ Scored with the SAME pipeline (`eval_metric3d.py --method external --pred-dir
 
 Under identical scoring, **v33 beats SpatialTracker on drivetrack** in metric-AJ
 (+20%), metric-APD3D (+26%), median error (5.50 vs 6.03 m); ties mean error
-(~6.85 m). Encouraging for the paper, BUT two blockers before any claim:
-1. **Only drivetrack** — spatracker preds are released for drivetrack alone;
-   pstudio/adt require running SpatialTracker ourselves.
-2. **Validation gap (must resolve first):** our pipeline scores the released
-   SpatialTracker preds at median-AJ 0.008 vs the paper's drivetrack 0.058 (~7×
-   low). The preds look coordinate-compatible (‖pred‖≈‖gt‖, raw err sane), and our
-   drivetrack numbers are systematically low across methods, so the RELATIVE
-   comparison under identical scoring is fair — but we must reproduce the paper's
-   SpatialTracker number (run official `evaluate_model.py`, check frame/query-order
-   convention of released preds) before publishing, else reviewers reject it.
+(~6.85 m). **VALIDATED** (`scripts/validate_official_metric.py`): the released preds ARE the
+real paper-grade SpatialTracker. Reproducing the official `evaluate_model.py`
+invocation exactly (raw GT npz, `query_points=queries_xyt[...,::-1]`, `order='t n'`)
+on our vendored metric gives drivetrack median 3D-AJ = **0.0584**, matching the
+paper's 0.058 — but ONLY after the official intrinsics resize: TAPVid-3D defines
+pixel thresholds relative to 256-px images, so intrinsics must be scaled by
+`256/min(H,W)` (drivetrack 1280×1920 → ×0.2). Without it we got 0.0076 (~7× low).
+
+Key consequences:
+- Our metric code is correct; absolute metric-AJ (fixed-metre thresholds) is
+  **independent of the intrinsics resize** (0.0685 either way), so the
+  absolute-metric comparison is sound and convention-free.
+- **v33 (0.082) genuinely beats the real SpatialTracker (0.0685) in absolute
+  metric-AJ on drivetrack** (+20%; metric-APD3D 0.134 vs 0.106).
+- BUG to fix: our `eval_metric3d`/`eval_*` pass full-/896-res intrinsics to the
+  metric, so our previously-reported MEDIAN-scaled 3D-AJ (SEA-RAFT 5.2%, v33 3.2%,
+  etc.) used the wrong threshold convention and are NOT paper-comparable (too low).
+  Fix: resize intrinsics by `256/min(orig_H,orig_W)` for the median metric call.
+  Absolute-metric numbers are unaffected.
+
+Remaining blocker: **only drivetrack** — spatracker preds are released for
+drivetrack alone; pstudio/adt require running SpatialTracker ourselves, and a
+metric-capable baseline (BootsTAPIR+ZoeDepth) would strengthen the comparison.
 
 **How to apply / paper decision gate.** The "v33 is a failure" conclusion in
 [[project_v33_depth_refined_tracker]] is metric-dependent and must be qualified:
