@@ -30,14 +30,26 @@ def compute_clip_metrics_official(
     pred_tracks_XYZ: np.ndarray,
     pred_visibility: np.ndarray,
     intrinsics: np.ndarray,
+    scaling: str = "median",
+    use_fixed_metric_threshold: bool = False,
 ) -> dict[str, float]:
-    """Run the official TAPVid-3D evaluator (median scaling, multi-threshold AJ).
+    """Run the official TAPVid-3D evaluator (multi-threshold AJ / APD3D / OA).
 
     Uses our vendored copy of the upstream metrics (numpy + einops only), so it
     no longer silently falls back to the 5cm-threshold homegrown metric when the
-    heavy `tapnet` package is absent. `scaling="median"` rescales the clip's
-    predicted tracks by median(‖gt‖)/median(‖pred‖) before thresholding,
-    matching the published-baseline protocol and normalising out global scale.
+    heavy `tapnet` package is absent.
+
+    Two knobs control whether the score is scale-invariant or absolute-metric:
+      * `scaling="median"` (default) rescales the clip's predicted tracks by
+        median(‖gt‖)/median(‖pred‖) before thresholding — the published-baseline
+        / leaderboard protocol, which normalises out global scale.
+        `scaling="none"` skips that rescale (absolute metric).
+      * `use_fixed_metric_threshold=False` (default) uses depth-relative pixel
+        thresholds (also scale-invariant). `True` switches to fixed absolute-metre
+        thresholds (1cm..2.56m), so the metric measures real-world depth error.
+
+    For an absolute-metre score use both: scaling="none", fixed thresholds True
+    (see `compute_clip_metrics_absolute`).
     """
     try:
         from tapnet.tapvid3d.evaluation import metrics as tapvid3d_metrics
@@ -52,13 +64,42 @@ def compute_clip_metrics_official(
         pred_occluded=(1.0 - pred_visibility) > 0.5,
         pred_tracks=pred_tracks_XYZ,
         intrinsics_params=intrinsics,
-        scaling="median",
+        scaling=scaling,
+        use_fixed_metric_threshold=use_fixed_metric_threshold,
         order="n t",
     )
     return {
         "average_jaccard": float(m["average_jaccard"]),
         "average_pts_within_thresh": float(m["average_pts_within_thresh"]),
         "occlusion_accuracy": float(m["occlusion_accuracy"]),
+    }
+
+
+def compute_clip_metrics_absolute(
+    gt_tracks_XYZ: np.ndarray,
+    gt_visibility: np.ndarray,
+    pred_tracks_XYZ: np.ndarray,
+    pred_visibility: np.ndarray,
+    intrinsics: np.ndarray,
+) -> dict[str, float]:
+    """Absolute-metric TAPVid-3D score: NO median scaling + fixed-metre thresholds.
+
+    Same metric machinery as `compute_clip_metrics_official` but scale-sensitive:
+    predicted depth is not rescaled to GT, and the within-threshold ladder is in
+    absolute metres (1cm..2.56m). This surfaces real-world depth quality that the
+    default (median-scaled, depth-relative) leaderboard metric hides.
+
+    Returns keys prefixed `metric_` to avoid collision with the median-scaled
+    metrics when both are stored on the same clip record.
+    """
+    m = compute_clip_metrics_official(
+        gt_tracks_XYZ, gt_visibility, pred_tracks_XYZ, pred_visibility, intrinsics,
+        scaling="none", use_fixed_metric_threshold=True,
+    )
+    return {
+        "metric_average_jaccard": m["average_jaccard"],
+        "metric_average_pts_within_thresh": m["average_pts_within_thresh"],
+        "occlusion_accuracy": m["occlusion_accuracy"],
     }
 
 

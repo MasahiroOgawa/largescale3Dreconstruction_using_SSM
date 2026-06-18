@@ -330,6 +330,59 @@ low-confidence points; otherwise refinement on top of SEA-RAFT+DA3 is not the
 right lever.
 
 %% ================================================================
+\section{Absolute-metric evaluation: what median scaling hides}
+
+The TAPVid-3D headline metric (3D-AJ / APD3D) is scale-invariant \emph{twice
+over}: per clip it (i) rescales the predicted track set by
+$s=\operatorname{median}(\lVert\mathbf{x}^{*}\rVert)/\operatorname{median}(\lVert\hat{\mathbf{x}}\rVert)$
+before scoring, and (ii) uses \emph{depth-relative} pixel thresholds
+($\tau_{\text{3D}}=\tau_{\text{px}}\cdot Z/f$). For metric 3D reconstruction ---
+this project's goal --- both choices discard exactly the quantity we care about:
+absolute depth in metres. We therefore also evaluate in \emph{absolute metric}
+using the official evaluator with \texttt{scaling="none"} and fixed-metre
+thresholds ($1$\,cm--$2.56$\,m); call these metric-AJ / metric-APD3D. We
+additionally report the mean and median real 3D error in metres over visible
+points.
+
+\begin{table}[h]
+\centering
+\caption{TAPVid-3D \textbf{minival} (150 clips), full evaluation. ``median-AJ''
+is the scale-invariant leaderboard metric; ``metric-AJ'' / ``metric-APD3D'' and
+the error columns are absolute (no median scaling, fixed-metre thresholds).
+Higher AJ/APD3D is better; lower error is better.}
+\label{tab:metric3d}
+\begin{tabular}{llrrrr}
+\toprule
+subset & method & median-AJ & metric-AJ & metric-APD3D & err (m, mean/med) \\
+\midrule
+pstudio    & SEA-RAFT+DA3 & 0.075 & 0.165 & 0.280 & 0.76 / 0.73 \\
+           & \textbf{v33} & 0.027 & \textbf{0.186} & \textbf{0.314} & \textbf{0.72 / 0.66} \\
+drivetrack & SEA-RAFT+DA3 & 0.016 & 0.005 & 0.012 & 11.70 / 11.07 \\
+           & \textbf{v33} & 0.008 & \textbf{0.082} & \textbf{0.134} & \textbf{6.89 / 5.50} \\
+adt        & SEA-RAFT+DA3 & 0.066 & 0.273 & 0.469 & 0.41 / 0.23 \\
+           & v33          & 0.061 & 0.272 & 0.471 & 0.41 / 0.22 \\
+\midrule
+\textbf{overall} & SEA-RAFT+DA3 & \textbf{0.052} & 0.147 & 0.254 & 4.29 / 4.01 \\
+                 & \textbf{v33} & 0.032 & \textbf{0.180} & \textbf{0.306} & \textbf{2.67 / 2.13} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent \textbf{The result reverses under the metric that matters.} On the
+median-scaled leaderboard metric v33 loses ($3.2\%$ vs.\ $5.2\%$), but in
+absolute metric it \emph{wins on every overall measure}: metric-AJ
+$0.180$ vs.\ $0.147$ ($+22\%$), metric-APD3D $0.306$ vs.\ $0.254$ ($+20\%$), and
+mean error $2.67$ vs.\ $4.29$\,m ($-38\%$; median $-47\%$). The gain is
+concentrated where DA3's metric scale is most wrong: \emph{drivetrack}
+(far-field driving, ${\sim}20$\,m) jumps metric-AJ $0.005\!\to\!0.082$
+($16\times$) and halves error ($11.70\!\to\!6.89$\,m), while \emph{adt}
+(indoor, ${\sim}1$\,m, where DA3 is already accurate) is a tie --- the learned
+corrector helps when needed and does no harm otherwise. Median scaling masks
+this entirely by granting every method a free per-clip global-scale fix.
+Regression check: median-AJ here ($0.052$ / $0.032$) reproduces the standard
+eval exactly. Both methods run at ${\sim}12.5$ fps, $0$ failures.
+
+%% ================================================================
 \begin{thebibliography}{9}
 \bibitem{tapvid3d}
   Doersch et~al.,
