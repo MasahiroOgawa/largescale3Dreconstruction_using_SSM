@@ -208,7 +208,14 @@ def main() -> int:
                 gt_NF3 = np.transpose(gt_xyz, (1, 0, 2))
                 gt_vis_NF = np.transpose(gt_vis, (1, 0))
                 K = clip.K.numpy()
-                intrin = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]])
+                # TAPVid-3D defines the depth-relative pixel thresholds relative to
+                # 256-px images, so the official evaluator rescales intrinsics by
+                # 256/min(H,W) before scoring (matches tapnet evaluate_model.py).
+                # Without this, drivetrack (1280x1920) median-AJ reads ~7x low.
+                # The absolute metric (fixed-metre thresholds) ignores intrinsics.
+                Ho, Wo = int(clip.images.shape[-2]), int(clip.images.shape[-1])
+                s256 = 256.0 / min(Ho, Wo)
+                intrin = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]]) * s256
 
                 med = compute_clip_metrics(gt_xyz, gt_vis, pred_NF3, pred_vis, intrin)
                 ab = compute_clip_metrics_absolute(gt_xyz, gt_vis, pred_NF3, pred_vis, intrin)
