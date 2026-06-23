@@ -20,10 +20,45 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import pickle
 from pathlib import Path
 
 import numpy as np
+
+# ── safe pickle loader ────────────────────────────────────────────────────────
+# Restrict deserialization to numpy arrays + plain Python scalars/containers.
+# Rejects arbitrary classes that could execute code on construction.
+_ALLOWED = {
+    ("numpy.core.multiarray", "_reconstruct"),
+    ("numpy.core.multiarray", "scalar"),
+    ("numpy", "ndarray"),
+    ("numpy", "dtype"),
+    ("numpy", "_core.multiarray", "_reconstruct"),  # NumPy ≥ 2.0 path
+    ("builtins", "dict"),
+    ("builtins", "list"),
+    ("builtins", "tuple"),
+    ("builtins", "str"),
+    ("builtins", "int"),
+    ("builtins", "float"),
+    ("builtins", "bool"),
+    ("builtins", "bytes"),
+}
+
+
+class _SafeUnpickler(pickle.Unpickler):
+    def find_class(self, module: str, name: str):
+        if (module, name) in _ALLOWED:
+            return super().find_class(module, name)
+        # Also allow numpy scalar dtypes like numpy.float32, numpy.int64 …
+        if module in ("numpy",) and name.startswith(("float", "int", "uint", "bool", "complex")):
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(f"Blocked class: {module}.{name}")
+
+
+def _safe_load(path: Path):
+    with open(path, "rb") as f:
+        return _SafeUnpickler(io.BytesIO(f.read())).load()
 
 
 def main() -> int:
@@ -53,10 +88,9 @@ def main() -> int:
         if sid >= len(seqs):
             print(f"[convert] sample_id {sid} out of range ({len(seqs)} seqs) — skip")
             continue
-        # Trusted source: these pkls are our own TAPIP3D save_preds output, not
-        # third-party data. (numpy arrays + plain dict written by train_eval.py.)
-        with open(pp, "rb") as f:
-            d = pickle.load(f)
+        # _safe_load uses a restricted Unpickler that only admits numpy arrays
+        # and plain Python scalars/containers — blocks arbitrary class execution.
+        d = _safe_load(pp)
         preds = d["preds"]
         coords = np.asarray(preds["coords"], dtype=np.float32)        # (T,N,3)
         visibs = np.asarray(preds["visibs"], dtype=np.float32)        # (T,N) logits
