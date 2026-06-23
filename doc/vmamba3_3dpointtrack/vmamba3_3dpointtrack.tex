@@ -134,36 +134,74 @@ v33 only moves the point's depth, so the predicted 2D track and visibility are i
 \label{fig:ray}
 \end{figure}
 
-\paragraph{Inputs and architecture.} For each track $n$ and frame $t$ the model sees a $4$-D
-feature: the normalised ray direction $\big(\tfrac{u-c_x}{f_x},\tfrac{v-c_y}{f_y}\big)$, the raw
-depth $z_{\text{raw}}/z_{\text{ref}}$ ($z_{\text{ref}}=$ per-clip median depth), and the visibility
-flag. An MLP embeds this to $D{=}128$; two \emph{causal} Mamba-3 layers process each track as a
-length-$F$ temporal sequence; a zero-initialised head emits a log-depth correction
-(Fig.~\ref{fig:arch}):
+\paragraph{Inputs and architecture.} For each track $n$ and frame $t$ the SSM receives a $4$-D
+feature: the normalised ray direction $\big(\tfrac{u-c_x}{f_x},\tfrac{v-c_y}{f_y}\big)$,
+the depth ratio $z_{\text{raw}}/z_{\text{ref}}$ ($z_{\text{ref}}=$ per-clip median depth), and
+the visibility flag.  The SSM \emph{does not see $z_{\text{raw}}$ directly}; it only sees the
+scale-normalised ratio.  This is a deliberate training-stability choice: DA3 depths span
+$\sim$1\,m (\emph{adt}) to $\sim$20\,m (\emph{drivetrack}), and an unnormalised input would
+require the same network weights to operate across a 20$\times$ dynamic range.
+
+The SSM's role is therefore to predict a \emph{relative} correction factor, not an absolute
+depth.  $z_{\text{raw}}$ bypasses the SSM entirely and is multiplied back in outside the learned
+module (Fig.~\ref{fig:arch}):
 \begin{equation}
 \Delta\log z_t = \mathrm{clamp}\big(\mathrm{head}(h_t),\,\pm 2\big),\qquad
-z_t = z_{\text{raw},t}\cdot e^{\Delta\log z_t},
+z_t = z_{\text{raw},t}\cdot e^{\Delta\log z_t}.
+\label{eq:correction}
 \end{equation}
-and the 3D point is reprojected with Eq.~\eqref{eq:unproject} using the refined $z_t$ and the
-\emph{frozen} ray. Zero-init means v33 starts exactly at the SEA-RAFT$+$DA3 baseline and only learns
-improvements. The model has $\approx0.40$M trainable parameters.
+Because the SSM never sees the absolute scale, it cannot reason about it directly; any
+global-scale correction it learns must be inferred indirectly from temporal and structural
+patterns in the normalised input (e.g.\ the characteristic depth-change profile of a driving
+scene vs.\ an indoor one).  A natural future improvement is to also feed $\log z_{\text{ref}}$
+as a scalar context token, giving the SSM direct access to the clip-level scale without
+sacrificing the per-point normalisation.
+
+Zero-initialising the head means v33 starts exactly at the SEA-RAFT$+$DA3 baseline and only
+learns improvements.  The model has $\approx0.40$M trainable parameters.
 
 \begin{figure}[h]
 \centering
-\begin{tikzpicture}[node distance=6mm and 11mm]
-  \node[io] (in) {$[\,\text{ray}_x,\text{ray}_y,\,z_{\text{raw}}/z_{\text{ref}},\,\text{vis}\,]$\\(per track, per frame)};
-  \node[block, right=of in] (emb) {MLP\\embed (128)};
-  \node[learn, right=of emb] (m1) {Mamba-3\\causal $\times 2$};
-  \node[block, right=of m1] (head) {$\Delta\log z$ head\\(zero-init)};
-  \node[io, right=of head] (z) {$z=z_{\text{raw}}e^{\Delta\log z}$};
+\begin{tikzpicture}[
+    node distance=4mm and 7mm,
+    block/.style={rectangle, rounded corners, draw=black!60, fill=blue!6,
+      minimum height=8mm, minimum width=16mm, align=center, font=\small},
+    frozen/.style={rectangle, rounded corners, draw=black!50, fill=black!7,
+      minimum height=8mm, minimum width=16mm, align=center, font=\small},
+    learn/.style={rectangle, rounded corners, draw=blue!60!black, fill=blue!14, very thick,
+      minimum height=8mm, minimum width=16mm, align=center, font=\small},
+    io/.style={rectangle, draw=black!40, fill=yellow!10,
+      minimum height=7mm, align=center, font=\small},
+    arr/.style={-{Stealth[length=2mm]}, thick},
+  ]
+  % SSM path (top row)
+  \node[io] (in) {$[\,\mathbf{r},\,z/z_{\!r},\,v\,]$\\{\scriptsize per track $\times$ frame}};
+  \node[block, right=of in] (emb) {MLP\\{\scriptsize 128}};
+  \node[learn, right=of emb] (m1) {Mamba-3\\{\scriptsize causal$\times$2}};
+  \node[block, right=of m1] (head) {$\Delta\!\log z$\\{\scriptsize head (0-init)}};
+  \node[block, right=of head] (mul) {$\times e^{\Delta\!\log z}$};
+  \node[io, right=of mul] (z) {$z_t$};
+  % z_raw bypass (below)
+  \node[io, below=9mm of m1] (zraw) {$z_{\text{raw}}$ {\scriptsize (DA3, bypasses SSM)}};
+  % Arrows: SSM path
   \draw[arr] (in) -- (emb);
   \draw[arr] (emb) -- (m1);
   \draw[arr] (m1) -- (head);
-  \draw[arr] (head) -- (z);
-  \node[font=\scriptsize, below=4mm of m1, align=center] {temporal SSM over $t$\\(state dim 64, 4 heads)};
+  \draw[arr] (head) -- (mul);
+  \draw[arr] (mul) -- (z);
+  % z_raw bypass arrow
+  \draw[arr] (zraw.east) to[bend right=15] (mul.south);
+  \node[font=\scriptsize, above=2mm of m1, align=center]
+    {state dim 64, 4 heads};
 \end{tikzpicture}
-\caption{v33 architecture. Each of the $N$ tracks is processed independently as a temporal
-sequence by the causal Mamba-3 stack; the head outputs a bounded multiplicative depth correction.}
+\caption{v33 architecture. Input abbreviations: $\mathbf{r}{=}(\text{ray}_x,\text{ray}_y)$,
+$z/z_{\!r}{=}z_{\text{raw}}/z_{\text{ref}}$, $v{=}$visibility.
+\textbf{Bypass}: $z_{\text{raw}}$ (DA3 metric depth) skips the SSM entirely and is multiplied
+back in at the end — the SSM is a \emph{relative corrector} that predicts the factor
+$e^{\Delta\log z}$, not an absolute depth.
+\textbf{causal$\times$2}: two causal Mamba-3 layers (past-only; enables streaming).
+\textbf{4 heads}: SSD splits the 64-dim state into 4 independent heads (16-dim each), analogous
+to multi-head attention but computed as a linear recurrence.}
 \label{fig:arch}
 \end{figure}
 
