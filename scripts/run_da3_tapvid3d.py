@@ -77,9 +77,20 @@ def run_da3_clip(da3: DepthAnything3, npz_path: Path, process_res: int,
     depths, intrinsics = [], []
     for start in range(0, T, chunk_size):
         chunk = frames[start:start + chunk_size]
+        n = len(chunk)
         pred = da3.inference(chunk, process_res=process_res, export_format="mini_npz")
-        depths.append(np.asarray(pred.depth, dtype=np.float32))
-        intrinsics.append(np.asarray(pred.intrinsics, dtype=np.float32))
+        depths.append(np.asarray(pred.depth, dtype=np.float32))    # (n, Hd, Wd)
+        if pred.intrinsics is not None:
+            ki = np.asarray(pred.intrinsics, dtype=np.float32)
+            if ki.ndim == 2:                    # (3,3) → broadcast to (n,3,3)
+                ki = np.broadcast_to(ki[None], (n, 3, 3)).copy()
+            intrinsics.append(ki)
+        else:
+            # Estimate from depth spatial dims: f = max(Hd, Wd), centre principal pt
+            Hd, Wd = depths[-1].shape[1], depths[-1].shape[2]
+            f = float(max(Hd, Wd))
+            K = np.array([[f, 0, Wd / 2], [0, f, Hd / 2], [0, 0, 1]], np.float32)
+            intrinsics.append(np.broadcast_to(K[None], (n, 3, 3)).copy())
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     depth_all = np.concatenate(depths, axis=0)          # (T, Hd, Wd)
