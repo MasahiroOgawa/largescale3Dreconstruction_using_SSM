@@ -59,3 +59,25 @@ v33 is best on drivetrack/pstudio. TAPIP3D is worst on ADT (0.71m vs 0.41m for S
 3. **Why TAPIP3D underperforms**: TAPIP3D is optimized for scale-invariant tracking; its model doesn't improve metric depth. It also fails on ADT (possibly poor generalization from training distribution).
 
 **How to apply:** Paper framing confirmed: v33 (tiny learned depth corrector on top of SEA-RAFT) achieves SoTA absolute-metric 3D tracking despite lower leaderboard score. TAPIP3D comparison strengthens the story — SOTA-ranked model is actually worse in real metres.
+
+## Extended comparison with sensor depth and MegaSAM depth (2026-06-26)
+
+### ADT with sensor depth (depth_preds — best possible)
+| Method | metric-AJ | err_mean |
+|--------|-----------|----------|
+| SEA-RAFT + depthn | 28.93% | 0.363m |
+| SEA-RAFT + DA3    | 27.27% | 0.410m |
+| TAPIP3D + depthn  | 19.69% | — |
+| TAPIP3D + DA3     | 0.38%  | — |
+
+Sensor depth is better than DA3 for SEA-RAFT (+5.7% metric-AJ). TAPIP3D improves 52× over DA3 on ADT with sensor depth (19.7% vs 0.38%) — consistent with hypothesis that DA3 has per-pixel shape errors incompatible with TAPIP3D's absolute thresholds.
+
+### MegaSAM (drivetrack + pstudio) — IN PROGRESS (2026-06-26, overnight)
+**Status:** Overnight pipeline running.
+- `scripts/run_megasam_minival_eval.sh` — PID 471939
+- drivetrack: 50 clips × ~122s ≈ 1.7 hrs
+- pstudio: 50 clips × ~507s ≈ 7 hrs
+- After annotation: SEA-RAFT+MegaSAM and TAPIP3D+MegaSAM eval
+- Log: `outputs/run_megasam_minival_eval_overnight.log`
+
+**Why:** User wants all 4 methods (TAPIP3D+MegaSAM, RAFT+DA3, RAFT+MegaSAM, v33) on same minival data with same metric. MegaSAM provides camera poses + consistent metric depth for drivetrack/pstudio (no built-in depth_preds).
