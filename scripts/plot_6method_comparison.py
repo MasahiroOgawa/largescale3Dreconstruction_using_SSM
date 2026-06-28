@@ -214,11 +214,23 @@ def make_figure(
                     edgecolor="white",
                     linewidth=0.5,
                 )
-                if hi > 0.3:
+                label = f"{hi:.2f}" if hi < 1.0 else f"{hi:.1f}"
+                if hi < 0.8:  # small bar: rotate label upward to avoid crowding
+                    ax.text(
+                        xi,
+                        hi + 0.15,
+                        label,
+                        ha="center",
+                        va="bottom",
+                        fontsize=5.5,
+                        color="#444",
+                        rotation=90,
+                    )
+                else:
                     ax.text(
                         xi,
                         hi + 0.3,
-                        f"{hi:.1f}",
+                        label,
                         ha="center",
                         va="bottom",
                         fontsize=6.0,
