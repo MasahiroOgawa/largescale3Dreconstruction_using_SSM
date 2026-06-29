@@ -85,13 +85,21 @@ def build_data_tables() -> tuple[dict, dict]:
     )
     # ── v33 (use the _fix run) ────────────────────────────────────────────────
     v33 = _read_summary(REPO / "result/metric3d_v33_fix_20260618-1718/summary.md")
-    # ── SEA-RAFT + MegaSAM ────────────────────────────────────────────────────
+    # ── SEA-RAFT + MegaSAM (drivetrack+pstudio from overnight run; ADT from s2 run) ──
     searaft_msam = _read_summary(
         REPO / "result/metric3d_searaft_megasam_minival_20260626-0903/summary.md"
     )
-    # ── v34 (may still be running) ─────────────────────────────────────────────
+    adt_searaft_msam_dirs = sorted(
+        REPO.glob("result/metric3d_searaft_megasam_s2_adt_*/summary.md")
+    )
+    if adt_searaft_msam_dirs:
+        searaft_msam.update(_read_summary(adt_searaft_msam_dirs[-1]))
+    # ── v34 (drivetrack+pstudio from minival run; ADT from s2 run) ────────────
     v34_dirs = sorted(REPO.glob("result/metric3d_v34_megasam_minival_*/summary.md"))
     v34 = _read_summary(v34_dirs[-1]) if v34_dirs else {}
+    adt_v34_dirs = sorted(REPO.glob("result/metric3d_v34_megasam_s2_adt_*/summary.md"))
+    if adt_v34_dirs:
+        v34.update(_read_summary(adt_v34_dirs[-1]))
 
     # ── TAPIP3D + DA3 (official TAPIP3D eval JSONs for normalised; absolute eval for metric-AJ) ──
     tapip3d_da3_norm = {}
