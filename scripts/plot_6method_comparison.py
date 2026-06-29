@@ -33,6 +33,8 @@ SUBSETS = ["drivetrack", "pstudio", "adt"]
 SUBSET_LABELS = {"drivetrack": "Drivetrack", "pstudio": "Panoptic Studio", "adt": "ADT"}
 
 METHODS = [
+    "BootsTAPIR\n+ZoeDepth",
+    "Spatial\nTracker",
     "SEA-RAFT\n+DA3",
     "SEA-RAFT\n+MegaSAM",
     "TAPIP3D\n+DA3",
@@ -95,7 +97,7 @@ def build_data_tables() -> tuple[dict, dict]:
     tapip3d_da3_norm = {}
     tapip3d_da3_abs = {}
     tapip3d_dir = Path(
-        "/home/mas/proj/study/TAPIP3D/result/auto_generated"
+        "/home/mas/proj/study/TAPIP3D/outputs/auto_generated"
         "/tapip3d_kubric_24frames_384trajs_2026-06-24_18-55-53"
     )
     for s in SUBSETS:
@@ -127,6 +129,14 @@ def build_data_tables() -> tuple[dict, dict]:
         "adt": NaN,
     }
 
+    # ── Published baselines (normalised AJ from TAPVid-3D paper) ─────────────
+    bootstapir_norm = {"drivetrack": 0.051, "pstudio": 0.102, "adt": 0.086}
+    bootstapir_abs = {}  # predictions not released; all N/A
+
+    # SpatialTracker: normalised published; absolute drivetrack scored via our pipeline
+    spatialtracker_norm = {"drivetrack": 0.058, "pstudio": 0.098, "adt": 0.092}
+    spatialtracker_abs = {"drivetrack": 0.069}  # pstudio/adt predictions not released
+
     def _get(table: dict, subset: str, key: str) -> float:
         return table.get(subset, {}).get(key, NaN)
 
@@ -135,6 +145,8 @@ def build_data_tables() -> tuple[dict, dict]:
     abs_aj: dict[int, dict[str, float]] = {}
     for m_idx, (norm_src, abs_src) in enumerate(
         [
+            (bootstapir_norm, bootstapir_abs),
+            (spatialtracker_norm, spatialtracker_abs),
             (searaft_da3, searaft_da3),
             (searaft_msam, searaft_msam),
             (tapip3d_da3_norm, tapip3d_da3_abs),
@@ -146,7 +158,9 @@ def build_data_tables() -> tuple[dict, dict]:
         norm_aj[m_idx] = {}
         abs_aj[m_idx] = {}
         for s in SUBSETS:
-            if m_idx in (2, 3):  # TAPIP3D methods: sources are plain {subset: float} dicts
+            # Methods with plain {subset: float} sources (not summary.md dicts):
+            # 0=BootsTAPIR, 1=SpatialTracker, 4=TAPIP3D+DA3, 5=TAPIP3D+MegaSAM
+            if m_idx in (0, 1, 4, 5):
                 norm_aj[m_idx][s] = float(norm_src.get(s, NaN))
                 abs_aj[m_idx][s] = float(abs_src.get(s, NaN))
             else:  # SEA-RAFT / v33 / v34: sources are summary.md {subset: {key: float}} dicts
