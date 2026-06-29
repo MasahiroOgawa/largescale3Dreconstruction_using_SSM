@@ -29,7 +29,7 @@ from .phase2 import _student_forward_capture
 
 @dataclass
 class Phase3Config:
-    init_ckpt: str = "outputs/runs/phase2_gt/ckpt_500.pt"
+    init_ckpt: str = "result/runs/phase2_gt/ckpt_500.pt"
     steps: int = 500
     n_views: int = 4
     image_size: int = 504
@@ -134,10 +134,10 @@ def train(cfg: Phase3Config, out_dir: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--init", type=str, default="outputs/runs/phase2_gt/ckpt_500.pt")
+    ap.add_argument("--init", type=str, default="result/runs/phase2_gt/ckpt_500.pt")
     ap.add_argument("--steps", type=int, default=500)
     ap.add_argument("--lr", type=float, default=1e-5)
-    ap.add_argument("--out-dir", type=Path, default=Path("outputs/runs/phase3_unfreeze"))
+    ap.add_argument("--out-dir", type=Path, default=Path("result/runs/phase3_unfreeze"))
     ap.add_argument("--ckpt-every", type=int, default=100)
     args = ap.parse_args()
     cfg = Phase3Config(init_ckpt=args.init, steps=args.steps, lr=args.lr, ckpt_every=args.ckpt_every)

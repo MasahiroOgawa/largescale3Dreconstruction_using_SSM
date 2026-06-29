@@ -11,8 +11,8 @@ Outputs per video (in --out-dir/<stem>/):
 Usage:
     uv run python scripts/track_custom_video.py \
         ~/data/study/*.MOV \
-        --ckpt outputs/v33_20260617-0001/ckpt_20000.pt \
-        --out-dir outputs/custom_video_tracks
+        --ckpt result/v33_20260617-0001/ckpt_20000.pt \
+        --out-dir result/custom_video_tracks
 """
 from __future__ import annotations
 
@@ -189,9 +189,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("videos", nargs="+", type=Path, help="Input .MOV/.mp4/... files")
     ap.add_argument("--ckpt", type=Path,
-                    default=Path("outputs/v33_20260617-0001/ckpt_20000.pt"),
+                    default=Path("result/v33_20260617-0001/ckpt_20000.pt"),
                     help="v33 checkpoint")
-    ap.add_argument("--out-dir", type=Path, default=Path("outputs/custom_video_tracks"))
+    ap.add_argument("--out-dir", type=Path, default=Path("result/custom_video_tracks"))
     ap.add_argument("--image-size", type=int, default=896, help="SEA-RAFT working resolution")
     ap.add_argument("--da3-res", type=int, default=504, help="DA3 processing resolution")
     ap.add_argument("--da3-model", default="da3metric-large")

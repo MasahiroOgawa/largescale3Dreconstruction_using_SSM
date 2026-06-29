@@ -4,7 +4,7 @@ Runs on drivetrack and pstudio by default; pass --subsets adt to run on ADT.
 Use --frame-stride 2 for ADT (300 frames → 150) to avoid DROID-SLAM OOM on 12 GB GPUs.
 
 Outputs:
-    outputs/tapip3d_annotations/<subset>_megasam[_s<stride>]_minival/megasam/<seq_id>.h5
+    result/tapip3d_annotations/<subset>_megasam[_s<stride>]_minival/megasam/<seq_id>.h5
     keys: depths (T,H,W) float32, intrinsics (T,3,3), extrinsics (T,4,4)
 
 Usage:
@@ -33,7 +33,7 @@ TAPIP3D_ROOT = Path("/home/mas/proj/study/TAPIP3D")
 MEGASAM_ROOT = TAPIP3D_ROOT / "third_party" / "megasam"
 TAPVID_ROOT = Path("~/data/tapvid3d").expanduser()
 
-TAPIP3D_ANNO_ROOT = REPO_ROOT / "outputs" / "tapip3d_annotations"
+TAPIP3D_ANNO_ROOT = REPO_ROOT / "result" / "tapip3d_annotations"
 TAPIP3D_ANNO_CFG_ROOT = TAPIP3D_ROOT / "configs" / "annotation"
 
 VENV_PYTHON = str(TAPIP3D_ROOT / ".venv" / "bin" / "python")

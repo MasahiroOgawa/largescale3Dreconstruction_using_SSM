@@ -12,8 +12,8 @@ Reads:
                            (output of scripts/eval_mamba3_tracker.py --split minival).
 
   When no --eval-dir is given, auto-discovers every minival-evaluated run on disk:
-      outputs/track_v*_*/eval/metric_results/                   (v21+ official pipeline)
-      outputs/eval_tracker/*_official/metric_results/           (v19/v20 re-evals)
+      result/track_v*_*/eval/metric_results/                   (v21+ official pipeline)
+      result/eval_tracker/*_official/metric_results/           (v19/v20 re-evals)
 
 Writes (to --out-dir):
   - comparison.md   markdown table (baselines + ours + SoTA reference)
@@ -30,6 +30,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -48,8 +49,11 @@ def _load_run(eval_dir: Path) -> dict[str, float | None]:
         if not json_path.exists():
             continue
         per_clip = json.loads(json_path.read_text())
-        ajs = [c["average_jaccard"] for c in per_clip
-               if isinstance(c.get("average_jaccard"), (int, float))]
+        ajs = [
+            c["average_jaccard"]
+            for c in per_clip
+            if isinstance(c.get("average_jaccard"), (int, float))
+        ]
         out[sub] = sum(ajs) / len(ajs) if ajs else None
     return out
 
@@ -71,14 +75,14 @@ def _auto_discover_runs() -> list[tuple[str, Path]]:
     in the final plot ("our latest" rightmost).
     """
     found: list[tuple[str, Path]] = []
-    outputs = Path("outputs")
+    outputs = Path("result")
     if outputs.is_dir():
         for d in sorted(outputs.glob("track_v*_*")):
             ed = d / "eval"
             if (ed / "metric_results").is_dir():
                 m = re.match(r"track_(v\d+)_", d.name)
                 found.append((m.group(1) if m else d.name, ed))
-    eval_root = Path("outputs/eval_tracker")
+    eval_root = Path("result/eval_tracker")
     if eval_root.is_dir():
         for d in sorted(eval_root.glob("*_official")):
             if (d / "metric_results").is_dir():
@@ -96,8 +100,10 @@ def _auto_discover_runs() -> list[tuple[str, Path]]:
 
 
 def _write_markdown(
-    baselines: list[dict], ours: list[tuple[str, dict[str, float | None]]],
-    sota: list[dict], out_path: Path,
+    baselines: list[dict],
+    ours: list[tuple[str, dict[str, float | None]]],
+    sota: list[dict],
+    out_path: Path,
 ) -> None:
     lines = [
         "# TAPVid-3D 3D-AJ — where we are (median scaling, %)",
@@ -124,7 +130,9 @@ def _write_markdown(
         )
     if sota:
         lines.append("")
-        lines.append("### Reference (full-eval split — not directly comparable to above)")
+        lines.append(
+            "### Reference (full-eval split — not directly comparable to above)"
+        )
         lines.append("")
         lines.append("| method | pstudio | drivetrack | aria (adt) | mean |")
         lines.append("|---|---:|---:|---:|---:|")
@@ -139,11 +147,15 @@ def _write_markdown(
 
 
 def _plot(
-    baselines: list[dict], ours: list[tuple[str, dict[str, float | None]]],
-    sota: list[dict], out_path: Path,
+    baselines: list[dict],
+    ours: list[tuple[str, dict[str, float | None]]],
+    sota: list[dict],
+    out_path: Path,
 ) -> None:
     methods: list[tuple[str, dict[str, float | None], str]] = []
-    methods.extend((b["name"], {s: b.get(s) for s in SUBSETS}, "baseline") for b in baselines)
+    methods.extend(
+        (b["name"], {s: b.get(s) for s in SUBSETS}, "baseline") for b in baselines
+    )
     methods.extend((label, m, "ours") for label, m in ours)
     methods.extend((s["name"], {k: s.get(k) for k in SUBSETS}, "sota") for s in sota)
 
@@ -163,21 +175,35 @@ def _plot(
         else:
             color, alpha, hatch, edge = None, 0.85, None, "none"
         bars = ax.bar(
-            x + i * width - 0.4 + width / 2, ys, width, label=name,
-            color=color, alpha=alpha, hatch=hatch,
-            edgecolor=edge, linewidth=0.6,
+            x + i * width - 0.4 + width / 2,
+            ys,
+            width,
+            label=name,
+            color=color,
+            alpha=alpha,
+            hatch=hatch,
+            edgecolor=edge,
+            linewidth=0.6,
         )
         for bar, v in zip(bars, vals):
             if v is not None and v * 100 > 0.2:
-                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2,
-                        f"{v * 100:.1f}", ha="center", va="bottom", fontsize=7)
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.2,
+                    f"{v * 100:.1f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                )
     ax.set_xticks(x)
     ax.set_xticklabels(x_labels)
     ax.set_ylabel("3D-AJ (%)")
-    ax.set_title("TAPVid-3D 3D-AJ — where we are\n"
-                 "(solid = paper baselines on minival, red = our runs on minival, "
-                 "hatched = SoTA on full-eval, NOT same test set)",
-                 fontsize=10)
+    ax.set_title(
+        "TAPVid-3D 3D-AJ — where we are\n"
+        "(solid = paper baselines on minival, red = our runs on minival, "
+        "hatched = SoTA on full-eval, NOT same test set)",
+        fontsize=10,
+    )
     ax.grid(axis="y", alpha=0.3)
     ax.legend(fontsize=7, ncol=2, loc="upper left")
     fig.tight_layout()
@@ -189,21 +215,28 @@ def _plot(
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
-        "--eval-dir", type=Path, action="append", default=[],
+        "--eval-dir",
+        type=Path,
+        action="append",
+        default=[],
         help="Path to a run's eval dir. Repeat to pass several. "
-             "If omitted, auto-discovers every minival-comparable run on disk.",
+        "If omitted, auto-discovers every minival-comparable run on disk.",
     )
     ap.add_argument(
-        "--baselines", type=Path,
+        "--baselines",
+        type=Path,
         default=Path("configs/tapvid3d_baselines.yaml"),
     )
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument(
-        "--label", action="append", default=None,
+        "--label",
+        action="append",
+        default=None,
         help="Display label per --eval-dir (in order). Default: inferred.",
     )
     ap.add_argument(
-        "--no-sota", action="store_true",
+        "--no-sota",
+        action="store_true",
         help="Hide the full-eval SoTA reference bars from the chart.",
     )
     args = ap.parse_args()

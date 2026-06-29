@@ -14,7 +14,7 @@ lr: 0.0003
 lr_schedule: plateau
 mamba_chunk_size: null
 num_workers: 4
-out: outputs/cifar10_compare_patch1
+out: result/cifar10_compare_patch1
 patch_size: 1
 plateau_factor: 0.5
 plateau_loss_ema_alpha: 0.3

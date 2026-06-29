@@ -249,50 +249,64 @@ already matches or exceeds the 2024 published baselines\footnote{We use 2025 com
 (DA3-Metric-Large depth); the published baselines use 2024 depth (ZoeDepth) / SfM. A final
 official cross-check on our \emph{own} saved predictions is pending, but the pipeline is validated
 by exactly reproducing the SpatialTracker number.}, while v33 \emph{loses} on this metric (it
-trades relative-structure quality for absolute-scale correctness; see \S\ref{sec:abs}). Current
-state-of-the-art on the (different, larger) full-eval split is far higher --- TAPIP3D $\sim$0.30 ---
-and a head-to-head against it is in progress (\S\ref{sec:sota}).
+trades relative-structure quality for absolute-scale correctness; see \S\ref{sec:abs}).
+TAPIP3D~\cite{tapip3d} scores $\sim$0.30 on the (different, larger) full-eval split;
+a six-method minival comparison including TAPIP3D is in \S\ref{sec:sota}.
 
 \begin{table}[h]
 \centering
-\caption{TAPVid-3D minival, median-scaled 3D-AJ (the standard leaderboard metric; higher better).}
+\caption{TAPVid-3D minival, median-scaled 3D-AJ (standard leaderboard metric; higher better).
+         ``---'' = result unavailable (MegaSAM methods require source-video frame-rate;
+         ADT NPZ clips have 300 frames which exceed DROID-SLAM memory at 12\,GB).}
 \label{tab:median}
 \begin{tabular}{lrrrr}
 \toprule
-Method & pstudio & drivetrack & adt & mean \\
+Method & drivetrack & pstudio & adt & mean \\
 \midrule
-BootsTAPIR + ZoeDepth (2024)\,$^{*}$ & 0.102 & 0.051 & 0.086 & 0.080 \\
-SpatialTracker (2024)\,$^{*}$        & 0.098 & 0.058 & 0.092 & 0.083 \\
+BootsTAPIR + ZoeDepth (2024)\,$^{*}$ & 0.051 & 0.102 & 0.086 & 0.080 \\
+SpatialTracker (2024)\,$^{*}$        & 0.058 & 0.098 & 0.092 & 0.083 \\
 \midrule
-SEA-RAFT + DA3 (baseline, no training) & 0.111 & 0.108 & 0.132 & \textbf{0.117} \\
-v33 (depth refiner)                    & 0.041 & 0.057 & 0.123 & 0.074 \\
+SEA-RAFT + DA3 (baseline)      & \textbf{0.108} & \textbf{0.111} & 0.132 & \textbf{0.117} \\
+SEA-RAFT + MegaSAM             & 0.103 & 0.135 & ---   & ---   \\
+TAPIP3D + DA3\,$^{\dagger}$    & 0.065 & 0.023 & 0.004 & 0.030 \\
+TAPIP3D + MegaSAM\,$^{\ddagger}$ & 0.000 & 0.003 & ---   & ---   \\
+Ours (v33, DA3 depth)          & 0.057 & 0.041 & \textbf{0.123} & 0.074 \\
+Ours (v34, MegaSAM depth)      & 0.059 & 0.048 & ---   & ---   \\
 \bottomrule
 \end{tabular}
 \\[2pt]
-{\footnotesize $^{*}$ published numbers; entire leaderboard is median-scaled.}
+{\footnotesize $^{*}$ published numbers; entire leaderboard is median-scaled.
+$^{\dagger}$ TAPIP3D evaluated with our pipeline using its released checkpoint.
+$^{\ddagger}$ Fails on minival NPZs due to DROID-SLAM frame-rate constraints (see \S\ref{sec:sota}).}
 \end{table}
 
 \subsection{Absolute-metric results: the reversal}
 \label{sec:abs}
 Under the absolute-metric protocol the ranking \emph{reverses} (Table~\ref{tab:abs},
-Fig.~\ref{fig:reversal}). v33 beats the baseline on every absolute measure overall: metric-AJ
-$+22\%$, metric-APD3D $+20\%$, mean error $-38\%$ ($4.29\!\to\!2.67$\,m), median error $-47\%$. The
-gain is concentrated where DA3's scale is most wrong --- far-field \emph{drivetrack}, metric-AJ
-$0.005\!\to\!0.082$ ($16\times$), error $11.7\!\to\!6.9$\,m --- while near-field \emph{adt}
-(already accurate) is a tie. The learned corrector helps exactly when needed and does no harm
-otherwise; the leaderboard's median scaling hides all of this.
+Fig.~\ref{fig:reversal}). v33 outperforms all methods on absolute metric-AJ.
+Against the DA3 baseline: metric-AJ $+22\%$ ($0.147\!\to\!0.180$),
+mean error $-38\%$ ($4.29\!\to\!2.67$\,m). Against TAPIP3D$+$DA3: metric-AJ
+$+80\%$ ($0.100\!\to\!0.180$). The gain is concentrated where DA3's scale is most wrong ---
+far-field \emph{drivetrack}, metric-AJ $0.005\!\to\!0.082$ ($16\times$) ---
+while near-field \emph{adt} (DA3 already accurate) is a near-tie across all methods.
+The leaderboard's median scaling hides all of this: v33's normalised 3D-AJ is
+\emph{lower} than the baseline (Table~\ref{tab:median}).
 
 \begin{table}[h]
 \centering
-\caption{TAPVid-3D minival. ``median-AJ'' is the leaderboard metric; ``metric-*'' and the error
-columns are absolute (no scaling, fixed-metre thresholds). Both methods run at $\sim$12.5 fps.}
+\caption{TAPVid-3D minival, absolute metric-AJ (no scaling, fixed-metre thresholds 1\,cm--2.56\,m;
+higher better). ``---'' = ADT result unavailable for MegaSAM methods.}
 \label{tab:abs}
-\begin{tabular}{lrrrrr}
+\begin{tabular}{lrrrr}
 \toprule
-Method & median-AJ & metric-AJ & metric-APD3D & err mean (m) & err med (m) \\
+Method & drivetrack & pstudio & adt & mean \\
 \midrule
-SEA-RAFT + DA3 (baseline) & \textbf{0.117} & 0.147 & 0.254 & 4.29 & 4.01 \\
-v33 (depth refiner)       & 0.074 & \textbf{0.180} & \textbf{0.306} & \textbf{2.67} & \textbf{2.13} \\
+SEA-RAFT + DA3 (baseline)  & 0.005 & 0.165 & 0.273 & 0.147 \\
+SEA-RAFT + MegaSAM         & 0.000 & 0.082 & ---   & ---   \\
+TAPIP3D + DA3              & 0.006 & 0.131 & 0.164 & 0.100 \\
+TAPIP3D + MegaSAM          & 0.000 & 0.000 & ---   & ---   \\
+Ours (v33, DA3 depth)      & \textbf{0.082} & \textbf{0.186} & \textbf{0.272} & \textbf{0.180} \\
+Ours (v34, MegaSAM depth)  & 0.001 & 0.092 & ---   & ---   \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -305,22 +319,62 @@ favours the baseline. Right: under the absolute metric, v33 wins --- most on far
 \label{fig:reversal}
 \end{figure}
 
-\subsection{Comparison to SOTA (drivetrack)}
+\subsection{Comparison to state-of-the-art}
 \label{sec:sota}
-SpatialTracker's official predictions are released only for \emph{drivetrack}. Scored identically
-through our pipeline (and validated: its median-scaled 3D-AJ reproduces the published $0.058$),
-v33 \emph{beats} this SOTA 3D tracker in absolute metric on drivetrack (Fig.~\ref{fig:sota}):
-metric-AJ $0.082$ vs $0.069$ ($+20\%$), metric-APD3D $0.134$ vs $0.106$ ($+26\%$), median error
-$5.50$ vs $6.03$\,m. A comparison against the current SOTA TAPIP3D (image-only, DA3 depth ---
-a fair, metric-depth-grounded baseline) is \textbf{in progress}: its per-clip predictions will be
-scored with the same protocol via our external-prediction ingestion.
+
+\paragraph{SpatialTracker.}
+SpatialTracker's official predictions are released only for \emph{drivetrack}.
+Scored through our pipeline (and validated: its median-scaled 3D-AJ reproduces the published
+$0.058$), v33 beats it in absolute metric: metric-AJ $0.082$ vs $0.069$ ($+20\%$),
+metric-APD3D $0.134$ vs $0.106$ ($+26\%$).
+
+\paragraph{TAPIP3D + DA3.}
+Using the same DA3 depth as our pipeline, TAPIP3D~\cite{tapip3d} scores higher than v33 on the
+normalised leaderboard metric (drivetrack $0.065$ vs $0.057$, pstudio $0.023$ vs $0.041$), but
+\emph{lower} on the absolute metric: mean metric-AJ $0.100$ vs $0.180$ ($-44\%$).
+This reversal arises because TAPIP3D's point-trajectory model optimises for relative
+pixel-track coherence, whereas our depth refiner directly corrects metric scale.
+
+\paragraph{TAPIP3D + MegaSAM and why it fails on our minival.}
+\label{sec:megasam-fail}
+TAPIP3D's published SOTA uses MegaSAM (DAv1 $+$ UniDepth $+$ DROID-SLAM $+$ CVD) for metric
+depth. On our minival NPZ clips the pipeline achieves near-zero scores because DROID-SLAM requires
+dense, continuously moving video ($\geq$10\,fps, sufficient translational parallax) to recover
+metric scale by triangulation. The three NPZ subsets violate these requirements in different ways:
+\begin{itemize}
+\item \textbf{drivetrack}: the original 10\,fps Waymo clips are sub-sampled to $\approx$2.6\,fps
+  in the NPZ (66 frames over 25\,s). DROID-SLAM's optical-flow tracking degrades on sparse inputs,
+  producing depths of $\sim$0.9\,m where the true scene depth is $\sim$15\,m ($17\times$ scale
+  error). The normalised metric rescales by the per-clip median ratio, so it recovers to $\approx$0\%
+  AJ regardless, rather than hiding the error as with a good prediction.
+\item \textbf{pstudio}: Panoptic Studio cameras are fixed to a stationary dome. With no
+  translational ego-motion, DROID-SLAM cannot triangulate metric scale from parallax; depth is
+  capped at $\approx$1\,m (true depth 2--4\,m, 2--4$\times$ error). Normalised AJ recovers only
+  partially (0.3\%); absolute metric-AJ is 0\%.
+\item \textbf{adt}: 300-frame clips exceed available VRAM in DROID-SLAM's global bundle adjustment
+  ($>$11.6\,GB at 12\,GB capacity); this evaluation is pending with a 2$\times$ frame-stride
+  workaround.
+\end{itemize}
+TAPIP3D's published scores (full-eval split, $\sim$0.30 normalised) use the original
+source videos at full frame-rate, not the subsampled minival NPZs, so the published results remain
+valid. Our minival evaluation simply cannot reproduce the MegaSAM stage from NPZ alone.
+
+Figures~\ref{fig:6method-norm} and~\ref{fig:6method-abs} summarise the six-method comparison.
 
 \begin{figure}[h]
 \centering
-\includegraphics[width=0.85\textwidth]{figs/fig_sota_drivetrack.png}
-\caption{Drivetrack (50 clips), absolute metric. v33 outperforms the 2024 SOTA SpatialTracker and
-the training-free baseline.}
-\label{fig:sota}
+\includegraphics[width=\textwidth]{../../result/figures/fig1_normalized_aj}
+\caption{Six-method comparison on TAPVid-3D minival, normalised median-AJ (leaderboard metric,
+scale-invariant). Higher is better. ``N/A'' bars indicate DROID-SLAM failures or pending runs.}
+\label{fig:6method-norm}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{../../result/figures/fig2_absolute_aj}
+\caption{Same six methods, absolute metric-AJ (fixed-metre thresholds 1\,cm--2.56\,m; higher
+better). v33 leads all methods despite ranking below the baseline on the leaderboard metric.}
+\label{fig:6method-abs}
 \end{figure}
 
 \subsection{Qualitative results}

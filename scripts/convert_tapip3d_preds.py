@@ -102,7 +102,7 @@ def main() -> int:
     print(f"[convert] wrote {n} npz -> {out_dir}")
     print(f"[convert] now score: uv run python scripts/eval_metric3d.py --method external "
           f"--pred-dir {args.out_dir.expanduser()} --subsets {args.subset} --split minival "
-          f"--out-dir outputs/metric3d_tapip3d_{args.subset}")
+          f"--out-dir result/metric3d_tapip3d_{args.subset}")
     return 0
 
 

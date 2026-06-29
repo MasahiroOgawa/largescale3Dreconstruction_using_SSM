@@ -8,9 +8,9 @@ metric and the absolute-metric scores side by side:
 
 Usage:
     uv run python scripts/compare_metric3d.py \
-        --run outputs/metric3d_searaft_<dt> --label "SEA-RAFT+DA3" \
-        --run outputs/metric3d_v33_<dt>     --label "v33 (depth refiner)" \
-        --out-dir outputs/metric3d_compare_<dt>
+        --run result/metric3d_searaft_<dt> --label "SEA-RAFT+DA3" \
+        --run result/metric3d_v33_<dt>     --label "v33 (depth refiner)" \
+        --out-dir result/metric3d_compare_<dt>
 """
 
 from __future__ import annotations

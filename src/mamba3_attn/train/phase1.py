@@ -225,7 +225,7 @@ def main() -> None:
     ap.add_argument("--state-dim", type=int, default=64)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--ckpt-every", type=int, default=500)
-    ap.add_argument("--out-dir", type=Path, default=Path("outputs/runs/phase1_distill"))
+    ap.add_argument("--out-dir", type=Path, default=Path("result/runs/phase1_distill"))
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--amp-dtype", type=str, default="bf16")
     ap.add_argument("--lambda-depth", type=float, default=1.0)

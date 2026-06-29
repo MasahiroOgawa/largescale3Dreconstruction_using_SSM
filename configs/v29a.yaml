@@ -34,7 +34,7 @@ model:
   use_correlation: false
   predict_scale: true
   freeze_scale_estimator: true            # stage 1: frozen
-  frozen_scale_estimator_ckpt: outputs/scale_est_v8_20260601-1128/ckpt_best.pt
+  frozen_scale_estimator_ckpt: result/scale_est_v8_20260601-1128/ckpt_best.pt
   frozen_scale_estimator_cfg:
     dinov2_model: facebook/dinov3-vitl16-pretrain-lvd1689m
     dinov2_image_size: 896

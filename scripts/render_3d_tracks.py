@@ -19,8 +19,8 @@ Same model + inference path as scripts/render_tracker_video.py.
 
 Usage:
     uv run python scripts/render_3d_tracks.py \\
-        --ckpt outputs/track_v18_<dt>/ckpt_30000.pt \\
-        --out-dir outputs/track_v18_<dt>/viz_step30000 \\
+        --ckpt result/track_v18_<dt>/ckpt_30000.pt \\
+        --out-dir result/track_v18_<dt>/viz_step30000 \\
         --subsets pstudio drivetrack \\
         --clips-per-subset 2 \\
         --max-frames 32 \\

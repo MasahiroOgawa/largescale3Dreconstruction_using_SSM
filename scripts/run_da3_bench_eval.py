@@ -17,10 +17,10 @@ Examples::
     #    in single-GPU mode (multi-GPU subprocess-spawns and would bypass
     #    the from_pretrained shim).
     CUDA_VISIBLE_DEVICES=0 uv run python scripts/run_da3_bench_eval.py \\
-        model.path=outputs/runs/vssd_da3_stageB/ckpt_final.pt \\
+        model.path=result/runs/vssd_da3_stageB/ckpt_final.pt \\
         eval.datasets=[eth3d,7scenes,scannetpp,hiroom,dtu] \\
         eval.modes=[pose,recon_posed,recon_unposed] \\
-        workspace.work_dir=outputs/eval_vssd_full/accuracy
+        workspace.work_dir=result/eval_vssd_full/accuracy
 """
 
 from __future__ import annotations

@@ -7,7 +7,7 @@ __pycache__/
 .mypy_cache/
 
 /data/
-/outputs/
+/result/
 /logs/
 /workspace/
 *.pt

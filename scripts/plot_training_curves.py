@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -61,8 +62,15 @@ def plot_training_curve(run_dir: Path, out_path: Path) -> None:
         if val:
             vy = [r.get(key) for r in val]
             if any(v is not None for v in vy):
-                ax.plot(val_steps, vy, label="val", linewidth=1.4,
-                        color="#d62728", marker="o", markersize=3)
+                ax.plot(
+                    val_steps,
+                    vy,
+                    label="val",
+                    linewidth=1.4,
+                    color="#d62728",
+                    marker="o",
+                    markersize=3,
+                )
         ax.set_title(key)
         ax.set_xlabel("step")
         ax.set_yscale("log")
@@ -84,7 +92,9 @@ def plot_grad_curves(run_dir: Path, out_path: Path) -> None:
     rows = json.loads((run_dir / "loss_history.json").read_text())
     train = [r for r in rows if "lr" in r and "head_grad" in r]
     if not train:
-        print(f"[plot] no head_grad in {run_dir.name} (older run pre-grad-logging) — skipping")
+        print(
+            f"[plot] no head_grad in {run_dir.name} (older run pre-grad-logging) — skipping"
+        )
         return
     steps = [r["step"] for r in train]
     head_names = sorted({k for r in train for k in r["head_grad"].keys()})
@@ -92,8 +102,14 @@ def plot_grad_curves(run_dir: Path, out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(9, 4.5))
     if has_total:
         gn = [r.get("grad_norm") for r in train]
-        ax.plot(steps, gn, label="|grad| (total, post-clip)",
-                linewidth=1.6, color="black", alpha=0.7)
+        ax.plot(
+            steps,
+            gn,
+            label="|grad| (total, post-clip)",
+            linewidth=1.6,
+            color="black",
+            alpha=0.7,
+        )
     for name in head_names:
         ys = [r["head_grad"].get(name) for r in train]
         ax.plot(steps, ys, label=name, linewidth=1)
@@ -118,13 +134,22 @@ def plot_motion_ratio(run_dir: Path, out_path: Path) -> None:
     if not rows:
         print(f"[plot] {p.name} is empty — skipping")
         return
-    subsets = sorted({k.removesuffix("_ratio") for r in rows for k in r if k.endswith("_ratio")})
+    subsets = sorted(
+        {k.removesuffix("_ratio") for r in rows for k in r if k.endswith("_ratio")}
+    )
     fig, ax = plt.subplots(figsize=(8, 4))
     steps = [r["step"] for r in rows]
     for s in subsets:
         ys = [r.get(f"{s}_ratio") for r in rows]
         ax.plot(steps, ys, label=s, linewidth=1)
-    ax.axhline(1.0, color="black", linestyle="--", linewidth=0.8, alpha=0.6, label="target (=1.0)")
+    ax.axhline(
+        1.0,
+        color="black",
+        linestyle="--",
+        linewidth=0.8,
+        alpha=0.6,
+        label="target (=1.0)",
+    )
     ax.set_xlabel("step")
     ax.set_ylabel("Σ pred 2D travel / Σ GT 2D travel")
     ax.set_title(f"{run_dir.name} — motion ratio per subset")
@@ -140,15 +165,19 @@ def plot_motion_ratio(run_dir: Path, out_path: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
-        "--run-dir", type=Path, default=None,
-        help="path to outputs/track_v*_<dt>/ (default: most recent)",
+        "--run-dir",
+        type=Path,
+        default=None,
+        help="path to result/track_v*_<dt>/ (default: most recent)",
     )
     args = ap.parse_args()
     run_dir = args.run_dir
     if run_dir is None:
-        candidates = sorted(Path("outputs").glob("track_v*_*"), key=lambda p: p.stat().st_mtime)
+        candidates = sorted(
+            Path("result").glob("track_v*_*"), key=lambda p: p.stat().st_mtime
+        )
         if not candidates:
-            raise SystemExit("no outputs/track_v*_*/ run dirs found")
+            raise SystemExit("no result/track_v*_*/ run dirs found")
         run_dir = candidates[-1]
     run_dir = run_dir.resolve()
     if not run_dir.is_dir():

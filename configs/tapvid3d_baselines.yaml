@@ -3,7 +3,7 @@
 # All entries use `scaling = "median"`, matching the
 # `compute_clip_metrics_official(..., scaling="median")` call in
 # src/mamba3_tracker/eval/tapvid3d_eval.py:45 — direct apples-to-apples
-# with our `outputs/eval_tracker/v*/metric_results/<subset>.json` outputs
+# with our `result/eval_tracker/v*/metric_results/<subset>.json` outputs
 # when the eval set is MINIVAL.
 #
 # Why minival and not full_eval:

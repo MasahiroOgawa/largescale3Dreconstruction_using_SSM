@@ -9,7 +9,7 @@ Usage:
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \\
         uv run python scripts/train_scale_estimator.py \\
             --config configs/scale_est_v1.yaml \\
-            --out-dir outputs/scale_est_v1_<datetime>
+            --out-dir result/scale_est_v1_<datetime>
 """
 
 from __future__ import annotations

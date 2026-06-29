@@ -18,8 +18,8 @@ Usage:
     uv run python -m mamba3_attn.train.train_super \\
         --super 1 --sub 1 \\
         --steps 500 \\
-        --out-dir outputs/runs/sp1_sub1 \\
-        --init-ckpt outputs/runs/<previous>/ckpt_500.pt
+        --out-dir result/runs/sp1_sub1 \\
+        --init-ckpt result/runs/<previous>/ckpt_500.pt
 """
 
 from __future__ import annotations

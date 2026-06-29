@@ -7,7 +7,7 @@
 #   3. TAPIP3D + DA3       (already done; skipped if predictions cached)
 #   4. TAPIP3D + depthn    (new: TAPIP3D with better depth)
 #
-# Results land in outputs/. Compare median-AJ and absolute metric-AJ.
+# Results land in result/. Compare median-AJ and absolute metric-AJ.
 # Expected total wall time: ~5-6 h (steps 2+4 are the heavy ones).
 set -euo pipefail
 
@@ -32,11 +32,11 @@ echo "STEP 1: SEA-RAFT + depthn on minival (ADT only — only ADT has depth_pred
 echo "================================================================"
 uv run python scripts/eval_metric3d.py \
     --method searaft \
-    --da3-depth-root outputs/tapvid3d_depthn \
+    --da3-depth-root result/tapvid3d_depthn \
     --split minival \
     --subsets adt \
-    --out-dir "outputs/metric3d_searaft_depthn_minival_${TS}" \
-    2>&1 | tee "outputs/metric3d_searaft_depthn_minival_${TS}.log"
+    --out-dir "result/metric3d_searaft_depthn_minival_${TS}" \
+    2>&1 | tee "result/metric3d_searaft_depthn_minival_${TS}.log"
 
 echo ""
 echo "================================================================"
@@ -52,16 +52,16 @@ $VENV/bin/python train_eval.py \
     wandb.enable=false \
     "train.checkpoint=$TAPIP3D_CKPT" \
     '~test_datasets.kubric_24frames_384trajs_200samples' \
-    2>&1 | tee "$REPO/outputs/tapip3d_depthn_eval_${TS}.log"
+    2>&1 | tee "$REPO/result/tapip3d_depthn_eval_${TS}.log"
 cd "$REPO"
 
 echo ""
 echo "================================================================"
 echo "ALL DONE — summary"
 echo "================================================================"
-echo "SEA-RAFT + depthn:  outputs/metric3d_searaft_depthn_minival_${TS}/"
-echo "TAPIP3D + depthn:   $TAPIP3D/outputs/tapip3d_depthn_minival_${TS}/"
+echo "SEA-RAFT + depthn:  result/metric3d_searaft_depthn_minival_${TS}/"
+echo "TAPIP3D + depthn:   $TAPIP3D/result/tapip3d_depthn_minival_${TS}/"
 echo ""
 echo "Compare against baselines:"
-echo "  SEA-RAFT + DA3:   outputs/metric3d_searaft_fix_20260618-1718/"
-echo "  TAPIP3D + DA3:    $TAPIP3D/outputs/auto_generated/*/"
+echo "  SEA-RAFT + DA3:   result/metric3d_searaft_fix_20260618-1718/"
+echo "  TAPIP3D + DA3:    $TAPIP3D/result/auto_generated/*/"

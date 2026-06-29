@@ -6,11 +6,11 @@ refines only per-track depth along each (fixed) pixel ray. Loss is 3D-only.
 Usage:
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \\
         uv run python scripts/train_depth_refined_tracker.py \\
-            --config configs/v33.yaml --out-dir outputs/v33_YYYYMMDD-HHMM
+            --config configs/v33.yaml --out-dir result/v33_YYYYMMDD-HHMM
 
 Smoke (50 steps):
     uv run python scripts/train_depth_refined_tracker.py \\
-        --config configs/v33.yaml --out-dir outputs/v33_smoke \\
+        --config configs/v33.yaml --out-dir result/v33_smoke \\
         --steps 50 --window 4 --batch 1 --val-every 25 --log-every 5
 """
 

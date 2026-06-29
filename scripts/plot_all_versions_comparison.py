@@ -11,22 +11,24 @@ Full-eval and minival use DIFFERENT test clips, so they are NOT directly compara
 The chart separates them visually.
 
 Writes:
-  outputs/comparison_all_v1_v33/comparison.png
-  outputs/comparison_all_v1_v33/comparison.md
+  result/comparison_all_v1_v33/comparison.png
+  result/comparison_all_v1_v33/comparison.md
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
 BASE = Path(__file__).parent.parent
-OUTPUTS = BASE / "outputs"
+OUTPUTS = BASE / "result"
 EVAL_TRACKER = OUTPUTS / "eval_tracker"
 
 SUBSETS = ("pstudio", "drivetrack", "aria")
@@ -40,7 +42,11 @@ def _load(metric_results_dir: Path) -> dict[str, float | None]:
         if not p.exists():
             continue
         clips = json.loads(p.read_text())
-        ajs = [c["average_jaccard"] for c in clips if isinstance(c.get("average_jaccard"), (int, float))]
+        ajs = [
+            c["average_jaccard"]
+            for c in clips
+            if isinstance(c.get("average_jaccard"), (int, float))
+        ]
         out[sub] = sum(ajs) / len(ajs) if ajs else None
     return out
 
@@ -58,13 +64,13 @@ def main() -> None:
     # ── full-eval-set runs (v5-v18, hatched) ──────────────────────────────────
     full_eval_runs: list[tuple[str, dict]] = []
     for label, mr_dir in [
-        ("v5",  EVAL_TRACKER / "v5_step30k"        / "metric_results"),
-        ("v6",  EVAL_TRACKER / "v6_step4k"         / "metric_results"),
-        ("v14", EVAL_TRACKER / "v14_step30000"     / "metric_results"),
-        ("v15", EVAL_TRACKER / "v15_step30000"     / "metric_results"),
-        ("v16", EVAL_TRACKER / "v16_step30000"     / "metric_results"),
-        ("v17", EVAL_TRACKER / "v17_step30000"     / "metric_results"),
-        ("v18", EVAL_TRACKER / "v18_step30000"     / "metric_results"),
+        ("v5", EVAL_TRACKER / "v5_step30k" / "metric_results"),
+        ("v6", EVAL_TRACKER / "v6_step4k" / "metric_results"),
+        ("v14", EVAL_TRACKER / "v14_step30000" / "metric_results"),
+        ("v15", EVAL_TRACKER / "v15_step30000" / "metric_results"),
+        ("v16", EVAL_TRACKER / "v16_step30000" / "metric_results"),
+        ("v17", EVAL_TRACKER / "v17_step30000" / "metric_results"),
+        ("v18", EVAL_TRACKER / "v18_step30000" / "metric_results"),
     ]:
         if mr_dir.exists():
             full_eval_runs.append((label, _load(mr_dir)))
@@ -80,7 +86,7 @@ def main() -> None:
         ("v25", OUTPUTS / "track_v25_20260529-1214" / "eval" / "metric_results"),
         ("v26", OUTPUTS / "track_v26_20260529-1808" / "eval" / "metric_results"),
         ("v28", OUTPUTS / "track_v28_20260531-1802" / "eval" / "metric_results"),
-        ("v29b",OUTPUTS / "track_v29b_20260602-1149"/ "eval" / "metric_results"),
+        ("v29b", OUTPUTS / "track_v29b_20260602-1149" / "eval" / "metric_results"),
         ("v30", OUTPUTS / "track_v30_20260602-1900" / "eval" / "metric_results"),
     ]:
         if mr_dir.exists():
@@ -102,8 +108,8 @@ def main() -> None:
     # ── Minival paper baselines ────────────────────────────────────────────────
     baselines_cfg = BASE / "configs" / "tapvid3d_baselines.yaml"
     cfg = yaml.safe_load(baselines_cfg.read_text())
-    minival_baselines = cfg.get("baselines", [])    # BootsTAPIR, SpatialTracker
-    fulleval_sota    = cfg.get("sota_full_eval", []) # CoTracker3, DELTA (full-eval)
+    minival_baselines = cfg.get("baselines", [])  # BootsTAPIR, SpatialTracker
+    fulleval_sota = cfg.get("sota_full_eval", [])  # CoTracker3, DELTA (full-eval)
 
     # ── assemble methods list ─────────────────────────────────────────────────
     # Each entry: (label, {subset: float|None}, kind)
@@ -136,39 +142,55 @@ def main() -> None:
 
     # ── colour map ───────────────────────────────────────────────────────────
     KIND_STYLE = {
-        "baseline_minival": dict(color=None,       alpha=0.85, hatch=None,  edge="none",  lw=0.6),
-        "sota_fulleval":    dict(color="#9e9e9e",  alpha=0.55, hatch="///", edge="#444",  lw=0.6),
-        "mamba3_fulleval":  dict(color="#d62728",  alpha=0.50, hatch="\\\\",edge="black", lw=0.6),
-        "mamba3_minival":   dict(color="#d62728",  alpha=1.0,  hatch=None,  edge="black", lw=0.6),
-        "searaft":          dict(color="#17becf",  alpha=1.0,  hatch=None,  edge="black", lw=0.8),
-        "refiner":          dict(color="#9467bd",  alpha=1.0,  hatch=None,  edge="black", lw=0.8),
+        "baseline_minival": dict(
+            color=None, alpha=0.85, hatch=None, edge="none", lw=0.6
+        ),
+        "sota_fulleval": dict(
+            color="#9e9e9e", alpha=0.55, hatch="///", edge="#444", lw=0.6
+        ),
+        "mamba3_fulleval": dict(
+            color="#d62728", alpha=0.50, hatch="\\\\", edge="black", lw=0.6
+        ),
+        "mamba3_minival": dict(
+            color="#d62728", alpha=1.0, hatch=None, edge="black", lw=0.6
+        ),
+        "searaft": dict(color="#17becf", alpha=1.0, hatch=None, edge="black", lw=0.8),
+        "refiner": dict(color="#9467bd", alpha=1.0, hatch=None, edge="black", lw=0.8),
     }
 
     x_labels = ["pstudio", "drivetrack", "aria", "mean"]
-    n_groups  = len(x_labels)
+    n_groups = len(x_labels)
     n_methods = len(methods)
-    width     = 0.8 / max(n_methods, 1)
-    fig_w     = max(18, 0.55 * n_methods + 6)
-    fig, ax   = plt.subplots(figsize=(fig_w, 6))
+    width = 0.8 / max(n_methods, 1)
+    fig_w = max(18, 0.55 * n_methods + 6)
+    fig, ax = plt.subplots(figsize=(fig_w, 6))
     x = np.arange(n_groups)
 
     for i, (name, m, kind) in enumerate(methods):
         vals = [m.get(s) for s in SUBSETS] + [_mean(m)]
-        ys   = [0 if v is None else v * 100 for v in vals]
-        st   = KIND_STYLE[kind]
+        ys = [0 if v is None else v * 100 for v in vals]
+        st = KIND_STYLE[kind]
         bars = ax.bar(
-            x + i * width - 0.4 + width / 2, ys, width,
+            x + i * width - 0.4 + width / 2,
+            ys,
+            width,
             label=name,
-            color=st["color"], alpha=st["alpha"],
-            hatch=st["hatch"], edgecolor=st["edge"], linewidth=st["lw"],
+            color=st["color"],
+            alpha=st["alpha"],
+            hatch=st["hatch"],
+            edgecolor=st["edge"],
+            linewidth=st["lw"],
         )
         for bar, v in zip(bars, vals):
             if v is not None and v * 100 >= 0.5:
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + 0.15,
-                    f"{v * 100:.1f}", ha="center", va="bottom",
-                    fontsize=6, rotation=90 if n_methods > 20 else 0,
+                    f"{v * 100:.1f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=6,
+                    rotation=90 if n_methods > 20 else 0,
                 )
 
     ax.set_xticks(x)
@@ -200,19 +222,29 @@ def main() -> None:
     ]
     for b in minival_baselines:
         vals = [b.get(s) for s in SUBSETS]
-        lines.append(f"| {b['name']} | minival | {_fmt(vals[0])} | {_fmt(vals[1])} | {_fmt(vals[2])} | {_fmt(_mean({s: v for s, v in zip(SUBSETS, vals)}))} |")
+        lines.append(
+            f"| {b['name']} | minival | {_fmt(vals[0])} | {_fmt(vals[1])} | {_fmt(vals[2])} | {_fmt(_mean({s: v for s, v in zip(SUBSETS, vals)}))} |"
+        )
     for label, m in full_eval_runs:
         vals = [m.get(s) for s in SUBSETS]
-        lines.append(f"| **{label}** | full-eval | {_fmt(vals[0])} | {_fmt(vals[1])} | {_fmt(vals[2])} | {_fmt(_mean(m))} |")
+        lines.append(
+            f"| **{label}** | full-eval | {_fmt(vals[0])} | {_fmt(vals[1])} | {_fmt(vals[2])} | {_fmt(_mean(m))} |"
+        )
     for label, m in minival_mamba3:
         vals = [m.get(s) for s in SUBSETS]
-        lines.append(f"| **{label}** | minival | {_fmt(vals[0])} | {_fmt(vals[1])} | {_fmt(vals[2])} | {_fmt(_mean(m))} |")
+        lines.append(
+            f"| **{label}** | minival | {_fmt(vals[0])} | {_fmt(vals[1])} | {_fmt(vals[2])} | {_fmt(_mean(m))} |"
+        )
     if searaft:
         vals = [searaft.get(s) for s in SUBSETS]
-        lines.append(f"| **SEA-RAFT+DA3** | minival | {_fmt(vals[0])} | {_fmt(vals[1])} | {_fmt(vals[2])} | {_fmt(_mean(searaft))} |")
+        lines.append(
+            f"| **SEA-RAFT+DA3** | minival | {_fmt(vals[0])} | {_fmt(vals[1])} | {_fmt(vals[2])} | {_fmt(_mean(searaft))} |"
+        )
     for label, m in refiner_runs:
         vals = [m.get(s) for s in SUBSETS]
-        lines.append(f"| **{label}** | minival | {_fmt(vals[0])} | {_fmt(vals[1])} | {_fmt(vals[2])} | {_fmt(_mean(m))} |")
+        lines.append(
+            f"| **{label}** | minival | {_fmt(vals[0])} | {_fmt(vals[1])} | {_fmt(vals[2])} | {_fmt(_mean(m))} |"
+        )
 
     (out_dir / "comparison.md").write_text("\n".join(lines) + "\n")
     print(f"[plot] wrote {out_dir / 'comparison.md'}")

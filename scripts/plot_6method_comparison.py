@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
-OUT_DIR = Path("outputs/figures")
+OUT_DIR = Path("result/figures")
 REPO = Path(__file__).parent.parent
 
 SUBSETS = ["drivetrack", "pstudio", "adt"]
@@ -79,23 +79,23 @@ def build_data_tables() -> tuple[dict, dict]:
 
     # ── SEA-RAFT + DA3 (use the _fix run) ─────────────────────────────────────
     searaft_da3 = _read_summary(
-        REPO / "outputs/metric3d_searaft_fix_20260618-1718/summary.md"
+        REPO / "result/metric3d_searaft_fix_20260618-1718/summary.md"
     )
     # ── v33 (use the _fix run) ────────────────────────────────────────────────
-    v33 = _read_summary(REPO / "outputs/metric3d_v33_fix_20260618-1718/summary.md")
+    v33 = _read_summary(REPO / "result/metric3d_v33_fix_20260618-1718/summary.md")
     # ── SEA-RAFT + MegaSAM ────────────────────────────────────────────────────
     searaft_msam = _read_summary(
-        REPO / "outputs/metric3d_searaft_megasam_minival_20260626-0903/summary.md"
+        REPO / "result/metric3d_searaft_megasam_minival_20260626-0903/summary.md"
     )
     # ── v34 (may still be running) ─────────────────────────────────────────────
-    v34_dirs = sorted(REPO.glob("outputs/metric3d_v34_megasam_minival_*/summary.md"))
+    v34_dirs = sorted(REPO.glob("result/metric3d_v34_megasam_minival_*/summary.md"))
     v34 = _read_summary(v34_dirs[-1]) if v34_dirs else {}
 
     # ── TAPIP3D + DA3 (official TAPIP3D eval JSONs for normalised; absolute eval for metric-AJ) ──
     tapip3d_da3_norm = {}
     tapip3d_da3_abs = {}
     tapip3d_dir = Path(
-        "/home/mas/proj/study/TAPIP3D/outputs/auto_generated"
+        "/home/mas/proj/study/TAPIP3D/result/auto_generated"
         "/tapip3d_kubric_24frames_384trajs_2026-06-24_18-55-53"
     )
     for s in SUBSETS:
@@ -105,7 +105,7 @@ def build_data_tables() -> tuple[dict, dict]:
             tapip3d_da3_norm[s] = d.get(
                 f"{s}_da3_minival-metrics/mean/tapvid3d_average_jaccard_best", NaN
             )
-    abs_dir = REPO / "outputs/tapip3d_absolute_eval_20260625-1318/metric_results"
+    abs_dir = REPO / "result/tapip3d_absolute_eval_20260625-1318/metric_results"
     for s in SUBSETS:
         j = abs_dir / f"{s}.json"
         if j.exists():

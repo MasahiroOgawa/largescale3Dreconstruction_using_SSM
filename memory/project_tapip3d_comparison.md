@@ -28,7 +28,7 @@ Paper goal: show TAPVid-3D normalised metric is misleading — it hides depth qu
 | Ours (DA3=v33)      |  5.68      |  4.07   | 12.31 |
 | Ours (MegaSAM=v34)  | PENDING    | PENDING | N/A*  |
 
-*N/A = ADT MegaSAM overnight pipeline running (PID 2620563, log: outputs/megasam_adt_overnight_20260628-1532.log)
+*N/A = ADT MegaSAM stride=2 pipeline running (log: result/megasam_adt_s2_20260629-0731.log via symlink)
 
 ## Absolute metric-AJ % (no median scaling, fixed-metre thresholds 1cm..2.56m)
 
@@ -47,18 +47,18 @@ Key insight: SEA-RAFT+MegaSAM drivetrack normalised≈10.3% but absolute≈0.04%
 
 | Method | Normalised-AJ source | Absolute-AJ source |
 |--------|---------------------|--------------------|
-| SEA-RAFT+DA3 | `outputs/metric3d_searaft_fix_20260618-1718/summary.md` | same |
-| SEA-RAFT+MegaSAM | `outputs/metric3d_searaft_megasam_minival_20260626-0903/summary.md` | same |
-| TAPIP3D+DA3 | official TAPIP3D evaluator JSON, key `tapvid3d_average_jaccard_best` | `outputs/tapip3d_absolute_eval_20260625-1318/metric_results/` |
+| SEA-RAFT+DA3 | `result/metric3d_searaft_fix_20260618-1718/summary.md` | same |
+| SEA-RAFT+MegaSAM | `result/metric3d_searaft_megasam_minival_20260626-0903/summary.md` | same |
+| TAPIP3D+DA3 | official TAPIP3D evaluator JSON, key `tapvid3d_average_jaccard_best` | `result/tapip3d_absolute_eval_20260625-1318/metric_results/` |
 | TAPIP3D+MegaSAM | TAPIP3D evaluator JSON (drivetrack/pstudio) | ~0% (broken predictions) |
-| v33 | `outputs/metric3d_v33_fix_20260618-1718/summary.md` | same |
-| v34 | `outputs/metric3d_v34_megasam_minival_20260628-1541/` (PENDING) | same |
+| v33 | `result/metric3d_v33_fix_20260618-1718/summary.md` | same |
+| v34 | `result/metric3d_v34_megasam_minival_20260628-1541/` (PENDING) | same |
 
-TAPIP3D official JSON path: `/home/mas/proj/study/TAPIP3D/outputs/auto_generated/tapip3d_kubric_24frames_384trajs_2026-06-24_18-55-53/`
+TAPIP3D official JSON path: `/home/mas/proj/study/TAPIP3D/result/auto_generated/tapip3d_kubric_24frames_384trajs_2026-06-24_18-55-53/`
 
 ## Figures
 
-`scripts/plot_6method_comparison.py` → `outputs/figures/fig1_normalized_aj.{png,pdf}` and `fig2_absolute_aj.{png,pdf}`
+`scripts/plot_6method_comparison.py` → `result/figures/fig1_normalized_aj.{png,pdf}` and `fig2_absolute_aj.{png,pdf}`
 
 Re-run the script after each new eval completes to update figures with v34/ADT data.
 
@@ -79,8 +79,8 @@ After completion: run v34 on ADT, then re-run plot script.
 
 ## v34 eval (started 2026-06-28 ~15:41 JST)
 
-`eval_metric3d.py --method v33 --ckpt outputs/v33_20260617-0001/ckpt_20000.pt --da3-depth-root outputs/tapvid3d_megasam --split minival --subsets drivetrack pstudio`
-PID 2626626, log: `outputs/v34_eval_20260628-1541.log`
+`eval_metric3d.py --method v33 --ckpt result/v33_20260617-0001/ckpt_20000.pt --da3-depth-root result/tapvid3d_megasam --split minival --subsets drivetrack pstudio`
+PID 2626626, log: `result/v34_eval_20260628-1541.log`
 At 45/50 drivetrack clips when last checked; pstudio next.
 
 ## Mean 3D error (metres, lower=better) — v33 vs SEA-RAFT+DA3

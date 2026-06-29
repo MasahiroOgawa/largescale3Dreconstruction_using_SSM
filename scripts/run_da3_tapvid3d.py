@@ -39,7 +39,7 @@ from PIL import Image  # noqa: E402
 
 TAPVID_ROOT = Path("~/data/tapvid3d").expanduser()
 REPO_ROOT = Path(__file__).resolve().parent.parent
-OUT_ROOT = REPO_ROOT / "outputs" / "tapvid3d_da3"
+OUT_ROOT = REPO_ROOT / "result" / "tapvid3d_da3"
 
 
 def list_seqs(subset: str, split: str) -> list[str]:

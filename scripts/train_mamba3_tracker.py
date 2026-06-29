@@ -4,12 +4,12 @@ Usage:
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \\
         uv run python scripts/train_mamba3_tracker.py \\
             --config configs/v8.yaml \\
-            --out-dir outputs/runs/mamba3_tracker_v8
+            --out-dir result/runs/mamba3_tracker_v8
 
 Smoke run (override knobs via CLI on top of the config):
     uv run python scripts/train_mamba3_tracker.py \\
         --config configs/v8.yaml \\
-        --out-dir outputs/runs/mamba3_tracker_v8_smoke \\
+        --out-dir result/runs/mamba3_tracker_v8_smoke \\
         --steps 50 --window 4 --batch 1 --val-every 25
 """
 

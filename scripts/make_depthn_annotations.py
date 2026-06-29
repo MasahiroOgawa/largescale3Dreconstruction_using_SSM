@@ -6,11 +6,11 @@ at original image resolution, higher quality than our per-frame DA3 estimates.
 This script creates TWO outputs from those depths (minival only):
 
 1. Our eval format (for eval_metric3d.py with --da3-depth-root):
-     outputs/tapvid3d_depthn/<subset>/<clip_id>.npz   (flat file)
+     result/tapvid3d_depthn/<subset>/<clip_id>.npz   (flat file)
      keys: depth (T,H,W) float32
 
 2. TAPIP3D annotation H5 format (for TAPIP3D evaluator):
-     outputs/tapip3d_annotations/<subset>_depthn_minival/da3/<seq_id>.h5
+     result/tapip3d_annotations/<subset>_depthn_minival/da3/<seq_id>.h5
      keys: depths, intrinsics, extrinsics
 
 Also writes the TAPIP3D annotation YAML configs to TAPIP3D/configs/annotation/.
@@ -18,6 +18,7 @@ Also writes the TAPIP3D annotation YAML configs to TAPIP3D/configs/annotation/.
 Usage:
     uv run python scripts/make_depthn_annotations.py
 """
+
 from __future__ import annotations
 
 import sys
@@ -32,8 +33,8 @@ TAPVID_ROOT = Path("~/data/tapvid3d").expanduser()
 
 # outputs
 # eval_metric3d.py reads flat <root>/<subset>/<clip_id>.npz with key "depth"
-OUR_DEPTH_ROOT = REPO_ROOT / "outputs" / "tapvid3d_depthn"
-TAPIP3D_ANNO_ROOT = REPO_ROOT / "outputs" / "tapip3d_annotations"
+OUR_DEPTH_ROOT = REPO_ROOT / "result" / "tapvid3d_depthn"
+TAPIP3D_ANNO_ROOT = REPO_ROOT / "result" / "tapip3d_annotations"
 TAPIP3D_ANNO_CFG_ROOT = TAPIP3D_ROOT / "configs" / "annotation"
 
 sys.path.insert(0, str(TAPIP3D_ROOT))
@@ -42,7 +43,7 @@ from evaluation.tapvid3d_splits import MINIVAL_FILES
 
 def build_K(fx: float, fy: float, cx: float, cy: float, T: int) -> np.ndarray:
     K = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
-    return np.tile(K[None], (T, 1, 1))   # (T, 3, 3)
+    return np.tile(K[None], (T, 1, 1))  # (T, 3, 3)
 
 
 def identity_extrinsics(T: int) -> np.ndarray:
@@ -51,7 +52,7 @@ def identity_extrinsics(T: int) -> np.ndarray:
 
 def process_subset(subset: str) -> None:
     minival_fnames = sorted(MINIVAL_FILES[subset])
-    our_dir = OUR_DEPTH_ROOT / subset   # flat NPZ files land here
+    our_dir = OUR_DEPTH_ROOT / subset  # flat NPZ files land here
     h5_dir = TAPIP3D_ANNO_ROOT / f"{subset}_depthn_minival" / "da3"
     our_dir.mkdir(parents=True, exist_ok=True)
     h5_dir.mkdir(parents=True, exist_ok=True)
@@ -63,7 +64,9 @@ def process_subset(subset: str) -> None:
         our_npz = our_dir / (clip_id + ".npz")  # flat file, not subdirectory
 
         if confirm.exists() and our_npz.exists():
-            print(f"  [{subset}] {seq_id:3d}/{len(minival_fnames)} {clip_id[:40]} — skip (cached)")
+            print(
+                f"  [{subset}] {seq_id:3d}/{len(minival_fnames)} {clip_id[:40]} — skip (cached)"
+            )
             continue
 
         # allow_pickle=True required for images_jpeg_bytes (object array);
@@ -76,8 +79,8 @@ def process_subset(subset: str) -> None:
         depth = np.asarray(npz["depth_preds"], dtype=np.float32)  # (T, H, W)
         T, H, W = depth.shape
         fx, fy, cx, cy = npz["fx_fy_cx_cy"].astype(np.float32)
-        K = build_K(fx, fy, cx, cy, T)          # (T, 3, 3) at depth (=RGB) resolution
-        ext = identity_extrinsics(T)             # (T, 4, 4)
+        K = build_K(fx, fy, cx, cy, T)  # (T, 3, 3) at depth (=RGB) resolution
+        ext = identity_extrinsics(T)  # (T, 4, 4)
 
         # --- Our eval format (flat <subset>/<clip_id>.npz, key "depth") ---
         np.savez_compressed(our_npz, depth=depth)
@@ -85,14 +88,16 @@ def process_subset(subset: str) -> None:
         # --- TAPIP3D H5 format ---
         h5_path = h5_dir / f"{seq_id}.h5"
         with h5py.File(h5_path, "w") as f:
-            f.create_dataset("depths",     data=depth, compression="gzip")
-            f.create_dataset("intrinsics", data=K,     compression="gzip")
-            f.create_dataset("extrinsics", data=ext,   compression="gzip")
+            f.create_dataset("depths", data=depth, compression="gzip")
+            f.create_dataset("intrinsics", data=K, compression="gzip")
+            f.create_dataset("extrinsics", data=ext, compression="gzip")
         confirm.touch()
 
         if seq_id % 10 == 0 or seq_id == len(minival_fnames) - 1:
-            print(f"  [{subset}] {seq_id:3d}/{len(minival_fnames)} {clip_id[:40]} "
-                  f"depth{depth.shape} fx={fx:.1f}")
+            print(
+                f"  [{subset}] {seq_id:3d}/{len(minival_fnames)} {clip_id[:40]} "
+                f"depth{depth.shape} fx={fx:.1f}"
+            )
 
     print(f"[{subset}] done → {our_dir}  |  {h5_dir}")
 
@@ -112,13 +117,21 @@ def write_tapip3d_configs(subsets_with_depth: list[str]) -> None:
         )
 
         # 2. dataset eval config (same structure as *_da3_minival.yaml)
-        ref_cfg = TAPIP3D_ROOT / "configs" / "dataset" / "eval" / f"{subset}_da3_minival.yaml"
+        ref_cfg = (
+            TAPIP3D_ROOT / "configs" / "dataset" / "eval" / f"{subset}_da3_minival.yaml"
+        )
         ref_text = ref_cfg.read_text()
         new_text = ref_text.replace(
             f"override_anno: {subset}_da3_minival/da3",
             f"override_anno: {subset}_depthn_minival/da3",
         )
-        out_cfg = TAPIP3D_ROOT / "configs" / "dataset" / "eval" / f"{subset}_depthn_minival.yaml"
+        out_cfg = (
+            TAPIP3D_ROOT
+            / "configs"
+            / "dataset"
+            / "eval"
+            / f"{subset}_depthn_minival.yaml"
+        )
         out_cfg.write_text(new_text)
 
     # 3. top-level TAPIP3D eval config (only subsets with depth_preds)
@@ -140,17 +153,25 @@ def write_tapip3d_configs(subsets_with_depth: list[str]) -> None:
 if __name__ == "__main__":
     processed = []
     for subset in ["adt", "drivetrack", "pstudio"]:
-        before = len(list((OUR_DEPTH_ROOT / subset).glob("*.npz"))) if (OUR_DEPTH_ROOT / subset).exists() else 0
+        before = (
+            len(list((OUR_DEPTH_ROOT / subset).glob("*.npz")))
+            if (OUR_DEPTH_ROOT / subset).exists()
+            else 0
+        )
         process_subset(subset)
-        after = len(list((OUR_DEPTH_ROOT / subset).glob("*.npz"))) if (OUR_DEPTH_ROOT / subset).exists() else 0
+        after = (
+            len(list((OUR_DEPTH_ROOT / subset).glob("*.npz")))
+            if (OUR_DEPTH_ROOT / subset).exists()
+            else 0
+        )
         if after > 0:
             processed.append(subset)
     write_tapip3d_configs(processed)
     print("\nDone. Next steps:")
     print("  # SEA-RAFT + depthn eval:")
     print("  uv run python scripts/eval_metric3d.py --method searaft \\")
-    print(f"    --da3-depth-root outputs/tapvid3d_depthn --split minival \\")
-    print(f"    --out-dir outputs/metric3d_searaft_depthn_minival_$(date +%Y%m%d-%H%M)")
+    print(f"    --da3-depth-root result/tapvid3d_depthn --split minival \\")
+    print(f"    --out-dir result/metric3d_searaft_depthn_minival_$(date +%Y%m%d-%H%M)")
     print()
     print("  # TAPIP3D + depthn eval:")
     print("  See scripts/run_tapip3d_depthn_eval.sh")

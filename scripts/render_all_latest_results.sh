@@ -18,8 +18,8 @@
 #
 # Usage:
 #   scripts/render_all_latest_results.sh                                 # latest run dir, latest ckpt
-#   scripts/render_all_latest_results.sh outputs/track_v19_<dt>          # specific run dir
-#   scripts/render_all_latest_results.sh outputs/track_v19_<dt>/ckpt_5000.pt   # specific ckpt
+#   scripts/render_all_latest_results.sh result/track_v19_<dt>          # specific run dir
+#   scripts/render_all_latest_results.sh result/track_v19_<dt>/ckpt_5000.pt   # specific ckpt
 #
 # Flags (each mirrors an env var; either works):
 #   --quick                fast preview (~1-2 min): skip eval+comparison, skip
@@ -42,7 +42,7 @@
 #   QUICK=1                (default 0)
 #
 # Argument resolution:
-#   no arg                 -> ls -td outputs/track_v*_*/ | head -1 ; latest ckpt
+#   no arg                 -> ls -td result/track_v*_*/ | head -1 ; latest ckpt
 #   path is a directory    -> that dir's latest ckpt
 #   path is a .pt file     -> that exact ckpt
 
@@ -70,10 +70,10 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$ARG" ]; then
-    RUN_DIR="$(ls -td outputs/track_v*_*/ 2>/dev/null | head -1)"
+    RUN_DIR="$(ls -td result/track_v*_*/ 2>/dev/null | head -1)"
     RUN_DIR="${RUN_DIR%/}"
     if [ -z "$RUN_DIR" ] || [ ! -d "$RUN_DIR" ]; then
-        echo "error: no run dir found under outputs/track_v*_*/" >&2
+        echo "error: no run dir found under result/track_v*_*/" >&2
         exit 1
     fi
     CKPT=$(ls -t "$RUN_DIR"/ckpt_*.pt 2>/dev/null | head -1)
@@ -138,7 +138,7 @@ if [ "$RUN_EVAL" = "1" ]; then
     echo
     # ALWAYS produce the global "where are we" plot — every minival-comparable
     # run on disk, paper baselines, and SoTA reference (full-eval).
-    GLOBAL_CMP="outputs/eval_tracker/comparison_all_methods"
+    GLOBAL_CMP="result/eval_tracker/comparison_all_methods"
     echo "[compare-all] every v* + baselines + SoTA reference → $GLOBAL_CMP/comparison.{png,md}"
     uv run python scripts/compare_tracker_baselines.py \
         --out-dir "$GLOBAL_CMP" 2>&1 | tee -a "$EVAL_DIR/eval.log" || echo "[compare-all] WARNING: failed"

@@ -6,7 +6,7 @@ distillation). Everything else frozen at DA3-SMALL pretrained.
 
 Loss: DA3 § 3.3 against GT (depth + ray + 3D points + cam_dec extrinsics).
 
-Loads from Phase 1 ckpt (`outputs/runs/phase1_distill/ckpt_<N>.pt`).
+Loads from Phase 1 ckpt (`result/runs/phase1_distill/ckpt_<N>.pt`).
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from .phase1 import _capture_dpt_hook, _wsd_lambda, _amp_dtype
 
 @dataclass
 class Phase2Config:
-    init_ckpt: str = "outputs/runs/phase1_distill/ckpt_1000.pt"
+    init_ckpt: str = "result/runs/phase1_distill/ckpt_1000.pt"
     steps: int = 500
     n_views: int = 4
     image_size: int = 504
@@ -202,9 +202,9 @@ def train(cfg: Phase2Config, out_dir: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--init", type=str, default="outputs/runs/phase1_distill/ckpt_1000.pt")
+    ap.add_argument("--init", type=str, default="result/runs/phase1_distill/ckpt_1000.pt")
     ap.add_argument("--steps", type=int, default=500)
-    ap.add_argument("--out-dir", type=Path, default=Path("outputs/runs/phase2_gt"))
+    ap.add_argument("--out-dir", type=Path, default=Path("result/runs/phase2_gt"))
     ap.add_argument("--lr-dpt", type=float, default=5e-5)
     ap.add_argument("--lr-cam", type=float, default=1e-4)
     ap.add_argument("--ckpt-every", type=int, default=250)

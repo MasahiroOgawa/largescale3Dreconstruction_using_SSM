@@ -7,7 +7,7 @@ Produces two figures into doc/vmamba3_3dpointtrack/figs/:
   fig_sota_drivetrack.png  — drivetrack absolute metric-AJ / metric-APD3D for
       SpatialTracker (SOTA) vs SEA-RAFT+DA3 vs v33.
 
-Reads the committed-source eval JSONs under outputs/ (gitignored), so the PNGs are
+Reads the committed-source eval JSONs under result/ (gitignored), so the PNGs are
 written into the doc tree to be committed alongside the .tex.
 """
 
@@ -96,9 +96,9 @@ def fig_sota_drivetrack(searaft: dict, v33: dict, st: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--searaft", default="outputs/metric3d_searaft_fix_20260618-1718")
-    ap.add_argument("--v33", default="outputs/metric3d_v33_fix_20260618-1718")
-    ap.add_argument("--spatracker", default="outputs/metric3d_spatracker_drivetrack_fixed")
+    ap.add_argument("--searaft", default="result/metric3d_searaft_fix_20260618-1718")
+    ap.add_argument("--v33", default="result/metric3d_v33_fix_20260618-1718")
+    ap.add_argument("--spatracker", default="result/metric3d_spatracker_drivetrack_fixed")
     args = ap.parse_args()
     FIGS.mkdir(parents=True, exist_ok=True)
     searaft, v33, st = _load(args.searaft), _load(args.v33), _load(args.spatracker)

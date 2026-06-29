@@ -2,8 +2,8 @@
 
 Usage:
     uv run python scripts/render_tracker_video.py \\
-        --ckpt outputs/runs/mamba3_tracker_v1/ckpt_30000.pt \\
-        --out-dir outputs/eval_tracker/v1/viz \\
+        --ckpt result/runs/mamba3_tracker_v1/ckpt_30000.pt \\
+        --out-dir result/eval_tracker/v1/viz \\
         --clips-per-subset 2
 """
 

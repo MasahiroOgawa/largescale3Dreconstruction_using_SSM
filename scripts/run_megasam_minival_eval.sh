@@ -8,7 +8,7 @@
 #   4. SEA-RAFT + MegaSAM eval   (drivetrack + pstudio)
 #   5. TAPIP3D + MegaSAM eval    (drivetrack + pstudio)
 #
-# Total wall time: ~9-10 h.  Results land in outputs/.
+# Total wall time: ~9-10 h.  Results land in result/.
 set -euo pipefail
 
 REPO=/home/mas/proj/study/largescale3Dreconstruction_using_SSM
@@ -22,7 +22,7 @@ export LD_LIBRARY_PATH=$VENV/lib/python3.11/site-packages/torch/lib:$CU13/lib:${
 export PYTHONPATH=$TAPIP3D:${REPO}/scripts:${PYTHONPATH:-}
 
 TS=$(date +%Y%m%d-%H%M)
-LOG_DIR="$REPO/outputs/megasam_eval_${TS}"
+LOG_DIR="$REPO/result/megasam_eval_${TS}"
 mkdir -p "$LOG_DIR"
 
 echo "============================================================"
@@ -76,8 +76,8 @@ sys.path.insert(0, '/home/mas/proj/study/TAPIP3D')
 from evaluation.tapvid3d_splits import MINIVAL_FILES
 
 REPO = Path('/home/mas/proj/study/largescale3Dreconstruction_using_SSM')
-ANNO_ROOT = REPO / 'outputs' / 'tapip3d_annotations'
-NPZ_ROOT = REPO / 'outputs' / 'tapvid3d_megasam'
+ANNO_ROOT = REPO / 'result' / 'tapip3d_annotations'
+NPZ_ROOT = REPO / 'result' / 'tapvid3d_megasam'
 
 for subset in ['drivetrack', 'pstudio']:
     h5_dir = ANNO_ROOT / f'{subset}_megasam_minival' / 'megasam'
@@ -109,10 +109,10 @@ echo "============================================================"
 cd "$REPO"
 uv run python scripts/eval_metric3d.py \
     --method searaft \
-    --da3-depth-root outputs/tapvid3d_megasam \
+    --da3-depth-root result/tapvid3d_megasam \
     --split minival \
     --subsets drivetrack pstudio \
-    --out-dir "outputs/metric3d_searaft_megasam_minival_${TS}" \
+    --out-dir "result/metric3d_searaft_megasam_minival_${TS}" \
     2>&1 | tee "$LOG_DIR/searaft_megasam_eval.log"
 echo "Stage 4 done: $(date)"
 
@@ -142,10 +142,10 @@ echo "============================================================"
 echo "ALL DONE: $(date)"
 echo "============================================================"
 echo "Results:"
-echo "  SEA-RAFT + MegaSAM:  outputs/metric3d_searaft_megasam_minival_${TS}/"
-echo "  TAPIP3D + MegaSAM:   $TAPIP3D/outputs/  (look for megasam run)"
+echo "  SEA-RAFT + MegaSAM:  result/metric3d_searaft_megasam_minival_${TS}/"
+echo "  TAPIP3D + MegaSAM:   $TAPIP3D/result/  (look for megasam run)"
 echo ""
 echo "Existing baselines (all 3 subsets):"
-echo "  SEA-RAFT + DA3:      outputs/metric3d_searaft_20260618-1139/"
-echo "  v33:                 outputs/metric3d_v33_20260618-1139/"
-echo "  SEA-RAFT + depthn (ADT): outputs/metric3d_searaft_depthn_minival_20260625-2015/"
+echo "  SEA-RAFT + DA3:      result/metric3d_searaft_20260618-1139/"
+echo "  v33:                 result/metric3d_v33_20260618-1139/"
+echo "  SEA-RAFT + depthn (ADT): result/metric3d_searaft_depthn_minival_20260625-2015/"

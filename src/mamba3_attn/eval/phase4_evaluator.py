@@ -20,7 +20,7 @@ Metrics per scene:
 
 Usage:
     uv run python -m mamba3_attn.eval.phase4_evaluator \\
-        --ckpt outputs/runs/phase3_unfreeze/ckpt_500.pt
+        --ckpt result/runs/phase3_unfreeze/ckpt_500.pt
 """
 
 from __future__ import annotations

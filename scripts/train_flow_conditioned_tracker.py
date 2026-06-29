@@ -4,11 +4,11 @@ Usage:
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \\
         uv run python scripts/train_flow_conditioned_tracker.py \\
             --config configs/v32.yaml \\
-            --out-dir outputs/v32_YYYYMMDD-HHMM
+            --out-dir result/v32_YYYYMMDD-HHMM
 
 Smoke run (50 steps):
     uv run python scripts/train_flow_conditioned_tracker.py \\
-        --config configs/v32.yaml --out-dir outputs/v32_smoke \\
+        --config configs/v32.yaml --out-dir result/v32_smoke \\
         --steps 50 --window 4 --batch 1 --val-every 25
 """
 

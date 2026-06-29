@@ -16,7 +16,7 @@ from evaluation.tapvid3d_splits import MINIVAL_FILES
 
 DATA_ROOT = Path("/home/mas/data/tapvid3d")
 ANNO_ROOT = Path(
-    "/home/mas/proj/study/largescale3Dreconstruction_using_SSM/outputs/tapip3d_annotations"
+    "/home/mas/proj/study/largescale3Dreconstruction_using_SSM/result/tapip3d_annotations"
 )
 TAPIP3D_ROOT = Path("/home/mas/proj/study/TAPIP3D")
 
