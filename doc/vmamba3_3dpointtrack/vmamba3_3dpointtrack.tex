@@ -295,11 +295,15 @@ The leaderboard's median scaling hides all of this: v33's normalised 3D-AJ is
 \begin{table}[h]
 \centering
 \caption{TAPVid-3D minival, absolute metric-AJ (no scaling, fixed-metre thresholds 1\,cm--2.56\,m;
-higher better). ``---'' = ADT result unavailable for MegaSAM methods.}
+higher better). ``---'' = predictions not available or method structurally incompatible with absolute
+evaluation (see \S\ref{sec:abs-na}).}
 \label{tab:abs}
 \begin{tabular}{lrrrr}
 \toprule
 Method & drivetrack & pstudio & adt & mean \\
+\midrule
+BootsTAPIR + ZoeDepth (2024)\,$^{\S}$ & ---   & ---   & ---   & ---   \\
+SpatialTracker (2024)                 & 0.069 & ---   & ---   & ---   \\
 \midrule
 SEA-RAFT + DA3 (baseline)  & 0.005 & 0.165 & 0.273 & 0.147 \\
 SEA-RAFT + MegaSAM         & 0.000 & 0.082 & ---   & ---   \\
@@ -309,7 +313,22 @@ Ours (v33, DA3 depth)      & \textbf{0.082} & \textbf{0.186} & \textbf{0.272} & 
 Ours (v34, MegaSAM depth)  & 0.001 & 0.092 & ---   & ---   \\
 \bottomrule
 \end{tabular}
+\\[2pt]
+{\footnotesize $^{\S}$ ZoeDepth produces scale-ambiguous relative depth; absolute metric-AJ requires
+metric depth and cannot be computed from this combination without per-clip rescaling.}
 \end{table}
+
+\subsubsection*{Why BootsTAPIR + ZoeDepth cannot be evaluated under the absolute metric}
+\label{sec:abs-na}
+ZoeDepth~\cite{zoedepth} is a \emph{relative} depth estimator: it predicts depth up to an
+unknown per-video scale factor. The standard TAPVid-3D leaderboard compensates by applying a
+per-clip median ratio $s^{*} = \mathrm{median}(\hat{d} / d_{\mathrm{gt}})$ before scoring
+(\emph{median scaling}). Under our absolute protocol this rescaling is deliberately removed ---
+fixed-metre thresholds ($1\,\text{cm}\ldots 2.56\,\text{m}$) are applied directly to the raw
+predicted depths. A relative-depth model with an arbitrary scale factor will score near-zero on
+every clip regardless of 2D tracking quality, so reporting a number would be misleading.
+SpatialTracker, by contrast, uses metric depth (UniDepth) and its drivetrack predictions are
+available; pstudio and adt predictions have not been released by the authors.
 
 \begin{figure}[h]
 \centering
@@ -448,6 +467,7 @@ v33 (depth refiner)       & 12.5 & 0.40\,M \\
 \bibitem{mamba3} \textit{Mamba-3 / structured state-space duality}, 2024--2025.
 \bibitem{spatialtracker} Xiao et al., \textit{SpatialTracker: Tracking Any 2D Pixels in 3D Space}, CVPR 2024.
 \bibitem{tapip3d} \textit{TAPIP3D: Tracking Any Point in Persistent 3D Geometry}, 2025.
+\bibitem{zoedepth} Bhat et al., \textit{ZoeDepth: Zero-shot Transfer by Combining Relative and Metric Depth}, arXiv 2302.12288, 2023.
 \end{thebibliography}
 
 \end{document}
