@@ -124,17 +124,18 @@ def build_data_tables() -> tuple[dict, dict]:
             tapip3d_da3_abs[s] = float(np.mean(vals)) if vals else NaN
 
     # ── TAPIP3D + MegaSAM (image-only, no GT poses) ───────────────────────────
-    # drivetrack/pstudio DROID-SLAM depth failure → 0.00% / 0.27% normalised
-    # ADT: overnight run pending
+    # drivetrack/pstudio: DROID-SLAM depth failure → 0.00% / 0.27% normalised
+    # ADT: tapvid3d_average_jaccard_best = 0.003550 from
+    #   tapip3d_kubric_24frames_384trajs_2026-06-30_19-56-12
     tapip3d_msam_norm = {
         "drivetrack": 0.0000,
         "pstudio": 0.0027,
-        "adt": NaN,
+        "adt": 0.0036,
     }
     tapip3d_msam_abs = {
         "drivetrack": 0.0000,
         "pstudio": 0.0000,
-        "adt": NaN,
+        "adt": 0.0000,
     }
 
     # ── Published baselines (normalised AJ from TAPVid-3D paper) ─────────────

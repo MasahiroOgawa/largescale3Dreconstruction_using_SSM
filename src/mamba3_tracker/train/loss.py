@@ -56,7 +56,7 @@ class TrackingLossOutput:
     pos_3D: Tensor
     pos_2D: Tensor
     vis: Tensor
-    scale: Tensor | None = None   # v20: log-scale supervision term; None for v11–v19
+    scale: Tensor | None = None  # v20: log-scale supervision term; None for v11–v19
 
 
 def _project(xyz: Tensor, K: Tensor) -> Tensor:
@@ -108,23 +108,24 @@ def reconstruct_trajectory(
     # Zero out the t=0 entry so cumsum starts effectively at t=1.
     delta_zero_init = delta_pred.clone()
     delta_zero_init[:, 0] = 0.0
-    cs = delta_zero_init.cumsum(dim=1)                      # (B, F, N, 3)
-    a = anchor_idx.clamp(min=0, max=F_ - 1)                 # (B, N)
-    cs_at_anchor = cs.gather(                               # (B, N, 3)
-        dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+    cs = delta_zero_init.cumsum(dim=1)  # (B, F, N, 3)
+    a = anchor_idx.clamp(min=0, max=F_ - 1)  # (B, N)
+    cs_at_anchor = cs.gather(  # (B, N, 3)
+        dim=1,
+        index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
     ).squeeze(1)
     p_hat = init_xyz.unsqueeze(1) + cs - cs_at_anchor.unsqueeze(1)
     return p_hat
 
 
 def _per_clip_median_scale(
-    gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
-    visible: Tensor,          # (B, F, N) bool/float
+    gt_tracks_XYZ: Tensor,  # (B, F, N, 3)
+    visible: Tensor,  # (B, F, N) bool/float
     eps: float = 1e-3,
 ) -> Tensor:
     """`s_3D = median(‖p*‖)` over visible (t, n), one scalar per clip."""
     B = gt_tracks_XYZ.shape[0]
-    norms = gt_tracks_XYZ.norm(dim=-1)                # (B, F, N)
+    norms = gt_tracks_XYZ.norm(dim=-1)  # (B, F, N)
     s = torch.full((B,), eps, device=gt_tracks_XYZ.device, dtype=gt_tracks_XYZ.dtype)
     for b in range(B):
         v = visible[b].bool()
@@ -168,8 +169,8 @@ def reconstruct_trajectory_v18(
 
 
 def _gt_path_length_from_anchor(
-    gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
-    anchor_idx: Tensor,       # (B, N) long
+    gt_tracks_XYZ: Tensor,  # (B, F, N, 3)
+    anchor_idx: Tensor,  # (B, N) long
     eps: float = 1e-3,
 ) -> Tensor:
     """Per-(t, n) cumulative 3D path length of GT between anchor a_n and t.
@@ -189,13 +190,14 @@ def _gt_path_length_from_anchor(
     delta_gt = torch.zeros_like(gt_tracks_XYZ)
     if F_ > 1:
         delta_gt[:, 1:] = gt_tracks_XYZ[:, 1:] - gt_tracks_XYZ[:, :-1]
-    step_norms = delta_gt.norm(dim=-1)                                       # (B, F, N), [:, 0] = 0
-    cs = step_norms.cumsum(dim=1)                                            # (B, F, N)
-    a = anchor_idx.clamp(min=0, max=F_ - 1).long()                           # (B, N)
+    step_norms = delta_gt.norm(dim=-1)  # (B, F, N), [:, 0] = 0
+    cs = step_norms.cumsum(dim=1)  # (B, F, N)
+    a = anchor_idx.clamp(min=0, max=F_ - 1).long()  # (B, N)
     cs_at_anchor = cs.gather(
-        dim=1, index=a.unsqueeze(1).expand(B, 1, N),
-    ).squeeze(1)                                                             # (B, N)
-    s_gt = (cs - cs_at_anchor.unsqueeze(1)).abs()                            # (B, F, N)
+        dim=1,
+        index=a.unsqueeze(1).expand(B, 1, N),
+    ).squeeze(1)  # (B, N)
+    s_gt = (cs - cs_at_anchor.unsqueeze(1)).abs()  # (B, F, N)
     return s_gt.clamp_min(eps).detach()
 
 
@@ -243,29 +245,34 @@ class TrackingLossV18(nn.Module):
     def forward(
         self,
         pred: TrackerOutputs,
-        gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
-        gt_visibility: Tensor,    # (B, F, N) bool
-        gt_query_mask: Tensor,    # (B, N) bool
+        gt_tracks_XYZ: Tensor,  # (B, F, N, 3)
+        gt_visibility: Tensor,  # (B, F, N) bool
+        gt_query_mask: Tensor,  # (B, N) bool
         gt_anchor_frame: Tensor,  # (B, N) long
-        K: Tensor,                # (B, 3, 3)
+        K: Tensor,  # (B, 3, 3)
     ) -> TrackingLossOutput:
         if pred.scale is None:
-            raise RuntimeError("TrackingLossV18 requires pred.scale; set model.predict_scale=True")
+            raise RuntimeError(
+                "TrackingLossV18 requires pred.scale; set model.predict_scale=True"
+            )
 
         B, F_, N, _ = gt_tracks_XYZ.shape
-        a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()                  # (B, N)
+        a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()  # (B, N)
         init_xyz = gt_tracks_XYZ.gather(
-            dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
-        ).squeeze(1)                                                         # (B, N, 3)
-        p_hat = reconstruct_trajectory_v18(pred.xyz, pred.scale, init_xyz, a)  # (B, F, N, 3)
-        s_gt = _gt_path_length_from_anchor(gt_tracks_XYZ, a)                 # (B, F, N)
+            dim=1,
+            index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+        ).squeeze(1)  # (B, N, 3)
+        p_hat = reconstruct_trajectory_v18(
+            pred.xyz, pred.scale, init_xyz, a
+        )  # (B, F, N, 3)
+        s_gt = _gt_path_length_from_anchor(gt_tracks_XYZ, a)  # (B, F, N)
 
         vis_f = gt_visibility.float()
         qm = gt_query_mask.unsqueeze(1).expand(B, F_, N).float()
         w_pos = vis_f * qm
         denom = w_pos.sum().clamp_min(1.0)
 
-        r_3D = (p_hat - gt_tracks_XYZ) / s_gt.unsqueeze(-1)                  # (B, F, N, 3)
+        r_3D = (p_hat - gt_tracks_XYZ) / s_gt.unsqueeze(-1)  # (B, F, N, 3)
         pos_3D = ((r_3D.pow(2).sum(dim=-1)) * w_pos).sum() / denom
 
         uv_hat = _project(p_hat, K)
@@ -274,20 +281,28 @@ class TrackingLossV18(nn.Module):
         finite_2D = torch.isfinite(r_2D).all(dim=-1).float()
         w_2D = w_pos * finite_2D
         denom_2D = w_2D.sum().clamp_min(1.0)
-        pos_2D = (torch.nan_to_num(r_2D.pow(2).sum(dim=-1), nan=0.0,
-                                   posinf=0.0, neginf=0.0) * w_2D).sum() / denom_2D
+        pos_2D = (
+            torch.nan_to_num(r_2D.pow(2).sum(dim=-1), nan=0.0, posinf=0.0, neginf=0.0)
+            * w_2D
+        ).sum() / denom_2D
 
         vis_loss = F.binary_cross_entropy_with_logits(
-            pred.vis_logits, vis_f, weight=qm, reduction="sum",
+            pred.vis_logits,
+            vis_f,
+            weight=qm,
+            reduction="sum",
         ) / qm.sum().clamp_min(1.0)
 
         total = (
             self.w["pos_3D"] * pos_3D
             + self.w["pos_2D"] * pos_2D
-            + self.w["vis"]    * vis_loss
+            + self.w["vis"] * vis_loss
         )
         return TrackingLossOutput(
-            total=total, pos_3D=pos_3D, pos_2D=pos_2D, vis=vis_loss,
+            total=total,
+            pos_3D=pos_3D,
+            pos_2D=pos_2D,
+            vis=vis_loss,
         )
 
 
@@ -295,9 +310,9 @@ _TERMS_V20 = ("pos_3D", "scale", "pos_2D", "vis")
 
 
 def _per_clip_motion_scale(
-    gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
-    init_xyz: Tensor,         # (B, N, 3)  GT at each track's anchor
-    w_pos: Tensor,            # (B, F, N)  visible ∧ query mask (float)
+    gt_tracks_XYZ: Tensor,  # (B, F, N, 3)
+    init_xyz: Tensor,  # (B, N, 3)  GT at each track's anchor
+    w_pos: Tensor,  # (B, F, N)  visible ∧ query mask (float)
     anchor_idx: Tensor | None = None,  # (B, N) long — required to mask anchor frames
     eps: float = 1e-4,
 ) -> Tensor:
@@ -320,23 +335,23 @@ def _per_clip_motion_scale(
     a numerical guard for the log on genuinely-static clips.
     """
     B, F_, N = w_pos.shape
-    disp = (gt_tracks_XYZ - init_xyz.unsqueeze(1)).norm(dim=-1)              # (B, F, N)
+    disp = (gt_tracks_XYZ - init_xyz.unsqueeze(1)).norm(dim=-1)  # (B, F, N)
     if anchor_idx is not None:
         t_idx = torch.arange(F_, device=disp.device).view(1, F_, 1).expand(B, F_, N)
         a_idx = anchor_idx.view(B, 1, N).expand(B, F_, N)
         non_anchor = (t_idx != a_idx).float()
     else:
         non_anchor = torch.ones_like(w_pos)
-    w = w_pos * non_anchor                                                    # (B, F, N)
+    w = w_pos * non_anchor  # (B, F, N)
     sq = (disp * disp) * w
-    n  = w.sum(dim=(1, 2)).clamp_min(1.0)
+    n = w.sum(dim=(1, 2)).clamp_min(1.0)
     rms = (sq.sum(dim=(1, 2)) / n).clamp_min(eps * eps).sqrt()
     return rms.detach()
 
 
 def _per_clip_anchor_depth_scale(
-    init_xyz: Tensor,         # (B, N, 3)  GT XYZ at each track's anchor frame
-    qmask: Tensor,            # (B, N)     query mask (bool or float)
+    init_xyz: Tensor,  # (B, N, 3)  GT XYZ at each track's anchor frame
+    qmask: Tensor,  # (B, N)     query mask (bool or float)
     eps: float = 1e-2,
 ) -> Tensor:
     """Per-clip scene-depth scale: median anchor-frame Z over query tracks.
@@ -353,15 +368,15 @@ def _per_clip_anchor_depth_scale(
 
     Returns one positive scalar per batch item.
     """
-    z = init_xyz[..., 2]                                                 # (B, N)
+    z = init_xyz[..., 2]  # (B, N)
     valid = qmask.float() * torch.isfinite(z).float() * (z > 0).float()  # (B, N)
     # Sentinel-fill invalid entries with +inf so they sort to the end; pick the
     # floor((n_valid - 1) / 2)-th sorted value per row.
     z_sentinel = torch.where(valid > 0, z, torch.full_like(z, float("inf")))
     sorted_z, _ = torch.sort(z_sentinel, dim=-1)
-    n_valid = valid.sum(dim=-1).long().clamp_min(1)                       # (B,)
-    mid = ((n_valid - 1) // 2).clamp_min(0)                                # (B,)
-    med = sorted_z.gather(1, mid.unsqueeze(-1)).squeeze(-1)                # (B,)
+    n_valid = valid.sum(dim=-1).long().clamp_min(1)  # (B,)
+    mid = ((n_valid - 1) // 2).clamp_min(0)  # (B,)
+    med = sorted_z.gather(1, mid.unsqueeze(-1)).squeeze(-1)  # (B,)
     med = torch.where(torch.isfinite(med), med, torch.full_like(med, eps))
     return med.clamp_min(eps).detach()
 
@@ -471,20 +486,23 @@ class TrackingLossV20(nn.Module):
     def forward(
         self,
         pred: TrackerOutputs,
-        gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
-        gt_visibility: Tensor,    # (B, F, N) bool
-        gt_query_mask: Tensor,    # (B, N) bool
+        gt_tracks_XYZ: Tensor,  # (B, F, N, 3)
+        gt_visibility: Tensor,  # (B, F, N) bool
+        gt_query_mask: Tensor,  # (B, N) bool
         gt_anchor_frame: Tensor,  # (B, N) long
-        K: Tensor,                # (B, 3, 3)
+        K: Tensor,  # (B, 3, 3)
     ) -> TrackingLossOutput:
         if pred.scale is None:
-            raise RuntimeError("TrackingLossV20 requires pred.scale; set model.predict_scale=True")
+            raise RuntimeError(
+                "TrackingLossV20 requires pred.scale; set model.predict_scale=True"
+            )
 
         B, F_, N, _ = gt_tracks_XYZ.shape
         a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()
         init_xyz = gt_tracks_XYZ.gather(
-            dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
-        ).squeeze(1)                                                         # (B, N, 3)
+            dim=1,
+            index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+        ).squeeze(1)  # (B, N, 3)
 
         vis_f = gt_visibility.float()
         qm = gt_query_mask.unsqueeze(1).expand(B, F_, N).float()
@@ -493,17 +511,20 @@ class TrackingLossV20(nn.Module):
 
         # Unitless shapes: predicted cumsum (no scale, no anchor offset) and GT.
         zeros = init_xyz.new_zeros(B, N, 3)
-        p_tilde = reconstruct_trajectory(pred.xyz, zeros, a)                 # (B, F, N, 3)
+        p_tilde = reconstruct_trajectory(pred.xyz, zeros, a)  # (B, F, N, 3)
         if self.scale_source == "anchor_depth_median":
             scale_star = _per_clip_anchor_depth_scale(init_xyz, gt_query_mask)  # (B,)
         else:
             scale_star = _per_clip_motion_scale(
-                gt_tracks_XYZ, init_xyz, w_pos, anchor_idx=a,
+                gt_tracks_XYZ,
+                init_xyz,
+                w_pos,
+                anchor_idx=a,
             )  # (B,)
         gt_tilde = (gt_tracks_XYZ - init_xyz.unsqueeze(1)) / scale_star.view(B, 1, 1, 1)
 
         # Shape term — clean gradient to the trajectory head.
-        r_shape = (p_tilde - gt_tilde)
+        r_shape = p_tilde - gt_tilde
         if self.loss_form == "log1p":
             # log(|r|+1) summed over xyz; gradient sign(r)/(|r|+1) is ~1 at the
             # small (~0.02) depth-normalised residuals where L2's 2r vanishes.
@@ -518,7 +539,7 @@ class TrackingLossV20(nn.Module):
             pos_3D = ((r_shape.pow(2).sum(dim=-1)) * w_pos).sum() / denom
 
         # Scale term — direct supervision of log-scale (z) toward log scale*.
-        log_s = torch.log(pred.scale.clamp_min(1e-6))                        # (B,)
+        log_s = torch.log(pred.scale.clamp_min(1e-6))  # (B,)
         scale_loss = (log_s - torch.log(scale_star)).pow(2).mean()
 
         # 2D term — project the metric reconstruction. v26: optionally use
@@ -548,15 +569,21 @@ class TrackingLossV20(nn.Module):
             # r_2D is already image-width normalised — log(|r_2D|+1) per-axis
             # summed gives the same non-vanishing gradient behaviour as p3D.
             pos_2D_per = torch.log1p(r_2D.abs()).sum(dim=-1)
-            pos_2D = (torch.nan_to_num(pos_2D_per, nan=0.0, posinf=0.0,
-                                        neginf=0.0) * w_2D).sum() / denom_2D
+            pos_2D = (
+                torch.nan_to_num(pos_2D_per, nan=0.0, posinf=0.0, neginf=0.0) * w_2D
+            ).sum() / denom_2D
         elif self.loss_form == "L1":
             pos_2D_per = r_2D.abs().sum(dim=-1)
-            pos_2D = (torch.nan_to_num(pos_2D_per, nan=0.0, posinf=0.0,
-                                        neginf=0.0) * w_2D).sum() / denom_2D
+            pos_2D = (
+                torch.nan_to_num(pos_2D_per, nan=0.0, posinf=0.0, neginf=0.0) * w_2D
+            ).sum() / denom_2D
         else:
-            pos_2D = (torch.nan_to_num(r_2D.pow(2).sum(dim=-1), nan=0.0,
-                                       posinf=0.0, neginf=0.0) * w_2D).sum() / denom_2D
+            pos_2D = (
+                torch.nan_to_num(
+                    r_2D.pow(2).sum(dim=-1), nan=0.0, posinf=0.0, neginf=0.0
+                )
+                * w_2D
+            ).sum() / denom_2D
 
         if self.mask_z_negative:
             # Visibility couples to projectability. Effective predicted
@@ -572,7 +599,10 @@ class TrackingLossV20(nn.Module):
             vis_loss = (vis_bce * qm).sum() / qm.sum().clamp_min(1.0)
         else:
             vis_loss = F.binary_cross_entropy_with_logits(
-                pred.vis_logits, vis_f, weight=qm, reduction="sum",
+                pred.vis_logits,
+                vis_f,
+                weight=qm,
+                reduction="sum",
             ) / qm.sum().clamp_min(1.0)
 
         # v27: amplify pos_3D and pos_2D BEFORE the weighted sum so they
@@ -583,13 +613,16 @@ class TrackingLossV20(nn.Module):
             self.w["pos_3D"] * pos_3D_amp
             + self.w["scale"] * scale_loss
             + self.w["pos_2D"] * pos_2D_amp
-            + self.w["vis"]    * vis_loss
+            + self.w["vis"] * vis_loss
         )
         # Report the AMPLIFIED per-term values in the loss output so the
         # training log and plots reflect what the optimizer is actually seeing.
         return TrackingLossOutput(
-            total=total, pos_3D=pos_3D_amp, pos_2D=pos_2D_amp,
-            vis=vis_loss, scale=scale_loss,
+            total=total,
+            pos_3D=pos_3D_amp,
+            pos_2D=pos_2D_amp,
+            vis=vis_loss,
+            scale=scale_loss,
         )
 
 
@@ -611,11 +644,11 @@ class TrackingLoss(nn.Module):
     def forward(
         self,
         pred: TrackerOutputs,
-        gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
-        gt_visibility: Tensor,    # (B, F, N) bool
-        gt_query_mask: Tensor,    # (B, N) bool
+        gt_tracks_XYZ: Tensor,  # (B, F, N, 3)
+        gt_visibility: Tensor,  # (B, F, N) bool
+        gt_query_mask: Tensor,  # (B, N) bool
         gt_anchor_frame: Tensor,  # (B, N) long — kept in signature for backwards compat (unused in v11)
-        K: Tensor,                # (B, 3, 3)
+        K: Tensor,  # (B, 3, 3)
     ) -> TrackingLossOutput:
         B, F_, N, _ = gt_tracks_XYZ.shape
 
@@ -624,60 +657,69 @@ class TrackingLoss(nn.Module):
         # bidirectionally from there. This matches the TAPVid-3D evaluation
         # convention where queries can be at any frame and all visible frames
         # are scored. See `reconstruct_trajectory` for the cumsum-gather math.
-        a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()                  # (B, N)
+        a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()  # (B, N)
         init_xyz = gt_tracks_XYZ.gather(
-            dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
-        ).squeeze(1)                                                          # (B, N, 3)
-        p_hat = reconstruct_trajectory(pred.xyz, init_xyz, a)                 # (B, F, N, 3)
+            dim=1,
+            index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+        ).squeeze(1)  # (B, N, 3)
+        p_hat = reconstruct_trajectory(pred.xyz, init_xyz, a)  # (B, F, N, 3)
 
         # Mask: visible (t, n) AND real query slot.
         vis_f = gt_visibility.float()
         qm = gt_query_mask.unsqueeze(1).expand(B, F_, N).float()
-        w_pos = vis_f * qm                                                  # (B, F, N)
+        w_pos = vis_f * qm  # (B, F, N)
         denom = w_pos.sum().clamp_min(1.0)
 
         # Per-clip 3-D scale (detached so no gradient flows back through GT magnitudes).
-        s_3D = _per_clip_median_scale(gt_tracks_XYZ, w_pos).detach()        # (B,)
+        s_3D = _per_clip_median_scale(gt_tracks_XYZ, w_pos).detach()  # (B,)
         s_3D_b = s_3D.view(B, 1, 1, 1)
         s_2D_b = self.image_size
 
         # L_3D — scale-normalised squared L2 in 3D.
-        r_3D = (p_hat - gt_tracks_XYZ) / s_3D_b                             # (B, F, N, 3)
+        r_3D = (p_hat - gt_tracks_XYZ) / s_3D_b  # (B, F, N, 3)
         pos_3D = ((r_3D.pow(2).sum(dim=-1)) * w_pos).sum() / denom
 
         # L_2D — pinhole-project both predicted and GT, then scale-normalised
         # squared L2 in pixel space.
-        uv_hat = _project(p_hat, K)                                          # (B, F, N, 2)
-        uv_gt = _project(gt_tracks_XYZ, K)                                   # (B, F, N, 2)
-        r_2D = (uv_hat - uv_gt) / s_2D_b                                     # (B, F, N, 2)
+        uv_hat = _project(p_hat, K)  # (B, F, N, 2)
+        uv_gt = _project(gt_tracks_XYZ, K)  # (B, F, N, 2)
+        r_2D = (uv_hat - uv_gt) / s_2D_b  # (B, F, N, 2)
         # Mask out non-finite projections (rare: Z near zero — clamp handles it,
         # but be defensive).
         finite_2D = torch.isfinite(r_2D).all(dim=-1).float()
         w_2D = w_pos * finite_2D
         denom_2D = w_2D.sum().clamp_min(1.0)
-        pos_2D = ((torch.nan_to_num(r_2D.pow(2).sum(dim=-1), nan=0.0,
-                                    posinf=0.0, neginf=0.0)) * w_2D).sum() / denom_2D
+        pos_2D = (
+            (torch.nan_to_num(r_2D.pow(2).sum(dim=-1), nan=0.0, posinf=0.0, neginf=0.0))
+            * w_2D
+        ).sum() / denom_2D
 
         # Visibility BCE — masked by qm (per-frame target weighted by query slot).
         vis_loss = F.binary_cross_entropy_with_logits(
-            pred.vis_logits, vis_f, weight=qm, reduction="sum",
+            pred.vis_logits,
+            vis_f,
+            weight=qm,
+            reduction="sum",
         ) / qm.sum().clamp_min(1.0)
 
         total = (
             self.w["pos_3D"] * pos_3D
             + self.w["pos_2D"] * pos_2D
-            + self.w["vis"]    * vis_loss
+            + self.w["vis"] * vis_loss
         )
         return TrackingLossOutput(
-            total=total, pos_3D=pos_3D, pos_2D=pos_2D, vis=vis_loss,
+            total=total,
+            pos_3D=pos_3D,
+            pos_2D=pos_2D,
+            vis=vis_loss,
         )
 
 
 def _unproject_with_depth(
-    uv: Tensor,            # (B, F, N, 2) pixel coords on the encoder-resolution image
-    depth_map: Tensor,     # (B, F, Hd, Wd) per-frame metric depth (DA3-Large, frozen)
-    K: Tensor,             # (B, 3, 3) intrinsics matching the encoder-resolution image
-    image_size: float,     # encoder square resolution (depth_map covers same FOV)
+    uv: Tensor,  # (B, F, N, 2) pixel coords on the encoder-resolution image
+    depth_map: Tensor,  # (B, F, Hd, Wd) per-frame metric depth (DA3-Large, frozen)
+    K: Tensor,  # (B, 3, 3) intrinsics matching the encoder-resolution image
+    image_size: float,  # encoder square resolution (depth_map covers same FOV)
 ) -> Tensor:
     """Differentiably sample `depth_map` at `uv` and unproject to camera-frame XYZ.
 
@@ -689,11 +731,14 @@ def _unproject_with_depth(
     """
     B, F_, N, _ = uv.shape
     Hd, Wd = depth_map.shape[-2:]
-    grid = 2.0 * (uv / image_size) - 1.0                                    # (B, F, N, 2)
+    grid = 2.0 * (uv / image_size) - 1.0  # (B, F, N, 2)
     grid = grid.view(B * F_, 1, N, 2)
     z = F.grid_sample(
         depth_map.view(B * F_, 1, Hd, Wd),
-        grid, mode="bilinear", padding_mode="border", align_corners=False,
+        grid,
+        mode="bilinear",
+        padding_mode="border",
+        align_corners=False,
     ).view(B, F_, N)
     fx = K[:, 0, 0].view(B, 1, 1)
     fy = K[:, 1, 1].view(B, 1, 1)
@@ -703,7 +748,7 @@ def _unproject_with_depth(
     v = uv[..., 1]
     x = (u - cx) / fx * z
     y = (v - cy) / fy * z
-    return torch.stack([x, y, z], dim=-1)                                   # (B, F, N, 3)
+    return torch.stack([x, y, z], dim=-1)  # (B, F, N, 3)
 
 
 class TrackingLossV31(nn.Module):
@@ -742,12 +787,12 @@ class TrackingLossV31(nn.Module):
     def forward(
         self,
         pred: TrackerOutputs,
-        gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
-        gt_visibility: Tensor,    # (B, F, N) bool
-        gt_query_mask: Tensor,    # (B, N) bool
+        gt_tracks_XYZ: Tensor,  # (B, F, N, 3)
+        gt_visibility: Tensor,  # (B, F, N) bool
+        gt_query_mask: Tensor,  # (B, N) bool
         gt_anchor_frame: Tensor,  # (B, N) long
-        K: Tensor,                # (B, 3, 3)
-        depth: Tensor,            # (B, F, Hd, Wd) cached DA3-Large metric depth
+        K: Tensor,  # (B, 3, 3)
+        depth: Tensor,  # (B, F, Hd, Wd) cached DA3-Large metric depth
     ) -> TrackingLossOutput:
         if pred.uv is None:
             raise RuntimeError(
@@ -757,42 +802,55 @@ class TrackingLossV31(nn.Module):
         B, F_, N, _ = gt_tracks_XYZ.shape
         a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()
         init_xyz = gt_tracks_XYZ.gather(
-            dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
-        ).squeeze(1)                                                          # (B, N, 3)
+            dim=1,
+            index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+        ).squeeze(1)  # (B, N, 3)
 
         vis_f = gt_visibility.float()
         qm = gt_query_mask.unsqueeze(1).expand(B, F_, N).float()
         w_pos = vis_f * qm
 
-        scale_gt = _per_clip_anchor_depth_scale(init_xyz, gt_query_mask)      # (B,)
+        scale_gt = _per_clip_anchor_depth_scale(init_xyz, gt_query_mask)  # (B,)
 
-        uv_gt = _project(gt_tracks_XYZ, K)                                    # (B, F, N, 2)
-        r_2D = (pred.uv - uv_gt) / self.image_size                            # (B, F, N, 2)
+        uv_gt = _project(gt_tracks_XYZ, K)  # (B, F, N, 2)
+        r_2D = (pred.uv - uv_gt) / self.image_size  # (B, F, N, 2)
         finite_2D = torch.isfinite(r_2D).all(dim=-1).float()
         w_2D = w_pos * finite_2D
         denom_2D = w_2D.sum().clamp_min(1.0)
-        pos_2D = (torch.nan_to_num(r_2D.abs().sum(dim=-1), nan=0.0,
-                                    posinf=0.0, neginf=0.0) * w_2D).sum() / denom_2D
+        pos_2D = (
+            torch.nan_to_num(r_2D.abs().sum(dim=-1), nan=0.0, posinf=0.0, neginf=0.0)
+            * w_2D
+        ).sum() / denom_2D
 
-        xyz_pred = _unproject_with_depth(pred.uv, depth, K, self.image_size)  # (B, F, N, 3)
+        xyz_pred = _unproject_with_depth(
+            pred.uv, depth, K, self.image_size
+        )  # (B, F, N, 3)
         r_3D = (xyz_pred - gt_tracks_XYZ) / scale_gt.view(B, 1, 1, 1)
         finite_3D = torch.isfinite(r_3D).all(dim=-1).float()
         w_3D = w_pos * finite_3D
         denom_3D = w_3D.sum().clamp_min(1.0)
-        pos_3D = (torch.nan_to_num(r_3D.abs().sum(dim=-1), nan=0.0,
-                                    posinf=0.0, neginf=0.0) * w_3D).sum() / denom_3D
+        pos_3D = (
+            torch.nan_to_num(r_3D.abs().sum(dim=-1), nan=0.0, posinf=0.0, neginf=0.0)
+            * w_3D
+        ).sum() / denom_3D
 
         vis_loss = F.binary_cross_entropy_with_logits(
-            pred.vis_logits, vis_f, weight=qm, reduction="sum",
+            pred.vis_logits,
+            vis_f,
+            weight=qm,
+            reduction="sum",
         ) / qm.sum().clamp_min(1.0)
 
         total = (
             self.w["pos_3D"] * pos_3D
             + self.w["pos_2D"] * pos_2D
-            + self.w["vis"]    * vis_loss
+            + self.w["vis"] * vis_loss
         )
         return TrackingLossOutput(
-            total=total, pos_3D=pos_3D, pos_2D=pos_2D, vis=vis_loss,
+            total=total,
+            pos_3D=pos_3D,
+            pos_2D=pos_2D,
+            vis=vis_loss,
         )
 
 
@@ -822,11 +880,11 @@ class TrackingLossV33(nn.Module):
     def forward(
         self,
         pred: TrackerOutputs,
-        gt_tracks_XYZ: Tensor,    # (B, F, N, 3)
-        gt_visibility: Tensor,    # (B, F, N) bool
-        gt_query_mask: Tensor,    # (B, N) bool
+        gt_tracks_XYZ: Tensor,  # (B, F, N, 3)
+        gt_visibility: Tensor,  # (B, F, N) bool
+        gt_query_mask: Tensor,  # (B, N) bool
         gt_anchor_frame: Tensor,  # (B, N) long
-        K: Tensor,                # (B, 3, 3) — unused (xyz already in camera frame)
+        K: Tensor,  # (B, 3, 3) — unused (xyz already in camera frame)
     ) -> TrackingLossOutput:
         if pred.xyz is None:
             raise RuntimeError("TrackingLossV33 requires pred.xyz")
@@ -834,22 +892,83 @@ class TrackingLossV33(nn.Module):
         B, F_, N, _ = gt_tracks_XYZ.shape
         a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()
         init_xyz = gt_tracks_XYZ.gather(
-            dim=1, index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
-        ).squeeze(1)                                                          # (B, N, 3)
+            dim=1,
+            index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+        ).squeeze(1)  # (B, N, 3)
 
         vis_f = gt_visibility.float()
         qm = gt_query_mask.unsqueeze(1).expand(B, F_, N).float()
         w_pos = vis_f * qm
 
-        scale_gt = _per_clip_anchor_depth_scale(init_xyz, gt_query_mask)      # (B,)
+        scale_gt = _per_clip_anchor_depth_scale(init_xyz, gt_query_mask)  # (B,)
         r_3D = (pred.xyz - gt_tracks_XYZ) / scale_gt.view(B, 1, 1, 1)
         finite_3D = torch.isfinite(r_3D).all(dim=-1).float()
         w_3D = w_pos * finite_3D
         denom_3D = w_3D.sum().clamp_min(1.0)
-        pos_3D = (torch.nan_to_num(r_3D.abs().sum(dim=-1), nan=0.0,
-                                    posinf=0.0, neginf=0.0) * w_3D).sum() / denom_3D
+        pos_3D = (
+            torch.nan_to_num(r_3D.abs().sum(dim=-1), nan=0.0, posinf=0.0, neginf=0.0)
+            * w_3D
+        ).sum() / denom_3D
 
         zero = pos_3D.new_zeros(())
         return TrackingLossOutput(
-            total=self.w_pos_3D * pos_3D, pos_3D=pos_3D, pos_2D=zero, vis=zero,
+            total=self.w_pos_3D * pos_3D,
+            pos_3D=pos_3D,
+            pos_2D=zero,
+            vis=zero,
         )
+
+
+class TrackingLossV35(nn.Module):
+    """v35 loss: vis-masked L1 3D + Δuv L2 regularization.
+
+    L = vis * |xyz_pred - xyz_gt|_1 / scale_gt     (L_3D, same as v33)
+      + λ_uv * vis * |delta_uv|²                    (Δuv regularization)
+
+    Invisible points (vis=0) contribute zero gradient. L_2D field in the
+    returned TrackingLossOutput carries the Δuv regularization for logging.
+    """
+
+    def __init__(self, weights: Mapping[str, float], image_size: int = 896) -> None:
+        super().__init__()
+        if "pos_3D" not in weights:
+            raise ValueError("TrackingLossV35: missing weight for 'pos_3D'")
+        self.w_pos_3D = float(weights["pos_3D"])
+        self.w_reg_uv = float(weights.get("reg_uv", 0.0))
+        self.image_size = float(image_size)
+
+    def forward(
+        self,
+        pred: TrackerOutputs,
+        gt_tracks_XYZ: Tensor,  # (B, F, N, 3)
+        gt_visibility: Tensor,  # (B, F, N)
+        gt_query_mask: Tensor,  # (B, N)
+        gt_anchor_frame: Tensor,  # (B, N) long
+        K: Tensor,  # (B, 3, 3) — unused (xyz already camera-frame)
+    ) -> TrackingLossOutput:
+        B, F_, N, _ = gt_tracks_XYZ.shape
+        a = gt_anchor_frame.clamp(min=0, max=F_ - 1).long()
+        init_xyz = gt_tracks_XYZ.gather(
+            dim=1,
+            index=a.view(B, 1, N, 1).expand(B, 1, N, 3),
+        ).squeeze(1)
+
+        vis_f = gt_visibility.float()
+        qm = gt_query_mask.unsqueeze(1).expand(B, F_, N).float()
+        w_pos = vis_f * qm
+
+        scale_gt = _per_clip_anchor_depth_scale(init_xyz, gt_query_mask)
+        r_3D = (pred.xyz - gt_tracks_XYZ) / scale_gt.view(B, 1, 1, 1)
+        finite_3D = torch.isfinite(r_3D).all(dim=-1).float()
+        w_3D = w_pos * finite_3D
+        denom = w_3D.sum().clamp_min(1.0)
+        pos_3D = (torch.nan_to_num(r_3D.abs().sum(dim=-1)) * w_3D).sum() / denom
+
+        if pred.delta_uv is not None and self.w_reg_uv > 0.0:
+            reg_uv = (pred.delta_uv.pow(2).sum(dim=-1) * w_pos).sum() / denom
+        else:
+            reg_uv = pos_3D.new_zeros(())
+
+        zero = pos_3D.new_zeros(())
+        total = self.w_pos_3D * pos_3D + self.w_reg_uv * reg_uv
+        return TrackingLossOutput(total=total, pos_3D=pos_3D, pos_2D=reg_uv, vis=zero)

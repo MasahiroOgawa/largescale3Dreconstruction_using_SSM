@@ -28,8 +28,9 @@ class TrackerOutputs:
     xyz: Tensor          # (B, F, N, 3) — v11-v30: 3D position output
     vis_logits: Tensor   # (B, F, N)
     spawn_logits: Tensor # (B, F, N)
-    scale: Tensor | None = None  # (B,) clip-level positive scalar, v18+; None for v11–v17
-    uv: Tensor | None = None     # (B, F, N, 2) — v31: 2D pixel-coord output; None for v11-v30
+    scale: Tensor | None = None      # (B,) clip-level positive scalar, v18+; None for v11–v17
+    uv: Tensor | None = None         # (B, F, N, 2) — v31: 2D pixel-coord output; None for v11-v30
+    delta_uv: Tensor | None = None   # (B, F, N, 2) — v35: Δuv correction; None otherwise
 
 
 def _mlp(in_dim: int, hidden: int, out_dim: int) -> nn.Sequential:
