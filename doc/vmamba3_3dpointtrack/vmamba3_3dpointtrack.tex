@@ -256,8 +256,7 @@ a six-method minival comparison including TAPIP3D is in \S\ref{sec:sota}.
 \begin{table}[h]
 \centering
 \caption{TAPVid-3D minival, median-scaled 3D-AJ (standard leaderboard metric; higher better).
-         ``---'' = result unavailable (MegaSAM methods require source-video frame-rate;
-         ADT NPZ clips have 300 frames which exceed DROID-SLAM memory at 12\,GB).}
+         ``---'' = result unavailable.}
 \label{tab:median}
 \begin{tabular}{lrrrr}
 \toprule
@@ -277,7 +276,7 @@ Ours (v34, MegaSAM depth)      & 0.059 & 0.048 & 0.119 & 0.075 \\
 \\[2pt]
 {\footnotesize $^{*}$ published numbers; entire leaderboard is median-scaled.
 $^{\dagger}$ TAPIP3D evaluated with our pipeline using its released checkpoint.
-$^{\ddagger}$ Fails on minival NPZs due to DROID-SLAM frame-rate constraints (see \S\ref{sec:sota}).}
+$^{\ddagger}$ Near-zero on all three subsets; DROID-SLAM fails on subsampled NPZ clips (see \S\ref{sec:megasam-fail}).}
 \end{table}
 
 \subsection{Absolute-metric results: the reversal}
@@ -356,27 +355,38 @@ pixel-track coherence, whereas our depth refiner directly corrects metric scale.
 
 \paragraph{TAPIP3D + MegaSAM and why it fails on our minival.}
 \label{sec:megasam-fail}
-TAPIP3D's published SOTA uses MegaSAM (DAv1 $+$ UniDepth $+$ DROID-SLAM $+$ CVD) for metric
-depth. On our minival NPZ clips the pipeline achieves near-zero scores because DROID-SLAM requires
-dense, continuously moving video ($\geq$10\,fps, sufficient translational parallax) to recover
-metric scale by triangulation. The three NPZ subsets violate these requirements in different ways:
+TAPIP3D's published SOTA ($\sim$0.30 normalised AJ) uses MegaSAM (DAv1 $+$ UniDepth $+$ DROID-SLAM $+$ CVD)
+run on the \emph{original source videos at full frame-rate}.
+Our minival is distributed as NPZ clips that sub-sample and trim the originals; we cannot recover the
+source video, so we run MegaSAM on the NPZ frames directly.
+DROID-SLAM, which is the pose-estimation backbone inside MegaSAM, requires dense, continuously
+moving video ($\geq$10\,fps, sufficient translational parallax) to reliably triangulate metric scale.
+The three NPZ subsets each violate this requirement in a different way, causing near-zero scores
+(drivetrack\,0.00\%, pstudio\,0.27\%, adt\,0.36\%) regardless of the normalised metric's scale-invariance:
+
 \begin{itemize}
-\item \textbf{drivetrack}: the original 10\,fps Waymo clips are sub-sampled to $\approx$2.6\,fps
-  in the NPZ (66 frames over 25\,s). DROID-SLAM's optical-flow tracking degrades on sparse inputs,
-  producing depths of $\sim$0.9\,m where the true scene depth is $\sim$15\,m ($17\times$ scale
-  error). The normalised metric rescales by the per-clip median ratio, so it recovers to $\approx$0\%
-  AJ regardless, rather than hiding the error as with a good prediction.
-\item \textbf{pstudio}: Panoptic Studio cameras are fixed to a stationary dome. With no
-  translational ego-motion, DROID-SLAM cannot triangulate metric scale from parallax; depth is
-  capped at $\approx$1\,m (true depth 2--4\,m, 2--4$\times$ error). Normalised AJ recovers only
-  partially (0.3\%); absolute metric-AJ is 0\%.
+\item \textbf{drivetrack}: the 10\,fps Waymo clips are sub-sampled to $\approx$2.6\,fps in the NPZ
+  (66 frames over 25\,s). DROID-SLAM's optical-flow front-end degrades on such sparse inputs,
+  producing depths of $\sim$0.9\,m where the true scene is $\sim$15\,m ($17\times$ scale error).
+  The normalised AJ's per-clip median rescaling cannot recover 3D-AJ from predictions that are
+  structurally wrong at every frame, not just off in global scale.
+
+\item \textbf{pstudio}: Panoptic Studio cameras are fixed to a stationary dome; there is essentially
+  no translational ego-motion. DROID-SLAM cannot triangulate metric scale without parallax, so it
+  collapses depth to $\approx$1\,m (true depth 2--4\,m, 2--4$\times$ error). Normalised AJ
+  partially recovers (0.27\%); absolute metric-AJ is 0\%.
+
 \item \textbf{adt}: 300-frame clips exceed available VRAM in DROID-SLAM's global bundle adjustment
-  ($>$11.6\,GB at 12\,GB capacity); this evaluation is pending with a 2$\times$ frame-stride
-  workaround.
+  ($>$11.6\,GB at 12\,GB). Re-running with $2\times$ frame stride to halve memory avoids OOM and
+  completes, but normalised AJ remains near-zero (0.36\%) and absolute metric-AJ is 0\%.
+  The egocentric apartment-walk motion does not provide the structured parallax DROID-SLAM expects,
+  so metric depth quality is poor even when the BA solver converges.
 \end{itemize}
-TAPIP3D's published scores (full-eval split, $\sim$0.30 normalised) use the original
-source videos at full frame-rate, not the subsampled minival NPZs, so the published results remain
-valid. Our minival evaluation simply cannot reproduce the MegaSAM stage from NPZ alone.
+
+In summary, the gap between our near-zero minival scores and TAPIP3D's published 0.30 is an
+\emph{evaluation-condition mismatch}, not a failure of TAPIP3D itself.
+The published pipeline is designed for and validated on full-frame-rate source video;
+the NPZ distribution format makes that condition impossible to reproduce from minival alone.
 
 Figures~\ref{fig:6method-norm} and~\ref{fig:6method-abs} summarise the six-method comparison.
 
