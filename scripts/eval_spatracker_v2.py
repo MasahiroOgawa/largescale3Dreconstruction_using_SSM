@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""
+Run SpatialTrackerV2 inference on TAPVid-3D minival clips
+and save predictions in eval_metric3d.py --method external format.
+
+Must be run with SpaTrackerV2's own venv:
+  cd ~/proj/study/SpaTrackerV2
+  .venv/bin/python /home/mas/proj/study/largescale3Dreconstruction_using_SSM/scripts/eval_spatracker_v2.py \\
+    --subsets pstudio adt drivetrack \\
+    --out-dir /home/mas/data/tapvid3d_baseline_preds/spatrackerv2
+
+Output format per clip: <out-dir>/<subset>/<clip_name>.npz
+  tracks_XYZ  (F, N, 3)  float32  per-frame camera-space XYZ
+  visibility  (F, N)     float32  0/1 visibility
+"""
+
+import argparse
+import io
+import sys
+import types
+from pathlib import Path
+
+import cv2
+import numpy as np
+import torch
+import torch.nn.functional as Fn
+from PIL import Image
+from tqdm import tqdm
+
+# ── SpaTrackerV2 root (must run with its venv) ───────────────────────────────
+SPA_ROOT = Path(__file__).resolve().parent.parent.parent / "SpaTrackerV2"
+assert SPA_ROOT.exists(), f"SpaTrackerV2 not found at {SPA_ROOT}"
+sys.path.insert(0, str(SPA_ROOT))
+
+# Import canonical minival split from the main project (no external deps in that file)
+_PROJ_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_PROJ_ROOT / "src"))
+
+# utils3d 0.1.0 (PyPI) lacks the `torch` submodule used by SpaTrackerV2.
+# Stub it before importing the model.  depth_edge returns all-False (no
+# depth-discontinuity masking — slightly more noise near edges but otherwise
+# correct), and points_to_normals returns zero normals / all-valid mask.
+import utils3d as _u3d  # noqa: E402
+
+if not hasattr(_u3d, "torch"):
+    import torch as _torch
+
+    def _depth_edge(depth, rtol=0.03, mask=None):
+        return _torch.zeros(depth.shape, dtype=_torch.bool, device=depth.device)
+
+    def _pts_to_normals(points, mask=None):
+        n = _torch.zeros_like(points[..., :3])
+        m = _torch.ones(points.shape[:-1], dtype=_torch.bool, device=points.device)
+        return n, m
+
+    def _image_pixel_center(width, height, dtype=None, device=None):
+        xs = _torch.arange(width, dtype=dtype, device=device)
+        ys = _torch.arange(height, dtype=dtype, device=device)
+        grid_y, grid_x = _torch.meshgrid(ys, xs, indexing="ij")
+        return _torch.stack([grid_x, grid_y], dim=-1)
+
+    def _sliding_window_2d(x, window_size, stride=1, dim=(-2, -1)):
+        return x.unfold(
+            dim[0],
+            window_size if isinstance(window_size, int) else window_size[0],
+            stride,
+        ).unfold(
+            dim[1],
+            window_size if isinstance(window_size, int) else window_size[1],
+            stride,
+        )
+
+    def _image_uv(width, height, dtype=None, device=None):
+        u = _torch.linspace(0, 1, width, dtype=dtype, device=device)
+        v = _torch.linspace(0, 1, height, dtype=dtype, device=device)
+        grid_v, grid_u = _torch.meshgrid(v, u, indexing="ij")
+        return _torch.stack([grid_u, grid_v], dim=-1)
+
+    _u3d.torch = types.SimpleNamespace(
+        depth_edge=_depth_edge,
+        points_to_normals=_pts_to_normals,
+        image_pixel_center=_image_pixel_center,
+        sliding_window_2d=_sliding_window_2d,
+        image_uv=_image_uv,
+    )
+    del _depth_edge, _pts_to_normals, _image_pixel_center, _sliding_window_2d, _image_uv
+
+from models.SpaTrackV2.models.predictor import Predictor  # noqa: E402
+from mamba3_tracker.data.tapvid3d_splits import MINIVAL_FILES  # noqa: E402
+
+# ── data roots ───────────────────────────────────────────────────────────────
+TAPVID3D_ROOT = Path("/home/mas/data/tapvid3d")
+DA3_ROOT = Path("/home/mas/data/tapvid3d_da3")
+
+# ── TAPVid-3D minival clip lists — imported from canonical source above ───────
+
+
+def load_da3_depth(subset: str, clip_name: str, F: int) -> np.ndarray:
+    """Load and decode DA3 depth → float32 (F, H_da3, W_da3) in metres."""
+    p = DA3_ROOT / subset / clip_name
+    with np.load(p) as d:
+        q = d["depth_q"].astype(np.float32)[:F]
+        d_min = float(d["d_min"])
+        d_max = float(d["d_max"])
+    return d_min + q * ((d_max - d_min) / 65535.0)
+
+
+def decode_images(jpeg_bytes_arr) -> np.ndarray:
+    """Decode JPEG byte array → uint8 (F, H, W, 3)."""
+    frames = []
+    for b in jpeg_bytes_arr:
+        img = Image.open(io.BytesIO(bytes(b)))
+        frames.append(np.array(img.convert("RGB")))
+    return np.stack(frames)
+
+
+def build_intrinsics(fx_fy_cx_cy, T: int) -> np.ndarray:
+    """Build (T, 3, 3) intrinsics from [fx, fy, cx, cy]."""
+    fx, fy, cx, cy = fx_fy_cx_cy.tolist()
+    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
+    return np.tile(K[None], (T, 1, 1))
+
+
+def resize_video_if_needed(
+    video: np.ndarray, max_side: int = 960
+) -> tuple[np.ndarray, float, float]:
+    """
+    Resize (T, H, W, 3) video if max side > max_side.
+    Returns (resized_video, scale_h, scale_w).
+    """
+    T, H, W, C = video.shape
+    scale = min(max_side / max(H, W), 1.0)
+    if scale == 1.0:
+        return video, 1.0, 1.0
+    new_H, new_W = int(H * scale), int(W * scale)
+    # round to even
+    new_H = new_H - new_H % 2
+    new_W = new_W - new_W % 2
+    resized = np.stack([cv2.resize(video[t], (new_W, new_H)) for t in range(T)])
+    return resized, new_H / H, new_W / W
+
+
+def _run_forward(
+    model: Predictor, video_t, depth_np, K, extrs_np, queries_txy, F: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Single model.forward call for one query batch; returns (F,N,3) and (F,N) numpy arrays."""
+    with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+        result = model.forward(
+            video_t,
+            depth=depth_np,
+            intrs=K,
+            extrs=extrs_np,
+            queries=queries_txy,
+            fps=1,
+            full_point=False,
+            iters_track=4,
+            query_no_BA=True,
+            fixed_cam=(extrs_np is not None),
+            stage=1,
+            support_frame=F - 1,
+            replace_ratio=0.2,
+        )
+    # result = (c2w_traj, intrs_out, point_map, unc_metric,
+    #           track3d_pred (T,N,6), track2d_pred (T,N,3), vis_pred (T,N,1), conf_pred, video)
+    track3d = result[4]  # (T, N, 6)  first 3 = per-frame cam XYZ
+    vis = result[6]  # (T, N, 1)
+    xyz = track3d[:F, :, :3].float().cpu().numpy().astype(np.float32)
+    vis_np = vis[:F, :, 0].float().cpu().numpy().astype(np.float32)
+    return xyz, vis_np
+
+
+def infer_clip(
+    model: Predictor, data: dict, subset: str, max_queries: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Run SpaTrackerV2 on one TAPVid-3D clip.
+    Returns (tracks_XYZ (F,N,3), visibility (F,N)).
+
+    If max_queries > 0 and N > max_queries, queries are split into batches
+    to avoid OOM.  Each batch is independent (same video/depth/intrinsics).
+    """
+    jpeg_bytes = data["images_jpeg_bytes"]
+    queries_xyt = data["queries_xyt"].astype(np.float32)  # (N, 3) in (x,y,t)
+    fx_fy_cx_cy = data["fx_fy_cx_cy"].astype(np.float32)
+
+    # Decode images
+    video_hwc = decode_images(jpeg_bytes)  # (T, H, W, 3)
+    T_clip, H_orig, W_orig, _ = video_hwc.shape
+    F = T_clip  # alias used below for frame count
+
+    # Resize to 336px max: V2 internally processes at this resolution anyway,
+    # so pre-resizing here avoids building an unnecessary large intermediate tensor.
+    video_hwc, scale_h, scale_w = resize_video_if_needed(video_hwc, max_side=336)
+    _, H, W, _ = video_hwc.shape
+
+    # (T, C, H, W) float32 [0..255]
+    video_t = torch.from_numpy(video_hwc.transpose(0, 3, 1, 2)).float()
+
+    # Load depth
+    if subset == "adt" and "depth_preds" in data:
+        depth_np = data["depth_preds"].astype(np.float32)[:F]  # (F, H_d, W_d)
+    elif subset == "drivetrack" and "depth_preds" in data:
+        depth_np = data["depth_preds"].astype(np.float32)[:F]
+    else:
+        depth_np = load_da3_depth(subset, data["_clip_name"], F)  # (F, H_da3, W_da3)
+
+    # Resize depth to match video spatial dims if needed
+    if depth_np.shape[1] != H or depth_np.shape[2] != W:
+        depth_t = torch.from_numpy(depth_np).unsqueeze(1)  # (T,1,H_d,W_d)
+        depth_t = Fn.interpolate(
+            depth_t, size=(H, W), mode="bilinear", align_corners=False
+        )
+        depth_np = depth_t.squeeze(1).numpy()  # (T, H, W)
+
+    # Intrinsics (T, 3, 3) scaled to match the (possibly) resized video
+    K = build_intrinsics(fx_fy_cx_cy, F)
+    if scale_h != 1.0 or scale_w != 1.0:
+        K[:, 0, :] *= scale_w  # fx, cx
+        K[:, 1, :] *= scale_h  # fy, cy
+
+    # Extrinsics (drivetrack has GT w2c)
+    extrs_np = None
+    if subset == "drivetrack" and "extrinsics_w2c" in data:
+        w2c = data["extrinsics_w2c"].astype(np.float32)[:F]  # (F, 4, 4)
+        extrs_np = np.linalg.inv(w2c)  # c2w
+
+    # Queries: TAPVid-3D is (x, y, t) → V2 wants (t, x, y)
+    # Also scale pixel coords to match resized video
+    queries_txy = queries_xyt[:, [2, 0, 1]].astype(np.float32)  # (N, 3)
+    if scale_h != 1.0 or scale_w != 1.0:
+        queries_txy[:, 1] *= scale_w  # x
+        queries_txy[:, 2] *= scale_h  # y
+
+    N = len(queries_txy)
+    if max_queries > 0 and N > max_queries:
+        # Split queries into batches; concatenate results along the point axis.
+        # Batching is valid because each forward() call processes the same video/depth
+        # and only the tracked query set differs.
+        all_xyz, all_vis = [], []
+        for i in range(0, N, max_queries):
+            batch_q = queries_txy[i : i + max_queries]
+            xyz_b, vis_b = _run_forward(
+                model, video_t, depth_np, K, extrs_np, batch_q, F
+            )
+            torch.cuda.empty_cache()
+            all_xyz.append(xyz_b)
+            all_vis.append(vis_b)
+        tracks_XYZ = np.concatenate(all_xyz, axis=1)  # (F, N, 3)
+        visibility = np.concatenate(all_vis, axis=1)  # (F, N)
+    else:
+        tracks_XYZ, visibility = _run_forward(
+            model, video_t, depth_np, K, extrs_np, queries_txy, F
+        )
+
+    return tracks_XYZ, visibility
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--subsets", nargs="+", default=["pstudio", "adt", "drivetrack"])
+    ap.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("/home/mas/data/tapvid3d_baseline_preds/spatrackerv2"),
+    )
+    ap.add_argument("--device", default="cuda")
+    ap.add_argument(
+        "--max-queries",
+        type=int,
+        default=0,
+        help="If >0, split queries into batches of this size to save GPU memory",
+    )
+    args = ap.parse_args()
+
+    # ── load model ───────────────────────────────────────────────────────────
+    ckpt_path = str(SPA_ROOT / "checkpoints" / "SpaTrack3_offline.pth")
+    model_args = {
+        "Track_cfg": {
+            "base": {"corr_radius": 3, "stride": 4, "window_len": 60},
+            "base_ckpt": ckpt_path,
+            "mode": "online",
+            "overlap": 4,
+            # s_wind=60 matches the base CoTracker window_len, minimising
+            # peak memory (each segment fits in one base-tracker forward pass).
+            "s_wind": 60,
+            "stablizer": True,
+        },
+        "backbone_cfg": {"ckpt_dir": "doesnotexist"},  # moge_as_base=False → skipped
+        "chunk_size": 24,
+        "ckpt_fwd": True,
+        "ft_cfg": {"mode": "fix", "paras_name": []},
+        "max_len": 512,
+        "resolution": 336,
+        # 64 VO support points → minimal correlation volume; accuracy tradeoff is small
+        # for short clips where camera motion is modest.
+        "track_num": 64,
+    }
+    model = Predictor(args=model_args)
+    model.eval()
+    model.to(args.device)
+    print(f"[spatracker_v2] model loaded from {ckpt_path}")
+
+    # ── run inference ─────────────────────────────────────────────────────────
+    for subset in args.subsets:
+        if subset not in MINIVAL_FILES:
+            print(f"[warn] unknown subset {subset!r}, skip")
+            continue
+        out_sub = args.out_dir / subset
+        out_sub.mkdir(parents=True, exist_ok=True)
+
+        clips = MINIVAL_FILES[subset]
+        for clip_name in tqdm(clips, desc=subset):
+            out_path = out_sub / clip_name
+            if out_path.exists():
+                continue
+
+            npz_path = TAPVID3D_ROOT / subset / clip_name
+            # allow_pickle=True is safe here: these are our own local dataset files
+            # under /home/mas/data/tapvid3d/ (TAPVid-3D benchmark data, not user input).
+            data = dict(np.load(npz_path, allow_pickle=True))
+            data["_clip_name"] = clip_name
+
+            try:
+                tracks_XYZ, visibility = infer_clip(
+                    model, data, subset, max_queries=args.max_queries
+                )
+                np.savez_compressed(
+                    out_path, tracks_XYZ=tracks_XYZ, visibility=visibility
+                )
+            except torch.cuda.OutOfMemoryError as e:
+                torch.cuda.empty_cache()
+                print(f"[OOM]   {subset}/{clip_name}: {e}")
+            except Exception as e:
+                torch.cuda.empty_cache()
+                print(f"[error] {subset}/{clip_name}: {e}")
+
+    print(f"[spatracker_v2] done → {args.out_dir}")
+
+
+if __name__ == "__main__":
+    main()

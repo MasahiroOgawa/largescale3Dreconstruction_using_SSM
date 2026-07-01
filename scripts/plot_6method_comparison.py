@@ -35,6 +35,7 @@ SUBSET_LABELS = {"drivetrack": "Drivetrack", "pstudio": "Panoptic Studio", "adt"
 METHODS = [
     "BootsTAPIR\n+ZoeDepth",
     "Spatial\nTracker",
+    "SpatialTracker\nV2",
     "SEA-RAFT\n+DA3",
     "SEA-RAFT\n+MegaSAM",
     "TAPIP3D\n+DA3",
@@ -142,37 +143,43 @@ def build_data_tables() -> tuple[dict, dict]:
     bootstapir_norm = {"drivetrack": 0.051, "pstudio": 0.102, "adt": 0.086}
     bootstapir_abs = {}  # predictions not released; all N/A
 
-    # SpatialTracker: normalised published; absolute drivetrack scored via our pipeline
+    # SpatialTracker v1: normalised published; absolute drivetrack scored via our pipeline
     spatialtracker_norm = {"drivetrack": 0.058, "pstudio": 0.098, "adt": 0.092}
     spatialtracker_abs = {"drivetrack": 0.069}  # pstudio/adt predictions not released
+
+    # SpatialTrackerV2: all three subsets scored via our pipeline with query batching
+    spatrackerv2_norm = {"drivetrack": 0.014054, "pstudio": 0.023991, "adt": 0.026550}
+    spatrackerv2_abs = {"drivetrack": 0.008235, "pstudio": 0.152648, "adt": 0.156285}
 
     def _get(table: dict, subset: str, key: str) -> float:
         return table.get(subset, {}).get(key, NaN)
 
     # method index → {subset: value}
+    # Indices 0,1,2,5,6 use plain {subset: float} dicts.
+    # Indices 3,4,7,8 use summary.md {subset: {key: float}} dicts.
     norm_aj: dict[int, dict[str, float]] = {}
     abs_aj: dict[int, dict[str, float]] = {}
     for m_idx, (norm_src, abs_src) in enumerate(
         [
-            (bootstapir_norm, bootstapir_abs),
-            (spatialtracker_norm, spatialtracker_abs),
-            (searaft_da3, searaft_da3),
-            (searaft_msam, searaft_msam),
-            (tapip3d_da3_norm, tapip3d_da3_abs),
-            (tapip3d_msam_norm, tapip3d_msam_abs),
-            (v33, v33),
-            (v34, v34),
+            (bootstapir_norm, bootstapir_abs),  # 0 BootsTAPIR
+            (spatialtracker_norm, spatialtracker_abs),  # 1 SpatialTracker v1
+            (spatrackerv2_norm, spatrackerv2_abs),  # 2 SpatialTrackerV2
+            (searaft_da3, searaft_da3),  # 3 SEA-RAFT+DA3
+            (searaft_msam, searaft_msam),  # 4 SEA-RAFT+MegaSAM
+            (tapip3d_da3_norm, tapip3d_da3_abs),  # 5 TAPIP3D+DA3
+            (tapip3d_msam_norm, tapip3d_msam_abs),  # 6 TAPIP3D+MegaSAM
+            (v33, v33),  # 7 Ours(DA3)
+            (v34, v34),  # 8 Ours(MegaSAM)
         ]
     ):
         norm_aj[m_idx] = {}
         abs_aj[m_idx] = {}
         for s in SUBSETS:
-            # Methods with plain {subset: float} sources (not summary.md dicts):
-            # 0=BootsTAPIR, 1=SpatialTracker, 4=TAPIP3D+DA3, 5=TAPIP3D+MegaSAM
-            if m_idx in (0, 1, 4, 5):
+            # plain {subset: float} sources
+            if m_idx in (0, 1, 2, 5, 6):
                 norm_aj[m_idx][s] = float(norm_src.get(s, NaN))
                 abs_aj[m_idx][s] = float(abs_src.get(s, NaN))
-            else:  # SEA-RAFT / v33 / v34: sources are summary.md {subset: {key: float}} dicts
+            else:  # summary.md {subset: {key: float}} dicts
                 norm_aj[m_idx][s] = _get(norm_src, s, "3d_aj")
                 abs_aj[m_idx][s] = _get(abs_src, s, "metric_aj")
 
