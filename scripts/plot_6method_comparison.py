@@ -42,6 +42,7 @@ METHODS = [
     "TAPIP3D\n+MegaSAM",
     "Ours\n(DA3)",
     "Ours\n(MegaSAM)",
+    "Ours\n(DINOv3)",
 ]
 
 SUBSET_COLORS = {
@@ -101,6 +102,13 @@ def build_data_tables() -> tuple[dict, dict]:
     adt_v34_dirs = sorted(REPO.glob("result/metric3d_v34_megasam_s2_adt_*/summary.md"))
     if adt_v34_dirs:
         v34.update(_read_summary(adt_v34_dirs[-1]))
+    # ── v35 (DINOv3 image features + depth patch; drivetrack/pstudio/adt separate runs) ──
+    v35: dict = {}
+    v35.update(_read_summary(REPO / "result/metric3d_v35_20260702-0846/summary.md"))
+    v35.update(_read_summary(REPO / "result/metric3d_v35_pstudio_adt_20260702-0910/summary.md"))
+    v35_adt_dirs = sorted(REPO.glob("result/metric3d_v35_adt_*/summary.md"))
+    if v35_adt_dirs:
+        v35.update(_read_summary(v35_adt_dirs[-1]))
 
     # ── TAPIP3D + DA3 (official TAPIP3D eval JSONs for normalised; absolute eval for metric-AJ) ──
     tapip3d_da3_norm = {}
@@ -147,16 +155,16 @@ def build_data_tables() -> tuple[dict, dict]:
     spatialtracker_norm = {"drivetrack": 0.058, "pstudio": 0.098, "adt": 0.092}
     spatialtracker_abs = {"drivetrack": 0.069}  # pstudio/adt predictions not released
 
-    # SpatialTrackerV2: all three subsets scored via our pipeline with query batching
-    spatrackerv2_norm = {"drivetrack": 0.014054, "pstudio": 0.023991, "adt": 0.026550}
-    spatrackerv2_abs = {"drivetrack": 0.008235, "pstudio": 0.152648, "adt": 0.156285}
+    # SpatialTrackerV2: bidir+fixed_cam+replace_ratio=1.0 (paper protocol), all 50 clips
+    spatrackerv2_norm = {"drivetrack": 0.0167, "pstudio": 0.0118, "adt": 0.0264}
+    spatrackerv2_abs = {"drivetrack": 0.0084, "pstudio": 0.1921, "adt": 0.1836}
 
     def _get(table: dict, subset: str, key: str) -> float:
         return table.get(subset, {}).get(key, NaN)
 
     # method index → {subset: value}
     # Indices 0,1,2,5,6 use plain {subset: float} dicts.
-    # Indices 3,4,7,8 use summary.md {subset: {key: float}} dicts.
+    # Indices 3,4,7,8,9 use summary.md {subset: {key: float}} dicts.
     norm_aj: dict[int, dict[str, float]] = {}
     abs_aj: dict[int, dict[str, float]] = {}
     for m_idx, (norm_src, abs_src) in enumerate(
@@ -170,6 +178,7 @@ def build_data_tables() -> tuple[dict, dict]:
             (tapip3d_msam_norm, tapip3d_msam_abs),  # 6 TAPIP3D+MegaSAM
             (v33, v33),  # 7 Ours(DA3)
             (v34, v34),  # 8 Ours(MegaSAM)
+            (v35, v35),  # 9 Ours(DINOv3)
         ]
     ):
         norm_aj[m_idx] = {}
