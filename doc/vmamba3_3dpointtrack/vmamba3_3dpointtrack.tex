@@ -492,6 +492,90 @@ v33 (depth refiner)       & 12.5 & 0.40\,M \\
 \end{table}
 
 % =====================================================================
+\appendix
+
+\section{Jacobian Conditioning and Estimation Accuracy}
+\label{app:conditioning}
+
+This appendix derives the four numerical-analysis facts referenced in the main text.
+
+% ------------------------------------------------------------------
+\subsection*{1.\ Residual sensitivity $\varepsilon$ implies $1/\varepsilon$ noise amplification}
+
+Consider the linearised system
+\begin{equation}
+  J\,\Delta x = b,
+\end{equation}
+where $b$ carries observation noise $\delta b$.  The estimation error is
+\begin{equation}
+  \delta(\Delta x) = J^{+}\,\delta b,
+\end{equation}
+with $J^{+}$ the pseudoinverse of $J$.  The spectral-norm bound gives
+\begin{equation}
+  \|\delta(\Delta x)\| \;\le\; \|J^{+}\|\;\|\delta b\|
+  \;=\; \frac{1}{\sigma_{\min}(J)}\;\|\delta b\|.
+\end{equation}
+``Relative sensitivity to residuals equal to $\varepsilon$'' means $\sigma_{\min}(J)=\varepsilon$
+(after appropriate normalisation).
+Hence the noise in the estimate is amplified by up to $1/\varepsilon$ relative to the input noise.
+When $J$ is nearly singular ($\varepsilon \ll 1$), even small observation noise produces large
+estimation errors.
+
+% ------------------------------------------------------------------
+\subsection*{2.\ Singular-value ratio $=$ condition number}
+
+The spectral norm of a matrix equals its largest singular value,
+$\|J\|=\sigma_{\max}$, and the spectral norm of the pseudoinverse equals the
+reciprocal of the smallest, $\|J^{+}\|=1/\sigma_{\min}$.
+Substituting into the definition $\kappa(J)=\|J\|\,\|J^{+}\|$ yields
+\begin{equation}
+  \kappa(J) = \frac{\sigma_{\max}(J)}{\sigma_{\min}(J)}.
+\end{equation}
+This ratio is the worst-case amplification of relative input error to relative output error:
+$\sigma_{\max}$ measures how far $J$ stretches its most-amplified direction,
+and $1/\sigma_{\min}$ measures how far $J^{+}$ stretches its most-amplified direction.
+
+% ------------------------------------------------------------------
+\subsection*{3.\ Why $\kappa(J)$ is the conceptual measure but $\kappa(J^{\top}J)$ is the solver's measure}
+
+Solving the least-squares problem directly via QR or SVD encounters a worst-case amplification
+of $\kappa(J)$.
+
+Solving via the \emph{normal equations}
+\begin{equation}
+  J^{\top}J\;\hat{x} = J^{\top}b
+\end{equation}
+instead forms a linear system whose condition number is $\kappa(J^{\top}J)=\kappa(J)^{2}$
+(proved below).  Concretely:
+\begin{itemize}
+  \item Conceptual sensitivity of the estimation problem: $\kappa(J)$.
+  \item Condition number actually encountered by a normal-equation solver: $\kappa(J^{\top}J)=\kappa(J)^{2}$.
+\end{itemize}
+Even when $\kappa(J)=100$ (moderately ill-conditioned), the normal equations have condition number
+$10^{4}$.  This is why the main text uses $\kappa(J)$ as the problem-level indicator while
+recommending QR/SVD over normal equations in practice.
+
+% ------------------------------------------------------------------
+\subsection*{4.\ Proof that $\kappa(J^{\top}J) = \kappa(J)^{2}$}
+
+Let $J = U\Sigma V^{\top}$ be the SVD.  Then
+\begin{equation}
+  J^{\top}J
+    = V\Sigma^{\top}U^{\top}\,U\Sigma V^{\top}
+    = V\Sigma^{2}V^{\top}.
+\end{equation}
+Hence the eigenvalues of $J^{\top}J$ are exactly $\{\sigma_{i}^{2}\}$, the squared singular
+values of $J$.  Therefore
+\begin{equation}
+  \kappa(J^{\top}J)
+    = \frac{\sigma_{\max}^{2}}{\sigma_{\min}^{2}}
+    = \left(\frac{\sigma_{\max}}{\sigma_{\min}}\right)^{\!2}
+    = \kappa(J)^{2}.
+\end{equation}
+This squaring of the condition number is the fundamental reason why normal-equation solvers
+are numerically inferior to QR or SVD for ill-conditioned problems.\hfill$\square$
+
+% =====================================================================
 \begin{thebibliography}{9}
 \bibitem{tapvid3d} Koppula et al., \textit{TAPVid-3D: A Benchmark for Tracking Any Point in 3D}, NeurIPS 2024.
 \bibitem{searaft} Wang et al., \textit{SEA-RAFT: Simple, Efficient, Accurate RAFT for Optical Flow}, ECCV 2024.
