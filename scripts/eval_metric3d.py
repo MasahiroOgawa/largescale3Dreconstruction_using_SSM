@@ -73,6 +73,7 @@ def _infer(
     da3_depth_root,
     max_frames,
     device,
+    bidirectional=False,
 ):
     """Return (pred_tracks (N,F,3) camera-frame XYZ, pred_vis (N,F))."""
     F_ = (
@@ -101,6 +102,7 @@ def _infer(
         image_size,
         fb_alpha,
         fb_beta,
+        bidirectional=bidirectional,
     )
     depth_t = _load_depth(da3_depth_root, clip.subset, clip.clip_id, F_).to(device)
     K = clip.K.clone()
@@ -192,6 +194,12 @@ def main() -> int:
     ap.add_argument("--scale", type=int, default=None)
     ap.add_argument("--fb-alpha", type=float, default=0.05)
     ap.add_argument("--fb-beta", type=float, default=1.0)
+    ap.add_argument(
+        "--bidirectional",
+        action="store_true",
+        default=False,
+        help="Run SEA-RAFT on reversed video for backward tracking (offline only; doubles flow compute)",
+    )
     args = ap.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -296,6 +304,7 @@ def main() -> int:
                         args.da3_depth_root,
                         args.max_frames,
                         device,
+                        bidirectional=args.bidirectional,
                     )
                 # Align frame/point counts (released preds may truncate frames).
                 Fg = int(clip.tracks_XYZ.shape[0])

@@ -43,8 +43,16 @@ def track_clip(
     image_size: int,
     fb_alpha: float = 0.05,
     fb_beta: float = 1.0,
+    bidirectional: bool = False,
 ) -> tuple[Tensor, Tensor]:
-    """Return (uv (F, N, 2), vis (F, N) float in {0,1}) on CPU."""
+    """Return (uv (F, N, 2), vis (F, N) float in {0,1}) on CPU.
+
+    bidirectional=True runs SEA-RAFT on the reversed video to obtain backward
+    flows.  For backward tracking (t < t_query) the model then sees frames in
+    its natural forward order, which can give more accurate flow than asking it
+    to estimate backward flow directly.  Costs one extra full flow pass.
+    Only useful for offline evaluation; real-time inference should leave this False.
+    """
     device = flow_model.device
     F_ = int(images.shape[0])
     N = int(queries_xy.shape[0])
@@ -59,11 +67,25 @@ def track_clip(
     if F_ == 1:
         return uv.cpu(), vis.float().cpu()
 
-    # Precompute consecutive forward/backward flow once per clip.
+    # Precompute consecutive forward flow and (for cycle consistency) backward flow.
     fwd = [flow_model.flow(images[t : t + 1], images[t + 1 : t + 2])[0] for t in range(F_ - 1)]
     bwd = [flow_model.flow(images[t + 1 : t + 2], images[t : t + 1])[0] for t in range(F_ - 1)]
     fwd = [f.unsqueeze(0) for f in fwd]   # each (1, 2, S, S)
     bwd = [f.unsqueeze(0) for f in bwd]
+
+    # Bidirectional mode: run SEA-RAFT on reversed video so backward tracking
+    # uses the model in its natural forward direction.
+    # rev_fwd[t] = flow(images[F-1-t] -> images[F-2-t]), i.e. original frame
+    # F-1-t displaced toward F-2-t.  To go from original frame k to k-1 use
+    # rev_fwd[F-1-k].
+    if bidirectional:
+        images_rev = images.flip(0)
+        rev_fwd = [
+            flow_model.flow(images_rev[t : t + 1], images_rev[t + 1 : t + 2])[0].unsqueeze(0)
+            for t in range(F_ - 1)
+        ]
+    else:
+        rev_fwd = None
 
     # Forward sweep: fill frames after each query's anchor.
     for t in range(F_ - 1):
@@ -72,7 +94,7 @@ def track_clip(
             continue
         d = _sample(fwd[t], uv[t], image_size)            # t -> t+1
         cand = uv[t] + d
-        b = _sample(bwd[t], cand, image_size)             # t+1 -> t
+        b = _sample(bwd[t], cand, image_size)             # t+1 -> t (cycle check)
         ok = _consistent(uv[t], d, b, fb_alpha, fb_beta)
         uv[t + 1, m] = cand[m]
         vis[t + 1, m] = vis[t, m] & ok[m]
@@ -82,9 +104,11 @@ def track_clip(
         m = anchor_t >= t
         if not m.any():
             continue
-        d = _sample(bwd[t - 1], uv[t], image_size)        # t -> t-1
+        # Use reversed-video forward flow when available; fall back to direct bwd.
+        back_field = rev_fwd[F_ - 1 - t] if rev_fwd is not None else bwd[t - 1]
+        d = _sample(back_field, uv[t], image_size)        # t -> t-1
         cand = uv[t] + d
-        f = _sample(fwd[t - 1], cand, image_size)         # t-1 -> t
+        f = _sample(fwd[t - 1], cand, image_size)         # t-1 -> t (cycle check)
         ok = _consistent(uv[t], d, f, fb_alpha, fb_beta)
         uv[t - 1, m] = cand[m]
         vis[t - 1, m] = vis[t, m] & ok[m]
@@ -101,10 +125,12 @@ def track_clip_with_flow(
     image_size: int,
     fb_alpha: float = 0.05,
     fb_beta: float = 1.0,
+    bidirectional: bool = False,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Return (uv (F,N,2), vis (F,N), flow_at_uv (F,N,2)) on CPU.
 
     flow_at_uv[t] = forward flow sampled at uv[t]; zeros at t = F-1.
+    bidirectional: see track_clip.
     """
     device = flow_model.device
     F_ = int(images.shape[0])
@@ -126,6 +152,15 @@ def track_clip_with_flow(
     fwd = [f.unsqueeze(0) for f in fwd]
     bwd = [f.unsqueeze(0) for f in bwd]
 
+    if bidirectional:
+        images_rev = images.flip(0)
+        rev_fwd = [
+            flow_model.flow(images_rev[t : t + 1], images_rev[t + 1 : t + 2])[0].unsqueeze(0)
+            for t in range(F_ - 1)
+        ]
+    else:
+        rev_fwd = None
+
     for t in range(F_ - 1):
         m = anchor_t <= t
         if not m.any():
@@ -141,7 +176,8 @@ def track_clip_with_flow(
         m = anchor_t >= t
         if not m.any():
             continue
-        d = _sample(bwd[t - 1], uv[t], image_size)
+        back_field = rev_fwd[F_ - 1 - t] if rev_fwd is not None else bwd[t - 1]
+        d = _sample(back_field, uv[t], image_size)
         cand = uv[t] + d
         f = _sample(fwd[t - 1], cand, image_size)
         ok = _consistent(uv[t], d, f, fb_alpha, fb_beta)

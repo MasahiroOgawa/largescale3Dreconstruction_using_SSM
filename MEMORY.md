@@ -21,3 +21,4 @@
 - [v33 depth-refined tracker](memory/project_v33_depth_refined_tracker.md) — depth-only Mamba-3 refinement (2D frozen) ALSO hurts (3.2% vs 5.2%); val L1 drops but AJ falls — loss/metric misalignment + overfit
 - [Absolute-metric eval](memory/project_metric3d_evaluation.md) — verdict reverses in real metres: v33 BEATS SEA-RAFT+DA3 (metric-AJ 0.180 vs 0.147, err 2.67 vs 4.29 m); leaderboard median scaling hid it. Paper gate: needs metric-capable baseline run by us
 - [TAPIP3D comparison pipeline](memory/project_tapip3d_comparison.md) — in-progress: DA3 depth running for adt (PID 2560696); then HDF5 packaging + TAPIP3D eval on same 150 minival clips
+- [SpatialTrackerV2 bidir fix](memory/project_spatrackerv2_bidir.md) — found root cause of 2.7% vs 24.7% AJ gap (missing bidir+fixed_cam); full re-inference running until 2026-07-02 ~05:45

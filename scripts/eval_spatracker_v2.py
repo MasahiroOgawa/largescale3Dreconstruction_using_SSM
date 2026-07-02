@@ -143,7 +143,12 @@ def resize_video_if_needed(
 def _run_forward(
     model: Predictor, video_t, depth_np, K, extrs_np, queries_txy, F: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Single model.forward call for one query batch; returns (F,N,3) and (F,N) numpy arrays."""
+    """Single model.forward call for one query batch; returns (F,N,3) and (F,N) numpy arrays.
+
+    Uses fixed_cam=True (paper protocol): no VO estimation, each frame's 3D position
+    is independently computed from 2D tracked position + per-frame depth.
+    When extrs_np is provided (GT camera poses), those are passed to the model.
+    """
     with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
         result = model.forward(
             video_t,
@@ -155,10 +160,10 @@ def _run_forward(
             full_point=False,
             iters_track=4,
             query_no_BA=True,
-            fixed_cam=(extrs_np is not None),
+            fixed_cam=True,  # paper protocol: no VO, per-frame depth unproject
             stage=1,
             support_frame=F - 1,
-            replace_ratio=0.2,
+            replace_ratio=1.0,  # paper protocol
         )
     # result = (c2w_traj, intrs_out, point_map, unc_metric,
     #           track3d_pred (T,N,6), track2d_pred (T,N,3), vis_pred (T,N,1), conf_pred, video)
@@ -169,15 +174,36 @@ def _run_forward(
     return xyz, vis_np
 
 
+def _run_batched(
+    model: Predictor, video_t, depth_np, K, extrs_np, queries_txy, F: int, max_queries: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run model on all queries, batching to avoid OOM if max_queries > 0."""
+    N = len(queries_txy)
+    if max_queries > 0 and N > max_queries:
+        all_xyz, all_vis = [], []
+        for i in range(0, N, max_queries):
+            xyz_b, vis_b = _run_forward(
+                model, video_t, depth_np, K, extrs_np, queries_txy[i:i + max_queries], F
+            )
+            torch.cuda.empty_cache()
+            all_xyz.append(xyz_b)
+            all_vis.append(vis_b)
+        return np.concatenate(all_xyz, axis=1), np.concatenate(all_vis, axis=1)
+    return _run_forward(model, video_t, depth_np, K, extrs_np, queries_txy, F)
+
+
 def infer_clip(
     model: Predictor, data: dict, subset: str, max_queries: int = 0
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Run SpaTrackerV2 on one TAPVid-3D clip.
+    Run SpaTrackerV2 on one TAPVid-3D clip using bidirectional tracking.
     Returns (tracks_XYZ (F,N,3), visibility (F,N)).
 
-    If max_queries > 0 and N > max_queries, queries are split into batches
-    to avoid OOM.  Each batch is independent (same video/depth/intrinsics).
+    Uses the paper's evaluation protocol:
+      1. Forward pass: track from query frame forward (t >= t_query)
+      2. Backward pass on time-reversed video: track from query frame backward (t < t_query)
+      3. Combine: use forward predictions for t >= t_query, backward for t < t_query
+    This ensures all visible frames (not just post-query) get valid predictions.
     """
     jpeg_bytes = data["images_jpeg_bytes"]
     queries_xyt = data["queries_xyt"].astype(np.float32)  # (N, 3) in (x,y,t)
@@ -186,33 +212,31 @@ def infer_clip(
     # Decode images
     video_hwc = decode_images(jpeg_bytes)  # (T, H, W, 3)
     T_clip, H_orig, W_orig, _ = video_hwc.shape
-    F = T_clip  # alias used below for frame count
+    F = T_clip
 
-    # Resize to 336px max: V2 internally processes at this resolution anyway,
-    # so pre-resizing here avoids building an unnecessary large intermediate tensor.
+    # Resize to 336px max
     video_hwc, scale_h, scale_w = resize_video_if_needed(video_hwc, max_side=336)
     _, H, W, _ = video_hwc.shape
 
-    # (T, C, H, W) float32 [0..255]
     video_t = torch.from_numpy(video_hwc.transpose(0, 3, 1, 2)).float()
 
     # Load depth
     if subset == "adt" and "depth_preds" in data:
-        depth_np = data["depth_preds"].astype(np.float32)[:F]  # (F, H_d, W_d)
+        depth_np = data["depth_preds"].astype(np.float32)[:F]
     elif subset == "drivetrack" and "depth_preds" in data:
         depth_np = data["depth_preds"].astype(np.float32)[:F]
     else:
-        depth_np = load_da3_depth(subset, data["_clip_name"], F)  # (F, H_da3, W_da3)
+        depth_np = load_da3_depth(subset, data["_clip_name"], F)
 
     # Resize depth to match video spatial dims if needed
     if depth_np.shape[1] != H or depth_np.shape[2] != W:
-        depth_t = torch.from_numpy(depth_np).unsqueeze(1)  # (T,1,H_d,W_d)
+        depth_t = torch.from_numpy(depth_np).unsqueeze(1)
         depth_t = Fn.interpolate(
             depth_t, size=(H, W), mode="bilinear", align_corners=False
         )
-        depth_np = depth_t.squeeze(1).numpy()  # (T, H, W)
+        depth_np = depth_t.squeeze(1).numpy()
 
-    # Intrinsics (T, 3, 3) scaled to match the (possibly) resized video
+    # Intrinsics (T, 3, 3) scaled to match resized video
     K = build_intrinsics(fx_fy_cx_cy, F)
     if scale_h != 1.0 or scale_w != 1.0:
         K[:, 0, :] *= scale_w  # fx, cx
@@ -221,36 +245,42 @@ def infer_clip(
     # Extrinsics (drivetrack has GT w2c)
     extrs_np = None
     if subset == "drivetrack" and "extrinsics_w2c" in data:
-        w2c = data["extrinsics_w2c"].astype(np.float32)[:F]  # (F, 4, 4)
+        w2c = data["extrinsics_w2c"].astype(np.float32)[:F]
         extrs_np = np.linalg.inv(w2c)  # c2w
 
     # Queries: TAPVid-3D is (x, y, t) → V2 wants (t, x, y)
-    # Also scale pixel coords to match resized video
     queries_txy = queries_xyt[:, [2, 0, 1]].astype(np.float32)  # (N, 3)
     if scale_h != 1.0 or scale_w != 1.0:
         queries_txy[:, 1] *= scale_w  # x
         queries_txy[:, 2] *= scale_h  # y
 
-    N = len(queries_txy)
-    if max_queries > 0 and N > max_queries:
-        # Split queries into batches; concatenate results along the point axis.
-        # Batching is valid because each forward() call processes the same video/depth
-        # and only the tracked query set differs.
-        all_xyz, all_vis = [], []
-        for i in range(0, N, max_queries):
-            batch_q = queries_txy[i : i + max_queries]
-            xyz_b, vis_b = _run_forward(
-                model, video_t, depth_np, K, extrs_np, batch_q, F
-            )
-            torch.cuda.empty_cache()
-            all_xyz.append(xyz_b)
-            all_vis.append(vis_b)
-        tracks_XYZ = np.concatenate(all_xyz, axis=1)  # (F, N, 3)
-        visibility = np.concatenate(all_vis, axis=1)  # (F, N)
-    else:
-        tracks_XYZ, visibility = _run_forward(
-            model, video_t, depth_np, K, extrs_np, queries_txy, F
-        )
+    # ── Forward pass (t >= t_query) ──────────────────────────────────────────
+    fwd_xyz, fwd_vis = _run_batched(model, video_t, depth_np, K, extrs_np, queries_txy, F, max_queries)
+
+    # ── Backward pass on time-reversed video (t < t_query) ───────────────────
+    # Reverse video, depth, and extrinsics in time; adjust query times accordingly.
+    video_rev = video_t.flip(0)
+    depth_rev = depth_np[::-1].copy()
+    K_rev = K[::-1].copy()
+    extrs_rev = None if extrs_np is None else extrs_np[::-1].copy()
+
+    inv_queries_txy = queries_txy.copy()
+    inv_queries_txy[:, 0] = (F - 1) - queries_txy[:, 0]  # flip time index
+
+    bwd_xyz_rev, bwd_vis_rev = _run_batched(
+        model, video_rev, depth_rev, K_rev, extrs_rev, inv_queries_txy, F, max_queries
+    )
+    # Reverse time axis back to original order
+    bwd_xyz = bwd_xyz_rev[::-1].copy()  # (F, N, 3)
+    bwd_vis = bwd_vis_rev[::-1].copy()  # (F, N)
+
+    # ── Combine: forward for t >= t_query, backward for t < t_query ──────────
+    t_queries = queries_xyt[:, 2].astype(int)  # (N,) original (unscaled) query times
+    t_arr = np.arange(F)[:, None]  # (F, 1)
+    fwd_mask = t_arr >= t_queries[None, :]  # (F, N) True → use forward
+
+    tracks_XYZ = np.where(fwd_mask[:, :, None], fwd_xyz, bwd_xyz)
+    visibility = np.where(fwd_mask, fwd_vis, bwd_vis)
 
     return tracks_XYZ, visibility
 
