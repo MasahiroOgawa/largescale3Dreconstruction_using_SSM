@@ -109,6 +109,7 @@ def reproject_2d3d(uvd: torch.Tensor, K: np.ndarray) -> np.ndarray:
     y = (v - cy) / fy * d
     return torch.stack([x, y, d], dim=-1).cpu().numpy().astype(np.float32)
 
+
 # ── data roots ───────────────────────────────────────────────────────────────
 TAPVID3D_ROOT = Path("/home/mas/data/tapvid3d")
 DA3_ROOT = Path("/home/mas/data/tapvid3d_da3")
@@ -401,6 +402,7 @@ def main():
                 np.savez_compressed(
                     out_path, tracks_XYZ=tracks_XYZ, visibility=visibility
                 )
+                torch.cuda.empty_cache()
             except torch.cuda.OutOfMemoryError as e:
                 torch.cuda.empty_cache()
                 print(f"[OOM]   {subset}/{clip_name}: {e}")

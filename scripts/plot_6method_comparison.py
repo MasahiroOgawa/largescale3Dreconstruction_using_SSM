@@ -105,7 +105,9 @@ def build_data_tables() -> tuple[dict, dict]:
     # ── v35 (DINOv3 image features + depth patch; drivetrack/pstudio/adt separate runs) ──
     v35: dict = {}
     v35.update(_read_summary(REPO / "result/metric3d_v35_20260702-0846/summary.md"))
-    v35.update(_read_summary(REPO / "result/metric3d_v35_pstudio_adt_20260702-0910/summary.md"))
+    v35.update(
+        _read_summary(REPO / "result/metric3d_v35_pstudio_adt_20260702-0910/summary.md")
+    )
     v35_adt_dirs = sorted(REPO.glob("result/metric3d_v35_adt_*/summary.md"))
     if v35_adt_dirs:
         v35.update(_read_summary(v35_adt_dirs[-1]))
@@ -156,8 +158,8 @@ def build_data_tables() -> tuple[dict, dict]:
     spatialtracker_abs = {"drivetrack": 0.069}  # pstudio/adt predictions not released
 
     # SpatialTrackerV2: bidir+fixed_cam+replace_ratio=1.0 (paper protocol), all 50 clips
-    spatrackerv2_norm = {"drivetrack": 0.0167, "pstudio": 0.0118, "adt": 0.0264}
-    spatrackerv2_abs = {"drivetrack": 0.0084, "pstudio": 0.1921, "adt": 0.1836}
+    spatrackerv2_norm = {"drivetrack": 0.0168, "pstudio": 0.0119, "adt": 0.0246}
+    spatrackerv2_abs = {"drivetrack": 0.0084, "pstudio": 0.1921, "adt": 0.1787}
 
     def _get(table: dict, subset: str, key: str) -> float:
         return table.get(subset, {}).get(key, NaN)
