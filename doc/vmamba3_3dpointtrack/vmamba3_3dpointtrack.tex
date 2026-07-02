@@ -265,12 +265,14 @@ Method & drivetrack & pstudio & adt & mean \\
 BootsTAPIR + ZoeDepth (2024)\,$^{*}$ & 0.051 & 0.102 & 0.086 & 0.080 \\
 SpatialTracker (2024)\,$^{*}$        & 0.058 & 0.098 & 0.092 & 0.083 \\
 \midrule
-SEA-RAFT + DA3 (baseline)      & \textbf{0.108} & \textbf{0.111} & 0.132 & \textbf{0.117} \\
-SEA-RAFT + MegaSAM             & 0.103 & 0.135 & 0.163 & 0.134 \\
+SEA-RAFT + DA3 (baseline)      & \textbf{0.108} & 0.111 & 0.132 & 0.117 \\
+SEA-RAFT + MegaSAM             & 0.103 & \textbf{0.135} & \textbf{0.163} & \textbf{0.134} \\
 TAPIP3D + DA3\,$^{\dagger}$    & 0.065 & 0.023 & 0.004 & 0.030 \\
 TAPIP3D + MegaSAM\,$^{\ddagger}$ & 0.000 & 0.003 & 0.004 & 0.002 \\
-Ours (v33, DA3 depth)          & 0.057 & 0.041 & \textbf{0.123} & 0.074 \\
+Ours (v33, DA3 depth)          & 0.057 & 0.041 & 0.123 & 0.074 \\
 Ours (v34, MegaSAM depth)      & 0.059 & 0.048 & 0.119 & 0.075 \\
+Ours (v35, DINOv3)             & 0.093 & 0.054 & 0.141 & 0.096 \\
+Ours (v36, DINOv3\,+\,bidir)  & 0.093 & 0.057 & 0.141 & 0.097 \\
 \bottomrule
 \end{tabular}
 \\[2pt]
@@ -282,14 +284,15 @@ $^{\ddagger}$ Near-zero on all three subsets; DROID-SLAM fails on subsampled NPZ
 \subsection{Absolute-metric results: the reversal}
 \label{sec:abs}
 Under the absolute-metric protocol the ranking \emph{reverses} (Table~\ref{tab:abs},
-Fig.~\ref{fig:reversal}). v33 outperforms all methods on absolute metric-AJ.
-Against the DA3 baseline: metric-AJ $+22\%$ ($0.147\!\to\!0.180$),
-mean error $-38\%$ ($4.29\!\to\!2.67$\,m). Against TAPIP3D$+$DA3: metric-AJ
-$+80\%$ ($0.100\!\to\!0.180$). The gain is concentrated where DA3's scale is most wrong ---
-far-field \emph{drivetrack}, metric-AJ $0.005\!\to\!0.082$ ($16\times$) ---
-while near-field \emph{adt} (DA3 already accurate) is a near-tie across all methods.
-The leaderboard's median scaling hides all of this: v33's normalised 3D-AJ is
-\emph{lower} than the baseline (Table~\ref{tab:median}).
+Fig.~\ref{fig:reversal}). Our best model v35 (DINOv3 image conditioning) outperforms
+all methods on absolute metric-AJ.
+Against the DA3 baseline: metric-AJ $+59\%$ ($0.147\!\to\!0.234$),
+mean error $-55\%$ ($4.29\!\to\!1.91$\,m). Against TAPIP3D$+$DA3: metric-AJ
+$+134\%$ ($0.100\!\to\!0.234$). The gain is most concentrated where DA3's scale is most
+wrong --- far-field \emph{drivetrack}, metric-AJ $0.005\!\to\!0.130$ ($26\times$) ---
+while near-field \emph{adt} sees moderate improvement.
+The leaderboard's median scaling hides all of this: v35's normalised 3D-AJ is
+\emph{lower} than SEA-RAFT$+$MegaSAM (Table~\ref{tab:median}).
 
 \begin{table}[h]
 \centering
@@ -308,8 +311,10 @@ SEA-RAFT + DA3 (baseline)  & 0.005 & 0.165 & 0.273 & 0.147 \\
 SEA-RAFT + MegaSAM         & 0.000 & 0.082 & 0.209 & 0.097 \\
 TAPIP3D + DA3              & 0.006 & 0.131 & 0.164 & 0.100 \\
 TAPIP3D + MegaSAM          & 0.000 & 0.000 & 0.000 & 0.000 \\
-Ours (v33, DA3 depth)      & \textbf{0.082} & \textbf{0.186} & \textbf{0.272} & \textbf{0.180} \\
+Ours (v33, DA3 depth)      & 0.082 & 0.186 & 0.272 & 0.180 \\
 Ours (v34, MegaSAM depth)  & 0.001 & 0.092 & 0.208 & 0.100 \\
+Ours (v35, DINOv3)         & \textbf{0.130} & \textbf{0.274} & \textbf{0.298} & \textbf{0.234} \\
+Ours (v36, DINOv3\,+\,bidir) & \textbf{0.130} & 0.249 & \textbf{0.298} & 0.226 \\
 \bottomrule
 \end{tabular}
 \\[2pt]
@@ -333,7 +338,7 @@ available; pstudio and adt predictions have not been released by the authors.
 \centering
 \includegraphics[width=\textwidth]{figs/fig_metric_reversal.png}
 \caption{Median scaling hides metric-depth quality. Left: the scale-invariant leaderboard 3D-AJ
-favours the baseline. Right: under the absolute metric, v33 wins --- most on far-field drivetrack.}
+favours SEA-RAFT$+$MegaSAM. Right: under the absolute metric, v35 wins --- most on far-field drivetrack.}
 \label{fig:reversal}
 \end{figure}
 
@@ -415,16 +420,17 @@ Figures~\ref{fig:6method-norm} and~\ref{fig:6method-abs} summarise the six-metho
 \begin{figure}[h]
 \centering
 \includegraphics[width=\textwidth]{../../result/figures/fig1_normalized_aj}
-\caption{Six-method comparison on TAPVid-3D minival, normalised median-AJ (leaderboard metric,
-scale-invariant). Higher is better. ``N/A'' bars indicate DROID-SLAM failures or pending runs.}
+\caption{Method comparison on TAPVid-3D minival, normalised median-AJ (leaderboard metric,
+scale-invariant). Higher is better. ``N/A'' bars indicate DROID-SLAM failures or unavailable predictions.
+``bidir'' = bidirectional SEA-RAFT flow (reversed-video backward pass).}
 \label{fig:6method-norm}
 \end{figure}
 
 \begin{figure}[h]
 \centering
 \includegraphics[width=\textwidth]{../../result/figures/fig2_absolute_aj}
-\caption{Same six methods, absolute metric-AJ (fixed-metre thresholds 1\,cm--2.56\,m; higher
-better). v33 leads all methods despite ranking below the baseline on the leaderboard metric.}
+\caption{Same methods, absolute metric-AJ (fixed-metre thresholds 1\,cm--2.56\,m; higher
+better). v35 leads all methods despite ranking below SEA-RAFT$+$MegaSAM on the leaderboard metric.}
 \label{fig:6method-abs}
 \end{figure}
 
