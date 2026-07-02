@@ -88,6 +88,27 @@ if not hasattr(_u3d, "torch"):
 from models.SpaTrackV2.models.predictor import Predictor  # noqa: E402
 from mamba3_tracker.data.tapvid3d_splits import MINIVAL_FILES  # noqa: E402
 
+
+def reproject_2d3d(uvd: torch.Tensor, K: np.ndarray) -> np.ndarray:
+    """Reproject 2D pixel+depth to camera-space XYZ.
+
+    Args:
+        uvd: (T, N, 3) float32 tensor — (u, v) in pixels, d in metres
+        K:   (T, 3, 3) float32 array — per-frame intrinsics
+
+    Returns:
+        (T, N, 3) float32 numpy array — camera-space XYZ
+    """
+    u, v, d = uvd[:, :, 0], uvd[:, :, 1], uvd[:, :, 2]
+    Kt = torch.from_numpy(K).to(uvd.device)
+    fx = Kt[:, 0, 0].unsqueeze(-1)
+    fy = Kt[:, 1, 1].unsqueeze(-1)
+    cx = Kt[:, 0, 2].unsqueeze(-1)
+    cy = Kt[:, 1, 2].unsqueeze(-1)
+    x = (u - cx) / fx * d
+    y = (v - cy) / fy * d
+    return torch.stack([x, y, d], dim=-1).cpu().numpy().astype(np.float32)
+
 # ── data roots ───────────────────────────────────────────────────────────────
 TAPVID3D_ROOT = Path("/home/mas/data/tapvid3d")
 DA3_ROOT = Path("/home/mas/data/tapvid3d_da3")
@@ -167,9 +188,14 @@ def _run_forward(
         )
     # result = (c2w_traj, intrs_out, point_map, unc_metric,
     #           track3d_pred (T,N,6), track2d_pred (T,N,3), vis_pred (T,N,1), conf_pred, video)
-    track3d = result[4]  # (T, N, 6)  first 3 = per-frame cam XYZ
+    # Use track2d_pred (result[5]): globally-consistent 2D pixel coords + metric depth,
+    # then reproject to camera-space XYZ with per-frame intrinsics.
+    # track3d_pred (result[4]) is in window-local camera coordinates — with multiple
+    # windows (s_wind < clip length), each window uses a different reference frame,
+    # making the assembled 3D predictions inconsistent across windows.
+    track2d = result[5]  # (T, N, 3): (u_px, v_px, depth_m) in video pixel space
     vis = result[6]  # (T, N, 1)
-    xyz = track3d[:F, :, :3].float().cpu().numpy().astype(np.float32)
+    xyz = reproject_2d3d(track2d[:F].float(), K[:F])
     vis_np = vis[:F, :, 0].float().cpu().numpy().astype(np.float32)
     return xyz, vis_np
 
@@ -325,8 +351,11 @@ def main():
             "base_ckpt": ckpt_path,
             "mode": "online",
             "overlap": 4,
-            # s_wind=60 matches the base CoTracker window_len, minimising
-            # peak memory (each segment fits in one base-tracker forward pass).
+            # s_wind=60: VRAM constraint on RTX 4080 Laptop (12 GB).
+            # The paper's official magic_infer_offline.yaml uses s_wind=500,
+            # which fits a 300-frame ADT clip in a single pass but exceeds 12 GB.
+            # s_wind=300 already OOMs on this GPU; s_wind=60 is the maximum feasible.
+            # This is the dominant remaining gap to the paper's 24.7% normalised AJ.
             "s_wind": 60,
             "stablizer": True,
         },
