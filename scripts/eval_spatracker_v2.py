@@ -175,7 +175,14 @@ def _run_forward(
 
 
 def _run_batched(
-    model: Predictor, video_t, depth_np, K, extrs_np, queries_txy, F: int, max_queries: int
+    model: Predictor,
+    video_t,
+    depth_np,
+    K,
+    extrs_np,
+    queries_txy,
+    F: int,
+    max_queries: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Run model on all queries, batching to avoid OOM if max_queries > 0."""
     N = len(queries_txy)
@@ -183,7 +190,13 @@ def _run_batched(
         all_xyz, all_vis = [], []
         for i in range(0, N, max_queries):
             xyz_b, vis_b = _run_forward(
-                model, video_t, depth_np, K, extrs_np, queries_txy[i:i + max_queries], F
+                model,
+                video_t,
+                depth_np,
+                K,
+                extrs_np,
+                queries_txy[i : i + max_queries],
+                F,
             )
             torch.cuda.empty_cache()
             all_xyz.append(xyz_b)
@@ -255,7 +268,9 @@ def infer_clip(
         queries_txy[:, 2] *= scale_h  # y
 
     # ── Forward pass (t >= t_query) ──────────────────────────────────────────
-    fwd_xyz, fwd_vis = _run_batched(model, video_t, depth_np, K, extrs_np, queries_txy, F, max_queries)
+    fwd_xyz, fwd_vis = _run_batched(
+        model, video_t, depth_np, K, extrs_np, queries_txy, F, max_queries
+    )
 
     # ── Backward pass on time-reversed video (t < t_query) ───────────────────
     # Reverse video, depth, and extrinsics in time; adjust query times accordingly.

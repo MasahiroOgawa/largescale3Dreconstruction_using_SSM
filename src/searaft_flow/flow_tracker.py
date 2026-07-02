@@ -21,12 +21,18 @@ def _sample(field: Tensor, pts: Tensor, image_size: int) -> Tensor:
     """Bilinearly sample a (1, 2, S, S) field at pts (N, 2) pixel coords -> (N, 2)."""
     N = pts.shape[0]
     grid = (2.0 * pts / (image_size - 1) - 1.0).view(1, N, 1, 2)
-    s = F.grid_sample(field, grid, mode="bilinear", padding_mode="border", align_corners=True)
+    s = F.grid_sample(
+        field, grid, mode="bilinear", padding_mode="border", align_corners=True
+    )
     return s.view(2, N).transpose(0, 1)
 
 
 def _consistent(
-    p_from: Tensor, disp: Tensor, back: Tensor, alpha: float, beta: float,
+    p_from: Tensor,
+    disp: Tensor,
+    back: Tensor,
+    alpha: float,
+    beta: float,
 ) -> Tensor:
     """Cycle-consistency test for one hop p_from -> p_from+disp -> +back ≈ p_from."""
     err = (disp + back).norm(dim=-1)
@@ -37,9 +43,9 @@ def _consistent(
 @torch.no_grad()
 def track_clip(
     flow_model,
-    images: Tensor,        # (F, 3, S, S) float RGB in [0, 255] on flow_model.device
-    queries_xy: Tensor,    # (N, 2) pixel coords in the S×S image space
-    anchor_t: Tensor,      # (N,) long frame index of each query
+    images: Tensor,  # (F, 3, S, S) float RGB in [0, 255] on flow_model.device
+    queries_xy: Tensor,  # (N, 2) pixel coords in the S×S image space
+    anchor_t: Tensor,  # (N,) long frame index of each query
     image_size: int,
     fb_alpha: float = 0.05,
     fb_beta: float = 1.0,
@@ -68,9 +74,15 @@ def track_clip(
         return uv.cpu(), vis.float().cpu()
 
     # Precompute consecutive forward flow and (for cycle consistency) backward flow.
-    fwd = [flow_model.flow(images[t : t + 1], images[t + 1 : t + 2])[0] for t in range(F_ - 1)]
-    bwd = [flow_model.flow(images[t + 1 : t + 2], images[t : t + 1])[0] for t in range(F_ - 1)]
-    fwd = [f.unsqueeze(0) for f in fwd]   # each (1, 2, S, S)
+    fwd = [
+        flow_model.flow(images[t : t + 1], images[t + 1 : t + 2])[0]
+        for t in range(F_ - 1)
+    ]
+    bwd = [
+        flow_model.flow(images[t + 1 : t + 2], images[t : t + 1])[0]
+        for t in range(F_ - 1)
+    ]
+    fwd = [f.unsqueeze(0) for f in fwd]  # each (1, 2, S, S)
     bwd = [f.unsqueeze(0) for f in bwd]
 
     # Bidirectional mode: run SEA-RAFT on reversed video so backward tracking
@@ -81,7 +93,9 @@ def track_clip(
     if bidirectional:
         images_rev = images.flip(0)
         rev_fwd = [
-            flow_model.flow(images_rev[t : t + 1], images_rev[t + 1 : t + 2])[0].unsqueeze(0)
+            flow_model.flow(images_rev[t : t + 1], images_rev[t + 1 : t + 2])[
+                0
+            ].unsqueeze(0)
             for t in range(F_ - 1)
         ]
     else:
@@ -92,9 +106,9 @@ def track_clip(
         m = anchor_t <= t
         if not m.any():
             continue
-        d = _sample(fwd[t], uv[t], image_size)            # t -> t+1
+        d = _sample(fwd[t], uv[t], image_size)  # t -> t+1
         cand = uv[t] + d
-        b = _sample(bwd[t], cand, image_size)             # t+1 -> t (cycle check)
+        b = _sample(bwd[t], cand, image_size)  # t+1 -> t (cycle check)
         ok = _consistent(uv[t], d, b, fb_alpha, fb_beta)
         uv[t + 1, m] = cand[m]
         vis[t + 1, m] = vis[t, m] & ok[m]
@@ -106,9 +120,9 @@ def track_clip(
             continue
         # Use reversed-video forward flow when available; fall back to direct bwd.
         back_field = rev_fwd[F_ - 1 - t] if rev_fwd is not None else bwd[t - 1]
-        d = _sample(back_field, uv[t], image_size)        # t -> t-1
+        d = _sample(back_field, uv[t], image_size)  # t -> t-1
         cand = uv[t] + d
-        f = _sample(fwd[t - 1], cand, image_size)         # t-1 -> t (cycle check)
+        f = _sample(fwd[t - 1], cand, image_size)  # t-1 -> t (cycle check)
         ok = _consistent(uv[t], d, f, fb_alpha, fb_beta)
         uv[t - 1, m] = cand[m]
         vis[t - 1, m] = vis[t, m] & ok[m]
@@ -119,9 +133,9 @@ def track_clip(
 @torch.no_grad()
 def track_clip_with_flow(
     flow_model,
-    images: Tensor,        # (F, 3, S, S) float RGB in [0, 255] on flow_model.device
-    queries_xy: Tensor,    # (N, 2) pixel coords in the S×S image space
-    anchor_t: Tensor,      # (N,) long frame index of each query
+    images: Tensor,  # (F, 3, S, S) float RGB in [0, 255] on flow_model.device
+    queries_xy: Tensor,  # (N, 2) pixel coords in the S×S image space
+    anchor_t: Tensor,  # (N,) long frame index of each query
     image_size: int,
     fb_alpha: float = 0.05,
     fb_beta: float = 1.0,
@@ -147,15 +161,23 @@ def track_clip_with_flow(
     if F_ == 1:
         return uv.cpu(), vis.float().cpu(), flow_at.cpu()
 
-    fwd = [flow_model.flow(images[t : t + 1], images[t + 1 : t + 2])[0] for t in range(F_ - 1)]
-    bwd = [flow_model.flow(images[t + 1 : t + 2], images[t : t + 1])[0] for t in range(F_ - 1)]
+    fwd = [
+        flow_model.flow(images[t : t + 1], images[t + 1 : t + 2])[0]
+        for t in range(F_ - 1)
+    ]
+    bwd = [
+        flow_model.flow(images[t + 1 : t + 2], images[t : t + 1])[0]
+        for t in range(F_ - 1)
+    ]
     fwd = [f.unsqueeze(0) for f in fwd]
     bwd = [f.unsqueeze(0) for f in bwd]
 
     if bidirectional:
         images_rev = images.flip(0)
         rev_fwd = [
-            flow_model.flow(images_rev[t : t + 1], images_rev[t + 1 : t + 2])[0].unsqueeze(0)
+            flow_model.flow(images_rev[t : t + 1], images_rev[t + 1 : t + 2])[
+                0
+            ].unsqueeze(0)
             for t in range(F_ - 1)
         ]
     else:
