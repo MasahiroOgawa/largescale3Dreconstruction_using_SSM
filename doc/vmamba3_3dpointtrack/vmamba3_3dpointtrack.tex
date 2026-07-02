@@ -256,14 +256,17 @@ a six-method minival comparison including TAPIP3D is in \S\ref{sec:sota}.
 \begin{table}[h]
 \centering
 \caption{TAPVid-3D minival, median-scaled 3D-AJ (standard leaderboard metric; higher better).
-         ``---'' = result unavailable.}
+         ``---'' = result unavailable.
+         Values in parentheses are taken directly from the respective papers;
+         all other numbers are produced by our own evaluation pipeline.}
 \label{tab:median}
 \begin{tabular}{lrrrr}
 \toprule
 Method & drivetrack & pstudio & adt & mean \\
 \midrule
-BootsTAPIR + ZoeDepth (2024)\,$^{*}$ & 0.051 & 0.102 & 0.086 & 0.080 \\
-SpatialTracker (2024)\,$^{*}$        & 0.058 & 0.098 & 0.092 & 0.083 \\
+BootsTAPIR + ZoeDepth (2024)   & (0.051) & (0.102) & (0.086) & (0.080) \\
+SpatialTracker (2024)          & (0.058) & (0.098) & (0.092) & (0.083) \\
+SpatialTrackerV2\,$^{*}$      & 0.017   & 0.012   & 0.025   & 0.018   \\
 \midrule
 SEA-RAFT + DA3 (baseline)      & \textbf{0.108} & 0.111 & 0.132 & 0.117 \\
 SEA-RAFT + MegaSAM             & 0.103 & \textbf{0.135} & \textbf{0.163} & \textbf{0.134} \\
@@ -276,7 +279,8 @@ Ours (v36, DINOv3\,+\,bidir)  & 0.093 & 0.057 & 0.141 & 0.097 \\
 \bottomrule
 \end{tabular}
 \\[2pt]
-{\footnotesize $^{*}$ published numbers; entire leaderboard is median-scaled.
+{\footnotesize $^{*}$ SpatialTrackerV2 evaluated on the same RTX\,4080\,Laptop (12\,GB) with
+$s_{\text{wind}}{=}60$ (paper uses $s_{\text{wind}}{=}500$, requiring ${\sim}40$\,GB); see \S\ref{sec:spatrackerv2}.
 $^{\dagger}$ TAPIP3D evaluated with our pipeline using its released checkpoint.
 $^{\ddagger}$ Near-zero on all three subsets; DROID-SLAM fails on subsampled NPZ clips (see \S\ref{sec:megasam-fail}).}
 \end{table}
@@ -298,7 +302,9 @@ The leaderboard's median scaling hides all of this: v35's normalised 3D-AJ is
 \centering
 \caption{TAPVid-3D minival, absolute metric-AJ (no scaling, fixed-metre thresholds 1\,cm--2.56\,m;
 higher better). ``---'' = predictions not available or method structurally incompatible with absolute
-evaluation (see \S\ref{sec:abs-na}).}
+evaluation (see \S\ref{sec:abs-na}).
+Values in parentheses are taken directly from the respective papers;
+all other numbers are produced by our own evaluation pipeline.}
 \label{tab:abs}
 \begin{tabular}{lrrrr}
 \toprule
@@ -306,6 +312,7 @@ Method & drivetrack & pstudio & adt & mean \\
 \midrule
 BootsTAPIR + ZoeDepth (2024)\,$^{\S}$ & ---   & ---   & ---   & ---   \\
 SpatialTracker (2024)                 & 0.069 & ---   & ---   & ---   \\
+SpatialTrackerV2\,$^{*}$             & 0.008 & 0.192 & 0.179 & 0.126 \\
 \midrule
 SEA-RAFT + DA3 (baseline)  & 0.005 & 0.165 & 0.273 & 0.147 \\
 SEA-RAFT + MegaSAM         & 0.000 & 0.082 & 0.209 & 0.097 \\
@@ -319,7 +326,8 @@ Ours (v36, DINOv3\,+\,bidir) & \textbf{0.130} & 0.249 & \textbf{0.298} & 0.226 \
 \end{tabular}
 \\[2pt]
 {\footnotesize $^{\S}$ ZoeDepth produces scale-ambiguous relative depth; absolute metric-AJ requires
-metric depth and cannot be computed from this combination without per-clip rescaling.}
+metric depth and cannot be computed from this combination without per-clip rescaling.
+$^{*}$ SpatialTrackerV2 evaluated with $s_{\text{wind}}{=}60$ on RTX\,4080\,Laptop (12\,GB); see Table~\ref{tab:median} footnote.}
 \end{table}
 
 \subsubsection*{Why BootsTAPIR + ZoeDepth cannot be evaluated under the absolute metric}
