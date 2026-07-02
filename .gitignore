@@ -9,6 +9,7 @@ __pycache__/
 /data/
 /result/
 /outputs
+/third_party/SpaTrackerV2
 /logs/
 /workspace/
 *.pt
