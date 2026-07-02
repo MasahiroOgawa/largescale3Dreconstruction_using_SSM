@@ -43,6 +43,8 @@ METHODS = [
     "Ours\n(DA3)",
     "Ours\n(MegaSAM)",
     "Ours\n(DINOv3)",
+    "SEA-RAFT\n+DA3 bidir",
+    "Ours\n(bidir)",
 ]
 
 SUBSET_COLORS = {
@@ -111,6 +113,12 @@ def build_data_tables() -> tuple[dict, dict]:
     v35_adt_dirs = sorted(REPO.glob("result/metric3d_v35_adt_*/summary.md"))
     if v35_adt_dirs:
         v35.update(_read_summary(v35_adt_dirs[-1]))
+    # ── SEA-RAFT bidir (bidirectional flow, no learned refinement) ────────────
+    searaft_bidir_dirs = sorted(REPO.glob("result/metric3d_searaft_bidir_*/summary.md"))
+    searaft_bidir = _read_summary(searaft_bidir_dirs[-1]) if searaft_bidir_dirs else {}
+    # ── v36 (v35 + bidirectional flow) ────────────────────────────────────────
+    v36_dirs = sorted(REPO.glob("result/metric3d_v36_bidir_*/summary.md"))
+    v36 = _read_summary(v36_dirs[-1]) if v36_dirs else {}
 
     # ── TAPIP3D + DA3 (official TAPIP3D eval JSONs for normalised; absolute eval for metric-AJ) ──
     tapip3d_da3_norm = {}
@@ -181,12 +189,14 @@ def build_data_tables() -> tuple[dict, dict]:
             (v33, v33),  # 7 Ours(DA3)
             (v34, v34),  # 8 Ours(MegaSAM)
             (v35, v35),  # 9 Ours(DINOv3)
+            (searaft_bidir, searaft_bidir),  # 10 SEA-RAFT+DA3 bidir
+            (v36, v36),  # 11 Ours(bidir)
         ]
     ):
         norm_aj[m_idx] = {}
         abs_aj[m_idx] = {}
         for s in SUBSETS:
-            # plain {subset: float} sources
+            # plain {subset: float} sources (published numbers hardcoded above)
             if m_idx in (0, 1, 2, 5, 6):
                 norm_aj[m_idx][s] = float(norm_src.get(s, NaN))
                 abs_aj[m_idx][s] = float(abs_src.get(s, NaN))
