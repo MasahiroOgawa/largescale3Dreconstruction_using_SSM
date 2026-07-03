@@ -1,3 +1,4 @@
+- [Use uv for third-party repo venvs, not python -m venv](memory/feedback_uv_venv.md) — fork to MasahiroOgawa/, create feature/uv branch, add pyproject.toml, use uv run
 - [Diagrams first for cross-file plans](memory/feedback_diagrams_first.md) — add ASCII flowcharts (baseline/modified/diff) to the plan before file lists
 - [Prefer git submodule over pip for hackable upstream deps](memory/feedback_submodule_over_pip.md) — research/architecture deps go to `third_party/<name>/`
 - [Don't gate between pre-approved sequential steps](memory/feedback_dont_gate_planned_steps.md) — once a multi-step plan is agreed, execute through it without re-asking between steps
@@ -22,3 +23,4 @@
 - [Absolute-metric eval](memory/project_metric3d_evaluation.md) — verdict reverses in real metres: v33 BEATS SEA-RAFT+DA3 (metric-AJ 0.180 vs 0.147, err 2.67 vs 4.29 m); leaderboard median scaling hid it. Paper gate: needs metric-capable baseline run by us
 - [TAPIP3D comparison pipeline](memory/project_tapip3d_comparison.md) — in-progress: DA3 depth running for adt (PID 2560696); then HDF5 packaging + TAPIP3D eval on same 150 minival clips
 - [SpatialTrackerV2 eval bugs](memory/project_spatrackerv2_bidir.md) — two-phase root cause: bidir+fixed_cam fix ran; second bug is track3d_pred+s_wind=60 vs track2d_pred+s_wind=500
+- [TrackCraft3R eval setup](memory/project_trackcraft3r_eval.md) — smoke test done; 480×832 ~32 min/clip → 79 h total; use PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
