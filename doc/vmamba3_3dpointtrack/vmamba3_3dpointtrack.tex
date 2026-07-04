@@ -283,13 +283,15 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
       minimum height=9mm, minimum width=22mm, align=center, font=\small},
   ]
   % ── inputs (top row) ──────────────────────────────────────────────
-  \node[io] (in1)   {$[\mathbf{r},\,z/z_r,\,v]$\\{\scriptsize 4-D (same as v33)}};
+  \node[io] (in1)   {$[\mathbf{r}(\mathbf{u}_0),\,z/z_r,\,v]$\\{\scriptsize 4-D}};
+  % ── u_0: 2-D flow from SEA-RAFT (see Fig.~\ref{fig:v36-flow}) ────
+  \node[io, above=5mm of in1] (uv0) {$\mathbf{u}_0$ (SEA-RAFT)\\{\scriptsize 2-D flow}};
   \node[new, right=6mm of in1]   (patch) {depth patch\\{\scriptsize $5{\times}5$}};
   \node[new, right=6mm of patch] (dino)  {DINOv3 feat\\{\scriptsize 64-D}};
   % ── embed ─────────────────────────────────────────────────────────
   \node[block, below=14mm of patch] (emb) {MLP embed\\{\scriptsize 128-D}};
   % ── SSM ───────────────────────────────────────────────────────────
-  \node[learn, right=8mm of emb] (ssm) {Mamba-3\\{\scriptsize $\times 2$, causal}};
+  \node[learn, right=8mm of emb] (ssm) {Mamba-3 SSD\\{\scriptsize $\times 2$, causal}};
   % ── output heads ──────────────────────────────────────────────────
   \node[block, above right=10mm and 8mm of ssm] (duv) {$\Delta\mathbf{u}$~head\\{\scriptsize 0-init, $\tanh\!\cdot\!2$}};
   \node[block, below right=10mm and 8mm of ssm] (dz)  {$\Delta\!\log z$~head\\{\scriptsize 0-init}};
@@ -299,10 +301,11 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   % ── depth map bypass ──────────────────────────────────────────────
   \node[io, below=8mm of dz] (dm) {depth map (DA3)};
   % ── arrows ────────────────────────────────────────────────────────
+  \draw[arr] (uv0) -- (in1);
   \draw[arr] (in1.south)   |- (emb.west);
   \draw[arr] (patch.south) -- (emb.north);
   \draw[arr,rounded corners=2pt] (dino.south) -- ++(0,-4mm) coordinate (aux)
-    -- (aux -| emb.east) -- (emb.east);
+    -- (aux -| emb.north east) -- (emb.north east);
   \draw[arr] (emb) -- (ssm);
   \draw[arr] (ssm.east) |- (duv.west);
   \draw[arr] (ssm.east) |- (dz.west);
@@ -314,8 +317,11 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
 \end{tikzpicture}
 \caption{v35 architecture (extends Fig.~\ref{fig:arch}).
 \textcolor{orange!80!black}{Orange} nodes are new relative to v33.
-The DINOv3 feature and depth patch are concatenated with the 4-D track feature
-and fed to the same Mamba-3 stack.
+$\mathbf{u}_0$ is the 2-D pixel position from SEA-RAFT optical flow (Fig.~\ref{fig:v36-flow});
+it determines the ray direction $\mathbf{r}(\mathbf{u}_0)$, the centre of the $5{\times}5$ depth
+patch, and the location at which the DINOv3 feature is sampled.
+All three inputs are concatenated and fed through the Mamba-3 SSD layers (the same
+causal SSD stack as v33, now carrying appearance and local-geometry context).
 A second head produces $\Delta\mathbf{u}$ (bounded to $\pm 2$\,px by $\tanh$).
 Depth is then re-sampled at the corrected pixel $\mathbf{u}_t = \mathbf{u}_0 + \Delta\mathbf{u}$
 from the DA3 depth map, and $\Delta\!\log z$ rescales it.
