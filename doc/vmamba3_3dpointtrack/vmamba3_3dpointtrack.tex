@@ -293,8 +293,8 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   % ── SSM ───────────────────────────────────────────────────────────
   \node[learn, right=8mm of emb] (ssm) {Mamba-3 SSD\\{\scriptsize $\times 2$, causal}};
   % ── output heads ──────────────────────────────────────────────────
-  \node[block, above right=10mm and 8mm of ssm] (duv) {$\Delta\mathbf{u}$~head\\{\scriptsize 0-init, $\tanh\!\cdot\!2$}};
-  \node[block, below right=10mm and 8mm of ssm] (dz)  {$\Delta\!\log z$~head\\{\scriptsize 0-init}};
+  \node[block, above right=10mm and 20mm of ssm] (duv) {$\Delta\mathbf{u}$~head\\{\scriptsize 0-init, $\tanh\!\cdot\!2$}};
+  \node[block, below right=10mm and 20mm of ssm] (dz)  {$\Delta\!\log z$~head\\{\scriptsize 0-init}};
   % ── outputs ───────────────────────────────────────────────────────
   \node[io, right=6mm of duv] (uvout) {$\mathbf{u}_t = \mathbf{u}_0+\Delta\mathbf{u}$};
   \node[io, right=6mm of dz]  (zout)  {$z_t = z_{\rm new}\!\cdot e^{\Delta\!\log z}$};
@@ -307,11 +307,14 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   \draw[arr,rounded corners=2pt] (dino.south) -- ++(0,-4mm) coordinate (aux)
     -- (aux -| emb.north east) -- (emb.north east);
   \draw[arr] (emb) -- (ssm);
-  \draw[arr] (ssm.north) -| (duv.west);
-  \draw[arr] (ssm.south) -| (dz.west);
+  \coordinate (ssmfork) at ($(ssm.east)+(8mm,0)$);
+  \draw (ssm.east) -- (ssmfork);
+  \fill (ssmfork) circle[radius=1pt];
+  \draw[arr] (ssmfork) -- (ssmfork |- duv.west) -- (duv.west);
+  \draw[arr] (ssmfork) -- (ssmfork |- dz.west) -- (dz.west);
   \draw[arr] (duv) -- (uvout);
   \draw[arr] (dz)  -- (zout);
-  \draw[arr] (dm.east) to[bend left=25] (zout.south);
+  \draw[arr] (dm.east) -- ($(dm.east -| zout.west)+(-3mm,0)$) -- ($(zout.west)+(-3mm,0)$) -- (zout.west);
   \node[font=\scriptsize,gray,align=center,above=1.5mm of uvout]
     {\footnotesize re-sample DA3 depth at $\mathbf{u}_t$};
 \end{tikzpicture}
@@ -348,8 +351,8 @@ time-reversed video --- and averages the two 2D track estimates before passing t
   ]
   \node[io] (vid) {video $t{=}0\ldots T$};
   % two RAFT branches
-  \node[fwd, above right=8mm and 8mm of vid] (fwd) {SEA-RAFT\\(forward)};
-  \node[fwd, below right=8mm and 8mm of vid] (bwd) {SEA-RAFT\\(reversed video)};
+  \node[fwd, above right=8mm and 20mm of vid] (fwd) {SEA-RAFT\\(forward)};
+  \node[fwd, below right=8mm and 20mm of vid] (bwd) {SEA-RAFT\\(reversed video)};
   % merge
   \node[mrg, right=14mm of vid, yshift=0mm]
     (merge) at ($(fwd.east)!0.5!(bwd.east)+(8mm,0)$) {average\\$+$ flip time};
@@ -358,8 +361,11 @@ time-reversed video --- and averages the two 2D track estimates before passing t
   % output
   \node[io, right=6mm of v35] (out) {3D tracks\\$(F,N,3)$};
   % arrows
-  \draw[arr] (vid.north) -| (fwd.west);
-  \draw[arr] (vid.south) -| (bwd.west);
+  \coordinate (vidfork) at ($(vid.east)+(8mm,0)$);
+  \draw (vid.east) -- (vidfork);
+  \fill (vidfork) circle[radius=1pt];
+  \draw[arr] (vidfork) -- (vidfork |- fwd.west) -- (fwd.west);
+  \draw[arr] (vidfork) -- (vidfork |- bwd.west) -- (bwd.west);
   \draw[arr] (fwd.east) -| (merge.north);
   \draw[arr] (bwd.east) -| (merge.south);
   \draw[arr] (merge) -- (v35);
