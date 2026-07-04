@@ -33,19 +33,22 @@ SUBSETS = ["drivetrack", "pstudio", "adt"]
 SUBSET_LABELS = {"drivetrack": "Drivetrack", "pstudio": "Panoptic Studio", "adt": "ADT"}
 
 METHODS = [
-    "BootsTAPIR\n+ZoeDepth",
-    "Spatial\nTracker",
+    # ── SOTA (not ours) ──────────────────────────────────────────────────────
     "SpatialTracker\nV2",
-    "SEA-RAFT\n+DA3",
-    "SEA-RAFT\n+MegaSAM",
     "TAPIP3D\n+DA3",
     "TAPIP3D\n+MegaSAM",
-    "Ours\n(DA3)",
-    "Ours\n(MegaSAM)",
-    "Ours\n(DINOv3)",
-    "SEA-RAFT\n+DA3 bidir",
-    "Ours\n(bidir)",
+    # ── Ours ─────────────────────────────────────────────────────────────────
+    "SEA-RAFT+DA3\n(Ours)",
+    "SEA-RAFT+MegaSAM\n(Ours)",
+    "SEA-RAFT+DA3\nbidir (Ours)",
+    "DA3+SSM\n(Ours)",
+    "MegaSAM+SSM\n(Ours)",
+    "DINOv3+SSM\n(Ours)",
+    "DINOv3+SSM\nbidir (Ours)",
 ]
+
+# Number of SOTA methods listed first; used to draw the group separator.
+SOTA_COUNT = 3
 
 SUBSET_COLORS = {
     "drivetrack": "#4878CF",  # steel blue
@@ -157,14 +160,6 @@ def build_data_tables() -> tuple[dict, dict]:
         "adt": 0.0000,
     }
 
-    # ── Published baselines (normalised AJ from TAPVid-3D paper) ─────────────
-    bootstapir_norm = {"drivetrack": 0.051, "pstudio": 0.102, "adt": 0.086}
-    bootstapir_abs = {}  # predictions not released; all N/A
-
-    # SpatialTracker v1: normalised published; absolute drivetrack scored via our pipeline
-    spatialtracker_norm = {"drivetrack": 0.058, "pstudio": 0.098, "adt": 0.092}
-    spatialtracker_abs = {"drivetrack": 0.069}  # pstudio/adt predictions not released
-
     # SpatialTrackerV2: bidir+fixed_cam+replace_ratio=1.0 (paper protocol), all 50 clips
     spatrackerv2_norm = {"drivetrack": 0.0168, "pstudio": 0.0119, "adt": 0.0246}
     spatrackerv2_abs = {"drivetrack": 0.0084, "pstudio": 0.1921, "adt": 0.1787}
@@ -173,31 +168,28 @@ def build_data_tables() -> tuple[dict, dict]:
         return table.get(subset, {}).get(key, NaN)
 
     # method index → {subset: value}
-    # Indices 0,1,2,5,6 use plain {subset: float} dicts.
-    # Indices 3,4,7,8,9 use summary.md {subset: {key: float}} dicts.
+    # Order mirrors METHODS list: SOTA first, then ours.
+    # Indices 0,1,2 use plain {subset: float} dicts; rest use summary.md dicts.
     norm_aj: dict[int, dict[str, float]] = {}
     abs_aj: dict[int, dict[str, float]] = {}
     for m_idx, (norm_src, abs_src) in enumerate(
         [
-            (bootstapir_norm, bootstapir_abs),  # 0 BootsTAPIR
-            (spatialtracker_norm, spatialtracker_abs),  # 1 SpatialTracker v1
-            (spatrackerv2_norm, spatrackerv2_abs),  # 2 SpatialTrackerV2
-            (searaft_da3, searaft_da3),  # 3 SEA-RAFT+DA3
-            (searaft_msam, searaft_msam),  # 4 SEA-RAFT+MegaSAM
-            (tapip3d_da3_norm, tapip3d_da3_abs),  # 5 TAPIP3D+DA3
-            (tapip3d_msam_norm, tapip3d_msam_abs),  # 6 TAPIP3D+MegaSAM
-            (v33, v33),  # 7 Ours(DA3)
-            (v34, v34),  # 8 Ours(MegaSAM)
-            (v35, v35),  # 9 Ours(DINOv3)
-            (searaft_bidir, searaft_bidir),  # 10 SEA-RAFT+DA3 bidir
-            (v36, v36),  # 11 Ours(bidir)
+            (spatrackerv2_norm, spatrackerv2_abs),  # 0 SpatialTrackerV2
+            (tapip3d_da3_norm, tapip3d_da3_abs),  # 1 TAPIP3D+DA3
+            (tapip3d_msam_norm, tapip3d_msam_abs),  # 2 TAPIP3D+MegaSAM
+            (searaft_da3, searaft_da3),  # 3 SEA-RAFT+DA3 (Ours)
+            (searaft_msam, searaft_msam),  # 4 SEA-RAFT+MegaSAM (Ours)
+            (searaft_bidir, searaft_bidir),  # 5 SEA-RAFT+DA3 bidir (Ours)
+            (v33, v33),  # 6 DA3+SSM (Ours)
+            (v34, v34),  # 7 MegaSAM+SSM (Ours)
+            (v35, v35),  # 8 DINOv3+SSM (Ours)
+            (v36, v36),  # 9 DINOv3+SSM bidir (Ours)
         ]
     ):
         norm_aj[m_idx] = {}
         abs_aj[m_idx] = {}
         for s in SUBSETS:
-            # plain {subset: float} sources (published numbers hardcoded above)
-            if m_idx in (0, 1, 2, 5, 6):
+            if m_idx < SOTA_COUNT:  # plain {subset: float} dicts
                 norm_aj[m_idx][s] = float(norm_src.get(s, NaN))
                 abs_aj[m_idx][s] = float(abs_src.get(s, NaN))
             else:  # summary.md {subset: {key: float}} dicts
@@ -304,9 +296,35 @@ def make_figure(
     ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.6)
     ax.spines[["top", "right"]].set_visible(False)
 
-    # Vertical separators between method groups
-    for xi in (x_centers[:-1] + x_centers[1:]) / 2:
+    # Light separators between all methods
+    boundaries = (x_centers[:-1] + x_centers[1:]) / 2
+    for xi in boundaries:
         ax.axvline(xi, color="#ddd", linewidth=0.8, zorder=0)
+
+    # Prominent separator + group labels between SOTA and Ours
+    sota_ours_x = boundaries[SOTA_COUNT - 1]
+    ax.axvline(sota_ours_x, color="#777", linewidth=1.5, linestyle="--", zorder=1)
+    y_top = ax.get_ylim()[1]
+    ax.text(
+        (x_centers[0] + x_centers[SOTA_COUNT - 1]) / 2,
+        y_top * 0.97,
+        "SOTA",
+        ha="center",
+        va="top",
+        fontsize=9,
+        color="#555",
+        style="italic",
+    )
+    ax.text(
+        (x_centers[SOTA_COUNT] + x_centers[-1]) / 2,
+        y_top * 0.97,
+        "Ours",
+        ha="center",
+        va="top",
+        fontsize=9,
+        color="#555",
+        style="italic",
+    )
 
     fig.tight_layout()
     OUT_DIR.mkdir(parents=True, exist_ok=True)

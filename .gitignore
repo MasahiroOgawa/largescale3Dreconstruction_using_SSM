@@ -10,6 +10,7 @@ __pycache__/
 /result/
 /outputs
 /third_party/SpaTrackerV2
+/third_party/TrackCraft3R
 /logs/
 /workspace/
 *.pt

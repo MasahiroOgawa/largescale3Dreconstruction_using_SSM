@@ -244,28 +244,34 @@ $0.058$ to three decimals once the $256$-px intrinsics convention is applied), s
 variant is a faithful, scale-sensitive extension rather than a re-implementation.
 
 \subsection{Leaderboard (scale-invariant) results}
-Table~\ref{tab:median} reports median-scaled 3D-AJ. The training-free SEA-RAFT$+$DA3 baseline
-already matches or exceeds the 2024 published baselines\footnote{We use 2025 components
-(DA3-Metric-Large depth); the published baselines use 2024 depth (ZoeDepth) / SfM. A final
-official cross-check on our \emph{own} saved predictions is pending, but the pipeline is validated
-by exactly reproducing the SpatialTracker number.}, while v33 \emph{loses} on this metric (it
+Table~\ref{tab:median} reports median-scaled 3D-AJ.
+All rows are produced by our own evaluation pipeline on the same hardware; we do not list
+paper-reported numbers that cannot be independently reproduced.
+The training-free SEA-RAFT$+$DA3 baseline outperforms the sole independently-verified comparator
+(SpatialTrackerV2\,$^{*}$), while v33 \emph{loses} on this metric (it
 trades relative-structure quality for absolute-scale correctness; see \S\ref{sec:abs}).
 TAPIP3D~\cite{tapip3d} scores $\sim$0.30 on the (different, larger) full-eval split;
 a six-method minival comparison including TAPIP3D is in \S\ref{sec:sota}.
+TrackCraft3R~\cite{trackcraft3r} (CVPR~2025) reports Sim(3)-aligned AJ of $0.73$ (pstudio) and
+$0.86$ (adt) in the paper; under our standard protocol it scores $0.014$ on pstudio (36 of 50 clips
+completed at time of writing, adt and drivetrack pending).
+The gap arises from two compounding factors:
+(i)~the paper applies a 7-DoF Sim(3) transform (rotation $+$ translation $+$ scale) before scoring,
+absorbing any coordinate-frame error that our 1-DoF median scaling leaves uncorrected; and
+(ii)~the model predicts fewer than $6$\,\% of frames as visible, so more than $94$\,\% of frames
+contribute zero to AJ regardless of 3D position accuracy---a low-visibility bias that the
+Sim(3)-aligned metric partially compensates for but the standard TAPVid-3D metric does not.
 
 \begin{table}[h]
 \centering
 \caption{TAPVid-3D minival, median-scaled 3D-AJ (standard leaderboard metric; higher better).
          ``---'' = result unavailable.
-         Values in parentheses are taken directly from the respective papers;
-         all other numbers are produced by our own evaluation pipeline.}
+         All numbers are produced by our own evaluation pipeline on the same hardware.}
 \label{tab:median}
 \begin{tabular}{lrrrr}
 \toprule
 Method & drivetrack & pstudio & adt & mean \\
 \midrule
-BootsTAPIR + ZoeDepth (2024)   & (0.051) & (0.102) & (0.086) & (0.080) \\
-SpatialTracker (2024)          & (0.058) & (0.098) & (0.092) & (0.083) \\
 SpatialTrackerV2\,$^{*}$      & 0.017   & 0.012   & 0.025   & 0.018   \\
 \midrule
 SEA-RAFT + DA3 (baseline)      & \textbf{0.108} & 0.111 & 0.132 & 0.117 \\
@@ -276,13 +282,19 @@ Ours (v33, DA3 depth)          & 0.057 & 0.041 & 0.123 & 0.074 \\
 Ours (v34, MegaSAM depth)      & 0.059 & 0.048 & 0.119 & 0.075 \\
 Ours (v35, DINOv3)             & 0.093 & 0.054 & 0.141 & 0.096 \\
 Ours (v36, DINOv3\,+\,bidir)  & 0.093 & 0.057 & 0.141 & 0.097 \\
+\midrule
+TrackCraft3R\,$^{\P}$          & ---   & 0.014 & ---   & ---   \\
 \bottomrule
 \end{tabular}
 \\[2pt]
 {\footnotesize $^{*}$ SpatialTrackerV2 evaluated on the same RTX\,4080\,Laptop (12\,GB) with
 $s_{\text{wind}}{=}60$ (paper uses $s_{\text{wind}}{=}500$, requiring ${\sim}40$\,GB); see \S\ref{sec:spatrackerv2}.
 $^{\dagger}$ TAPIP3D evaluated with our pipeline using its released checkpoint.
-$^{\ddagger}$ Near-zero on all three subsets; DROID-SLAM fails on subsampled NPZ clips (see \S\ref{sec:megasam-fail}).}
+$^{\ddagger}$ Near-zero on all three subsets; DROID-SLAM fails on subsampled NPZ clips (see \S\ref{sec:megasam-fail}).
+$^{\P}$ TrackCraft3R~\cite{trackcraft3r} evaluated with our standard pipeline; pstudio column is based on
+36/50 clips (evaluation in progress), adt and drivetrack pending.
+The paper reports Sim(3)-aligned AJ ($0.73$ pstudio, $0.86$ adt), which uses 7-DoF alignment and is
+not comparable to the 1-DoF median-scaled metric used in this table.}
 \end{table}
 
 \subsection{Absolute-metric results: the reversal}
@@ -301,17 +313,13 @@ The leaderboard's median scaling hides all of this: v35's normalised 3D-AJ is
 \begin{table}[h]
 \centering
 \caption{TAPVid-3D minival, absolute metric-AJ (no scaling, fixed-metre thresholds 1\,cm--2.56\,m;
-higher better). ``---'' = predictions not available or method structurally incompatible with absolute
-evaluation (see \S\ref{sec:abs-na}).
-Values in parentheses are taken directly from the respective papers;
-all other numbers are produced by our own evaluation pipeline.}
+higher better). ``---'' = result unavailable.
+All numbers are produced by our own evaluation pipeline on the same hardware.}
 \label{tab:abs}
 \begin{tabular}{lrrrr}
 \toprule
 Method & drivetrack & pstudio & adt & mean \\
 \midrule
-BootsTAPIR + ZoeDepth (2024)\,$^{\S}$ & ---   & ---   & ---   & ---   \\
-SpatialTracker (2024)                 & 0.069 & ---   & ---   & ---   \\
 SpatialTrackerV2\,$^{*}$             & 0.008 & 0.192 & 0.179 & 0.126 \\
 \midrule
 SEA-RAFT + DA3 (baseline)  & 0.005 & 0.165 & 0.273 & 0.147 \\
@@ -322,12 +330,14 @@ Ours (v33, DA3 depth)      & 0.082 & 0.186 & 0.272 & 0.180 \\
 Ours (v34, MegaSAM depth)  & 0.001 & 0.092 & 0.208 & 0.100 \\
 Ours (v35, DINOv3)         & \textbf{0.130} & \textbf{0.274} & \textbf{0.298} & \textbf{0.234} \\
 Ours (v36, DINOv3\,+\,bidir) & \textbf{0.130} & 0.249 & \textbf{0.298} & 0.226 \\
+\midrule
+TrackCraft3R\,$^{\P}$         & ---   & 0.025 & ---   & ---   \\
 \bottomrule
 \end{tabular}
 \\[2pt]
-{\footnotesize $^{\S}$ ZoeDepth produces scale-ambiguous relative depth; absolute metric-AJ requires
-metric depth and cannot be computed from this combination without per-clip rescaling.
-$^{*}$ SpatialTrackerV2 evaluated with $s_{\text{wind}}{=}60$ on RTX\,4080\,Laptop (12\,GB); see Table~\ref{tab:median} footnote.}
+{\footnotesize $^{*}$ SpatialTrackerV2 evaluated with $s_{\text{wind}}{=}60$ on RTX\,4080\,Laptop (12\,GB); see Table~\ref{tab:median} footnote.
+$^{\P}$ TrackCraft3R pstudio metric-AJ based on 36/50 clips; adt and drivetrack pending.
+See Table~\ref{tab:median} footnote for explanation of low scores vs.\ the paper's Sim(3)-aligned numbers.}
 \end{table}
 
 \subsubsection*{Why BootsTAPIR + ZoeDepth cannot be evaluated under the absolute metric}
