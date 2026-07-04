@@ -296,8 +296,8 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   % ── SSM ───────────────────────────────────────────────────────────
   \node[learn, right=8mm of emb] (ssm) {Mamba-3 SSD\\{\scriptsize $\times 2$, causal}};
   % ── output heads ($\Delta\!\log z$ upper, $\Delta\mathbf{u}$ lower) ─
-  \node[block, above right=10mm and 35mm of ssm] (dz)  {$\Delta\!\log z$~head\\{\scriptsize 0-init}};
-  \node[block, below right=10mm and 35mm of ssm] (duv) {$\Delta\mathbf{u}$~head\\{\scriptsize 0-init, $\tanh\!\cdot\!2$}};
+  \node[block, above right=2mm and 35mm of ssm] (dz)  {$\Delta\!\log z$~head\\{\scriptsize 0-init}};
+  \node[block, below right=5mm and 35mm of ssm] (duv) {$\Delta\mathbf{u}$~head\\{\scriptsize 0-init, $\tanh\!\cdot\!2$}};
   % ── outputs ───────────────────────────────────────────────────────
   \node[io, right=6mm of dz]  (zout)  {$z_t = z_{\rm new}\!\cdot e^{\Delta\!\log z}$};
   \node[io, right=6mm of duv] (uvout) {$\mathbf{u}_t = \mathbf{u}_0+\Delta\mathbf{u}$};
@@ -315,7 +315,7 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   \draw[arr] (ssmfork) -- (ssmfork |- duv.west) -- (duv.west);
   \draw[arr] (dz)  -- (zout);
   \draw[arr] (duv) -- (uvout);
-  \draw[arr] (dm.north) -- ($(dm.north -| zout.west)+(-3mm,0)$) -- ($(zout.west)+(-3mm,0)$) -- (zout.west);
+  \draw[arr] (dm.east) -- ($(dm.east -| zout.west)+(-3mm,0)$) -- ($(zout.west)+(-3mm,0)$) -- (zout.west);
   \node[font=\scriptsize,gray,align=center,above=1.5mm of uvout]
     {\footnotesize re-sample DA3 depth at $\mathbf{u}_t$};
 \end{tikzpicture}
