@@ -190,7 +190,7 @@ learns improvements.  The model has $\approx0.40$M trainable parameters.
   \draw[arr] (head) -- (mul);
   \draw[arr] (mul) -- (z);
   % z_raw bypass arrow
-  \draw[arr] (zraw.east) to[bend right=15] (mul.south);
+  \draw[arr] (zraw.east) |- (mul.south);
   \node[font=\scriptsize, above=2mm of m1, align=center]
     {state dim 64, 4 heads};
 \end{tikzpicture}
