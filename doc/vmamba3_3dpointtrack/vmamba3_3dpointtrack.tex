@@ -307,8 +307,8 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   \draw[arr,rounded corners=2pt] (dino.south) -- ++(0,-4mm) coordinate (aux)
     -- (aux -| emb.north east) -- (emb.north east);
   \draw[arr] (emb) -- (ssm);
-  \draw[arr] (ssm.east) |- (duv.west);
-  \draw[arr] (ssm.east) |- (dz.west);
+  \draw[arr] (ssm.east) -- (duv.west);
+  \draw[arr] (ssm.east) -- (dz.west);
   \draw[arr] (duv) -- (uvout);
   \draw[arr] (dz)  -- (zout);
   \draw[arr] (dm.east) to[bend left=25] (zout.south);
