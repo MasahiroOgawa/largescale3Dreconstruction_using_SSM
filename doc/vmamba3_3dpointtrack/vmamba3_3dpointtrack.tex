@@ -212,6 +212,164 @@ sampling location across DA3 depth discontinuities (object boundaries), flipping
 correctness band. v33 therefore freezes the 2D track entirely and refines depth only --- the lever
 that actually carries the error.
 
+% -----------------------------------------------------------------------
+\subsection{v35: image-conditioned joint 2D--depth refiner}
+\label{sec:v35}
+
+v35 revisits the joint 2D--depth correction that failed in v32, but removes its root cause.
+v32 nudged the pixel blindly; the SSM had no way to tell whether it was pushing toward or
+away from a depth discontinuity.
+v35 gives it that context through two new per-track inputs:
+
+\begin{itemize}
+\item \textbf{DINOv3 appearance features} (64-D): sampled from a frozen ViT-S/16 DINOv2
+  backbone at the current track position.  These provide a local visual ``fingerprint'' of the
+  tracked object, allowing the SSM to detect when the 2D position has drifted off the target.
+\item \textbf{Local depth patch} ($5{\times}5 = 25$ values): DA3 depths in a neighbourhood of
+  the track point, normalised to the centre depth.  This directly exposes depth discontinuities
+  at object boundaries, the very features that caused v32 to overshoot.
+\end{itemize}
+
+A second output head (also zero-initialised) predicts a 2D correction $\Delta\mathbf{u}$, bounded
+by $\tanh(\cdot)\!\cdot\!2$ to $\pm 2$\,px.  Crucially, after $\Delta\mathbf{u}$ shifts the pixel,
+depth is \emph{re-sampled} at the corrected position from the DA3 depth map before
+$\Delta\!\log z$ is applied.  This ensures the depth and 2D corrections remain geometrically
+consistent (Fig.~\ref{fig:v35-concept}).
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[scale=1.0]
+  \coordinate (cam) at (0,0);
+  \draw[fill=black!12,draw=black!50] (cam) -- (4.2,1.2) -- (4.2,-1.2) -- cycle;
+  \node[font=\scriptsize,left] at (cam) {camera};
+  % original SEA-RAFT ray
+  \draw[arr,blue!60!black,thick] (cam) -- (4.7,0.52)
+    node[right,font=\scriptsize,blue!60!black]{original ray $(u_0,v_0)$};
+  \filldraw[gray] (2.2,0.26) circle (1.6pt) node[above,font=\scriptsize,gray]{$z_{\rm raw}$};
+  % new ray after Δu
+  \draw[arr,red!70!black,thick] (cam) -- (4.7,0.80)
+    node[right,font=\scriptsize,red!70!black]{shifted ray $(\mathbf{u}_0+\Delta\mathbf{u})$};
+  % v35 corrected point: Δlog_z along new ray
+  \filldraw[blue!60!black] (3.4,0.58) circle (1.8pt)
+    node[below right,font=\scriptsize,blue!60!black]{$z_t$ (v35)};
+  \draw[arr,densely dashed,black!60] (2.2,0.26) -- (3.35,0.57)
+    node[midway,above,font=\scriptsize]{$\Delta\!\log z$};
+  % DINOv3 annotation
+  \node[draw=orange!70!black,fill=orange!8,rounded corners,font=\scriptsize,inner sep=2pt,align=center]
+    at (0.9,-1.05) {DINOv3\\feat (64-D)};
+  \draw[-{Stealth[length=1.8mm]},orange!70!black] (0.9,-0.75) -- (0.9,-0.06);
+  % depth patch annotation
+  \node[draw=green!60!black,fill=green!8,rounded corners,font=\scriptsize,inner sep=2pt,align=center]
+    at (2.4,-1.05) {depth patch\\$5{\times}5$};
+  \draw[-{Stealth[length=1.8mm]},green!60!black] (2.4,-0.75) -- (2.2,0.23);
+  % bottom note
+  \node[font=\scriptsize,align=left] at (2.0,-1.65)
+    {New SSM inputs (orange/green) $\Rightarrow$ informed $\Delta\mathbf{u}$ avoids depth-discontinuity artefacts.
+     Depth is re-sampled at $\mathbf{u}_0{+}\Delta\mathbf{u}$ before applying $\Delta\!\log z$.};
+\end{tikzpicture}
+\caption{v35 joint correction. Two new inputs (DINOv3 appearance features and a local $5{\times}5$
+depth patch) give the SSM the context needed to predict $\Delta\mathbf{u}$ safely.
+Unlike v32, which nudged the pixel blindly and crossed depth discontinuities, v35's 2D correction
+is conditioned on local appearance and local depth structure.
+Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it.}
+\label{fig:v35-concept}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+    node distance=4mm and 6mm,
+    new/.style={rectangle, rounded corners, draw=orange!70!black, fill=orange!8,
+      minimum height=9mm, minimum width=22mm, align=center, font=\small},
+  ]
+  % ── inputs (top row) ──────────────────────────────────────────────
+  \node[io] (in1)   {$[\mathbf{r},\,z/z_r,\,v]$\\{\scriptsize 4-D (same as v33)}};
+  \node[new, right=6mm of in1]   (patch) {depth patch\\{\scriptsize $5{\times}5$}};
+  \node[new, right=6mm of patch] (dino)  {DINOv3 feat\\{\scriptsize 64-D}};
+  % ── embed ─────────────────────────────────────────────────────────
+  \node[block, below=14mm of patch] (emb) {MLP embed\\{\scriptsize 128-D}};
+  % ── SSM ───────────────────────────────────────────────────────────
+  \node[learn, right=8mm of emb] (ssm) {Mamba-3\\{\scriptsize $\times 2$, causal}};
+  % ── output heads ──────────────────────────────────────────────────
+  \node[block, above right=10mm and 8mm of ssm] (duv) {$\Delta\mathbf{u}$~head\\{\scriptsize 0-init, $\tanh\!\cdot\!2$}};
+  \node[block, below right=10mm and 8mm of ssm] (dz)  {$\Delta\!\log z$~head\\{\scriptsize 0-init}};
+  % ── outputs ───────────────────────────────────────────────────────
+  \node[io, right=6mm of duv] (uvout) {$\mathbf{u}_t = \mathbf{u}_0+\Delta\mathbf{u}$};
+  \node[io, right=6mm of dz]  (zout)  {$z_t = z_{\rm new}\!\cdot e^{\Delta\!\log z}$};
+  % ── depth map bypass ──────────────────────────────────────────────
+  \node[io, below=8mm of dz] (dm) {depth map (DA3)};
+  % ── arrows ────────────────────────────────────────────────────────
+  \draw[arr] (in1.south)   |- (emb.west);
+  \draw[arr] (patch.south) -- (emb.north);
+  \draw[arr] (dino.south)  |- (emb.east);
+  \draw[arr] (emb) -- (ssm);
+  \draw[arr] (ssm.east) |- (duv.west);
+  \draw[arr] (ssm.east) |- (dz.west);
+  \draw[arr] (duv) -- (uvout);
+  \draw[arr] (dz)  -- (zout);
+  \draw[arr] (dm.east) to[bend left=25] (zout.south);
+  \node[font=\scriptsize,gray,align=center,above=1.5mm of uvout]
+    {\footnotesize re-sample DA3 depth at $\mathbf{u}_t$};
+\end{tikzpicture}
+\caption{v35 architecture (extends Fig.~\ref{fig:arch}).
+\textcolor{orange!80!black}{Orange} nodes are new relative to v33.
+The DINOv3 feature and depth patch are concatenated with the 4-D track feature
+and fed to the same Mamba-3 stack.
+A second head produces $\Delta\mathbf{u}$ (bounded to $\pm 2$\,px by $\tanh$).
+Depth is then re-sampled at the corrected pixel $\mathbf{u}_t = \mathbf{u}_0 + \Delta\mathbf{u}$
+from the DA3 depth map, and $\Delta\!\log z$ rescales it.
+Both heads are zero-initialised: v35 starts exactly at the v33 output.}
+\label{fig:v35-arch}
+\end{figure}
+
+% -----------------------------------------------------------------------
+\subsection{v36: bidirectional flow}
+\label{sec:v36}
+
+v36 uses the same v35 architecture but runs SEA-RAFT twice --- once forward and once on the
+time-reversed video --- and averages the two 2D track estimates before passing them to the SSM
+(Fig.~\ref{fig:v36-flow}).
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+    node distance=5mm and 10mm,
+    fwd/.style={rectangle, rounded corners, draw=blue!60, fill=blue!6,
+      minimum height=9mm, minimum width=26mm, align=center, font=\small},
+    mrg/.style={rectangle, rounded corners, draw=purple!60!black, fill=purple!6,
+      minimum height=9mm, minimum width=26mm, align=center, font=\small},
+  ]
+  \node[io] (vid) {video $t{=}0\ldots T$};
+  % two RAFT branches
+  \node[fwd, above right=10mm and 12mm of vid] (fwd) {SEA-RAFT\\(forward)};
+  \node[fwd, below right=10mm and 12mm of vid] (bwd) {SEA-RAFT\\(reversed video)};
+  % merge
+  \node[mrg, right=14mm of vid, yshift=0mm]
+    (merge) at ($(fwd.east)!0.5!(bwd.east)+(14mm,0)$) {average\\$+$ flip time};
+  % v35 SSM
+  \node[learn, right=12mm of merge] (v35) {v35 SSM\\(Fig.~\ref{fig:v35-arch})};
+  % output
+  \node[io, right=10mm of v35] (out) {3D tracks\\$(F,N,3)$};
+  % arrows
+  \draw[arr] (vid.east) |- (fwd.west);
+  \draw[arr] (vid.east) |- (bwd.west);
+  \draw[arr] (fwd.east) -| (merge.north);
+  \draw[arr] (bwd.east) -| (merge.south);
+  \draw[arr] (merge) -- (v35);
+  \draw[arr] (v35) -- (out);
+\end{tikzpicture}
+\caption{v36 pipeline. The v35 SSM is unchanged; SEA-RAFT runs on both the original and the
+time-reversed video, the two 2D track estimates are averaged (and the reversed-video result is
+flipped back to forward time), then passed to v35 as the starting 2D positions.
+Bidirectional flow improves coverage of points that are temporarily occluded in the forward
+direction but visible in the backward pass.}
+\label{fig:v36-flow}
+\end{figure}
+
+The gain from v36 over v35 is small on all three subsets (Table~\ref{tab:median},
+Table~\ref{tab:abs}): bidirectional flow helps drivetrack (moving camera; occlusions are common)
+but the pstudio improvement is marginal (fixed cameras; occlusion patterns are nearly symmetric).
+
 \subsection{Training}
 Only the $0.40$M-parameter refiner is trained. The loss is 3D-position-only (the 2D track and
 visibility are frozen, so they carry no gradient):
