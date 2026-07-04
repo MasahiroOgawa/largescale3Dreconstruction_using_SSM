@@ -301,7 +301,8 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   % ── arrows ────────────────────────────────────────────────────────
   \draw[arr] (in1.south)   |- (emb.west);
   \draw[arr] (patch.south) -- (emb.north);
-  \draw[arr] (dino.north)  -- ++(0,3mm) -| (emb.north east);
+  \draw[arr,rounded corners=2pt] (dino.south) -- ++(0,-4mm) coordinate (aux)
+    -- (aux -| emb.east) -- (emb.east);
   \draw[arr] (emb) -- (ssm);
   \draw[arr] (ssm.east) |- (duv.west);
   \draw[arr] (ssm.east) |- (dz.west);
