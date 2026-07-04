@@ -299,7 +299,7 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   \node[io, right=6mm of duv] (uvout) {$\mathbf{u}_t = \mathbf{u}_0+\Delta\mathbf{u}$};
   \node[io, right=6mm of dz]  (zout)  {$z_t = z_{\rm new}\!\cdot e^{\Delta\!\log z}$};
   % ── depth map bypass ──────────────────────────────────────────────
-  \node[io, below=8mm of dz] (dm) {depth map (DA3)};
+  \node[io, below left=8mm and 3mm of dz] (dm) {depth map (DA3)};
   % ── arrows ────────────────────────────────────────────────────────
   \draw[arr] (uv0) -- (in1);
   \draw[arr] (in1.south)   |- (emb.west);
