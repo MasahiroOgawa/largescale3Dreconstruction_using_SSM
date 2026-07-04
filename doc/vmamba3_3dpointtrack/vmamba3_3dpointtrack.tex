@@ -301,7 +301,7 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   % ── arrows ────────────────────────────────────────────────────────
   \draw[arr] (in1.south)   |- (emb.west);
   \draw[arr] (patch.south) -- (emb.north);
-  \draw[arr] (dino.south)  |- (emb.east);
+  \draw[arr] (dino.north)  -- ++(0,3mm) -| (emb.north east);
   \draw[arr] (emb) -- (ssm);
   \draw[arr] (ssm.east) |- (duv.west);
   \draw[arr] (ssm.east) |- (dz.west);
@@ -335,21 +335,21 @@ time-reversed video --- and averages the two 2D track estimates before passing t
 \begin{tikzpicture}[
     node distance=5mm and 10mm,
     fwd/.style={rectangle, rounded corners, draw=blue!60, fill=blue!6,
-      minimum height=9mm, minimum width=26mm, align=center, font=\small},
+      minimum height=9mm, minimum width=22mm, align=center, font=\small},
     mrg/.style={rectangle, rounded corners, draw=purple!60!black, fill=purple!6,
-      minimum height=9mm, minimum width=26mm, align=center, font=\small},
+      minimum height=9mm, minimum width=22mm, align=center, font=\small},
   ]
   \node[io] (vid) {video $t{=}0\ldots T$};
   % two RAFT branches
-  \node[fwd, above right=10mm and 12mm of vid] (fwd) {SEA-RAFT\\(forward)};
-  \node[fwd, below right=10mm and 12mm of vid] (bwd) {SEA-RAFT\\(reversed video)};
+  \node[fwd, above right=8mm and 8mm of vid] (fwd) {SEA-RAFT\\(forward)};
+  \node[fwd, below right=8mm and 8mm of vid] (bwd) {SEA-RAFT\\(reversed video)};
   % merge
   \node[mrg, right=14mm of vid, yshift=0mm]
-    (merge) at ($(fwd.east)!0.5!(bwd.east)+(14mm,0)$) {average\\$+$ flip time};
+    (merge) at ($(fwd.east)!0.5!(bwd.east)+(8mm,0)$) {average\\$+$ flip time};
   % v35 SSM
-  \node[learn, right=12mm of merge] (v35) {v35 SSM\\(Fig.~\ref{fig:v35-arch})};
+  \node[learn, right=8mm of merge] (v35) {v35 SSM\\(Fig.~\ref{fig:v35-arch})};
   % output
-  \node[io, right=10mm of v35] (out) {3D tracks\\$(F,N,3)$};
+  \node[io, right=6mm of v35] (out) {3D tracks\\$(F,N,3)$};
   % arrows
   \draw[arr] (vid.east) |- (fwd.west);
   \draw[arr] (vid.east) |- (bwd.west);
