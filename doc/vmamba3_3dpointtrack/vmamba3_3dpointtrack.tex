@@ -307,8 +307,8 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   \draw[arr,rounded corners=2pt] (dino.south) -- ++(0,-4mm) coordinate (aux)
     -- (aux -| emb.north east) -- (emb.north east);
   \draw[arr] (emb) -- (ssm);
-  \draw[arr] (ssm.north east) |- (duv.south);
-  \draw[arr] (ssm.south east) |- (dz.north);
+  \draw[arr] (ssm.north) -| (duv.west);
+  \draw[arr] (ssm.south) -| (dz.west);
   \draw[arr] (duv) -- (uvout);
   \draw[arr] (dz)  -- (zout);
   \draw[arr] (dm.east) to[bend left=25] (zout.south);
@@ -358,8 +358,8 @@ time-reversed video --- and averages the two 2D track estimates before passing t
   % output
   \node[io, right=6mm of v35] (out) {3D tracks\\$(F,N,3)$};
   % arrows
-  \draw[arr] (vid.north east) |- (fwd.south);
-  \draw[arr] (vid.south east) |- (bwd.north);
+  \draw[arr] (vid.north) -| (fwd.west);
+  \draw[arr] (vid.south) -| (bwd.west);
   \draw[arr] (fwd.east) -| (merge.north);
   \draw[arr] (bwd.east) -| (merge.south);
   \draw[arr] (merge) -- (v35);
