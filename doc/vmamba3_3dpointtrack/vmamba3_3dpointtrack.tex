@@ -189,8 +189,9 @@ learns improvements.  The model has $\approx0.40$M trainable parameters.
   \draw[arr] (m1) -- (head);
   \draw[arr] (head) -- (mul);
   \draw[arr] (mul) -- (z);
-  % z_raw bypass arrow
-  \draw[arr] (zraw.east) |- (mul.south);
+  % z_raw bypass arrow: down from zraw.south, right below all boxes, up to mul.south
+  \coordinate (bypasswa) at ($(zraw.south)+(0,-3mm)$);
+  \draw[arr,rounded corners=2pt] (zraw.south) -- (bypasswa) -- (bypasswa -| mul.south) -- (mul.south);
   \node[font=\scriptsize, above=2mm of m1, align=center]
     {state dim 64, 4 heads};
 \end{tikzpicture}
