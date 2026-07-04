@@ -282,27 +282,28 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
     new/.style={rectangle, rounded corners, draw=orange!70!black, fill=orange!8,
       minimum height=9mm, minimum width=22mm, align=center, font=\small},
   ]
-  % ── inputs (top row) ──────────────────────────────────────────────
-  \node[io] (in1)   {$[\mathbf{r}(\mathbf{u}_0),\,z/z_r,\,v]$\\{\scriptsize 4-D}};
-  % ── u_0: 2-D flow from SEA-RAFT (see Fig.~\ref{fig:v36-flow}) ────
-  \node[io, above=5mm of in1] (uv0) {$\mathbf{u}_0$ (SEA-RAFT)\\{\scriptsize 2-D flow}};
-  \node[new, right=6mm of in1]   (patch) {depth patch\\{\scriptsize $5{\times}5$}};
-  \node[new, right=6mm of patch] (dino)  {DINOv3 feat\\{\scriptsize 64-D}};
+  % ── inputs (top row): patch and dino as anchors ───────────────────
+  \node[new] (patch) {depth patch\\{\scriptsize $5{\times}5$}};
+  \node[new, right=6mm of patch] (dino) {DINOv3 feat\\{\scriptsize 64-D}};
+  % u0 top-aligned with depth patch; r(u0) stacked below
+  \node[io, anchor=north east] (uv0) at ($(patch.north west)+(-6mm,0)$)
+    {$\mathbf{u}_0$ (SEA-RAFT)\\{\scriptsize 2-D flow}};
+  \node[io, below=5mm of uv0] (in1) {$[\mathbf{r}(\mathbf{u}_0),\,z/z_r,\,v]$\\{\scriptsize 4-D}};
+  % depth map: same row as depth patch
+  \node[io, right=6mm of dino] (dm) {depth map (DA3)};
   % ── embed ─────────────────────────────────────────────────────────
   \node[block, below=14mm of patch] (emb) {MLP embed\\{\scriptsize 128-D}};
   % ── SSM ───────────────────────────────────────────────────────────
   \node[learn, right=8mm of emb] (ssm) {Mamba-3 SSD\\{\scriptsize $\times 2$, causal}};
-  % ── output heads ──────────────────────────────────────────────────
-  \node[block, above right=10mm and 20mm of ssm] (duv) {$\Delta\mathbf{u}$~head\\{\scriptsize 0-init, $\tanh\!\cdot\!2$}};
-  \node[block, below right=10mm and 20mm of ssm] (dz)  {$\Delta\!\log z$~head\\{\scriptsize 0-init}};
+  % ── output heads ($\Delta\!\log z$ upper, $\Delta\mathbf{u}$ lower) ─
+  \node[block, above right=10mm and 35mm of ssm] (dz)  {$\Delta\!\log z$~head\\{\scriptsize 0-init}};
+  \node[block, below right=10mm and 35mm of ssm] (duv) {$\Delta\mathbf{u}$~head\\{\scriptsize 0-init, $\tanh\!\cdot\!2$}};
   % ── outputs ───────────────────────────────────────────────────────
-  \node[io, right=6mm of duv] (uvout) {$\mathbf{u}_t = \mathbf{u}_0+\Delta\mathbf{u}$};
   \node[io, right=6mm of dz]  (zout)  {$z_t = z_{\rm new}\!\cdot e^{\Delta\!\log z}$};
-  % ── depth map bypass ──────────────────────────────────────────────
-  \node[io, below left=8mm and 3mm of dz] (dm) {depth map (DA3)};
+  \node[io, right=6mm of duv] (uvout) {$\mathbf{u}_t = \mathbf{u}_0+\Delta\mathbf{u}$};
   % ── arrows ────────────────────────────────────────────────────────
   \draw[arr] (uv0) -- (in1);
-  \draw[arr] (in1.south)   |- (emb.west);
+  \draw[arr] (in1.south) |- (emb.west);
   \draw[arr] (patch.south) -- (emb.north);
   \draw[arr,rounded corners=2pt] (dino.south) -- ++(0,-4mm) coordinate (aux)
     -- (aux -| emb.north east) -- (emb.north east);
@@ -310,11 +311,11 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   \coordinate (ssmfork) at ($(ssm.east)+(8mm,0)$);
   \draw (ssm.east) -- (ssmfork);
   \fill (ssmfork) circle[radius=1pt];
-  \draw[arr] (ssmfork) -- (ssmfork |- duv.west) -- (duv.west);
   \draw[arr] (ssmfork) -- (ssmfork |- dz.west) -- (dz.west);
-  \draw[arr] (duv) -- (uvout);
+  \draw[arr] (ssmfork) -- (ssmfork |- duv.west) -- (duv.west);
   \draw[arr] (dz)  -- (zout);
-  \draw[arr] (dm.east) -- ($(dm.east -| zout.west)+(-3mm,0)$) -- ($(zout.west)+(-3mm,0)$) -- (zout.west);
+  \draw[arr] (duv) -- (uvout);
+  \draw[arr] (dm.north) -- ($(dm.north -| zout.west)+(-3mm,0)$) -- ($(zout.west)+(-3mm,0)$) -- (zout.west);
   \node[font=\scriptsize,gray,align=center,above=1.5mm of uvout]
     {\footnotesize re-sample DA3 depth at $\mathbf{u}_t$};
 \end{tikzpicture}
