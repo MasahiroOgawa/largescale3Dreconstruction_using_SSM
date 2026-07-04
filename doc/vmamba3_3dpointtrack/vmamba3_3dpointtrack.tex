@@ -307,8 +307,11 @@ Depth is re-sampled at the shifted pixel before $e^{\Delta\!\log z}$ rescales it
   \draw[arr,rounded corners=2pt] (dino.south) -- ++(0,-4mm) coordinate (aux)
     -- (aux -| emb.north east) -- (emb.north east);
   \draw[arr] (emb) -- (ssm);
-  \draw[arr] (ssm.east) -- (duv.west);
-  \draw[arr] (ssm.east) -- (dz.west);
+  \coordinate (ssmfork) at ($(ssm.east)+(4mm,0)$);
+  \draw (ssm.east) -- (ssmfork);
+  \fill (ssmfork) circle[radius=1pt];
+  \draw[arr] (ssmfork) -| (duv.west);
+  \draw[arr] (ssmfork) -| (dz.west);
   \draw[arr] (duv) -- (uvout);
   \draw[arr] (dz)  -- (zout);
   \draw[arr] (dm.east) to[bend left=25] (zout.south);
@@ -358,8 +361,11 @@ time-reversed video --- and averages the two 2D track estimates before passing t
   % output
   \node[io, right=6mm of v35] (out) {3D tracks\\$(F,N,3)$};
   % arrows
-  \draw[arr] (vid.east) |- (fwd.west);
-  \draw[arr] (vid.east) |- (bwd.west);
+  \coordinate (vidfork) at ($(vid.east)+(4mm,0)$);
+  \draw (vid.east) -- (vidfork);
+  \fill (vidfork) circle[radius=1pt];
+  \draw[arr] (vidfork) -| (fwd.west);
+  \draw[arr] (vidfork) -| (bwd.west);
   \draw[arr] (fwd.east) -| (merge.north);
   \draw[arr] (bwd.east) -| (merge.south);
   \draw[arr] (merge) -- (v35);
@@ -689,6 +695,7 @@ v33 (depth refiner)       & 12.5 & 0.40\,M \\
 \bibitem{spatialtracker} Xiao et al., \textit{SpatialTracker: Tracking Any 2D Pixels in 3D Space}, CVPR 2024.
 \bibitem{spatrackerv2} Xiao et al., \textit{SpatialTracker V2: Tracking Any 3D Points in the Wild}, arXiv 2505, 2025.
 \bibitem{tapip3d} \textit{TAPIP3D: Tracking Any Point in Persistent 3D Geometry}, 2025.
+\bibitem{trackcraft3r} Nam et al., \textit{TrackCraft3R: Repurposing Video Diffusion Transformers for Dense 3D Tracking}, arXiv:2605.12587, 2025.
 \bibitem{zoedepth} Bhat et al., \textit{ZoeDepth: Zero-shot Transfer by Combining Relative and Metric Depth}, arXiv 2302.12288, 2023.
 \end{thebibliography}
 
