@@ -677,16 +677,47 @@ predicted (solid) vs ground truth (dashed).}
 \subsection{Efficiency}
 \begin{table}[h]
 \centering
-\caption{Efficiency. v33 adds a $0.40$M-param refiner with negligible cost over the baseline.}
+\caption{Inference throughput on RTX\,4080 (12\,GB). Our lightweight refiner adds negligible
+         cost over the baseline; TrackCraft3R's diffusion backbone is ${\approx}200\times$ slower.}
+\label{tab:efficiency}
 \begin{tabular}{lrr}
 \toprule
 Method & throughput (fps) & trainable params \\
 \midrule
 SEA-RAFT + DA3 (baseline) & 12.4 & 0 \\
 v33 (depth refiner)       & 12.5 & 0.40\,M \\
+\midrule
+TrackCraft3R\,$^{\S}$     & ${\approx}0.06$ & --- \\
 \bottomrule
 \end{tabular}
+\\[2pt]
+{\footnotesize $^{\S}$ TrackCraft3R is a pre-trained 1.3\,B-parameter video diffusion model (Wan2.1
+DiT $+$ 3 VAEs $+$ LoRA); it is not trained by us, hence ``---'' for trainable params.
+Throughput measured on the same RTX\,4080 via windowed inference (see text).}
 \end{table}
+
+\paragraph{Why TrackCraft3R is slow.}
+TrackCraft3R~\cite{trackcraft3r} adapts Wan2.1-T2V-1.3B --- a video diffusion transformer ---
+for 3D tracking via single-step regression.
+Each \emph{inference window} (12 frames) requires four sequential GPU passes:
+(i)~RGB VAE encode, (ii)~pointmap VAE encode, (iii)~DiT forward through 1.3\,B
+parameters, and (iv)~two parallel VAE decodes (xyz $+$ visibility).
+The DiT forward alone accounts for ${\approx}75$\,\% of the per-window cost (${\approx}15$--$18$\,s),
+with the three VAE passes adding ${\approx}6$\,s; total ${\approx}21$\,s per window on our RTX\,4080.
+
+Critically, each \emph{unique query anchor frame} requires its own window.
+TAPVid-3D queries span many frames: a typical 150-frame pstudio clip produces
+90--120 unique windows; a 300-frame adt clip produces 260--270 windows.
+At 21\,s each, per-clip latency reaches ${\approx}32$\,min (pstudio) and ${\approx}95$\,min (adt),
+giving an effective throughput of ${\approx}0.06$\,fps --- \textbf{${\approx}200\times$ slower}
+than our pipeline (12.4\,fps).
+
+Our method achieves this throughput advantage because the Mamba-3 SSD refiner processes
+all $N$ tracks jointly in a single causal sweep per frame (no per-window restarts),
+and the 0.40\,M-parameter SSM adds negligible overhead over the frozen SEA-RAFT $+$ DA3 baseline.
+Combined with the accuracy advantage on the absolute metric
+(Table~\ref{tab:abs}: mean metric-AJ $0.234$ vs $0.025$ for TrackCraft3R on pstudio),
+our pipeline is competitive on both quality and efficiency axes.
 
 % =====================================================================
 \begin{thebibliography}{9}
