@@ -33,9 +33,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+# Must be set before torch initialises the CUDA allocator.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import numpy as np
 import torch
@@ -87,6 +91,7 @@ def _infer(
     da3_depth_root,
     max_frames,
     device,
+    amp_dtype=torch.bfloat16,
 ):
     """Return (pred_tracks (N,F,3) camera-frame XYZ, pred_vis (N,F))."""
     F_ = (
@@ -135,10 +140,12 @@ def _infer(
             padding_mode="border",
             align_corners=False,
         ).view(1, F_, -1)
-        images_b = images.unsqueeze(0).to(device)  # (1,F,3,H,W) in [0,1]
-        xyz = model(
-            ray, z_raw, vis.unsqueeze(0).to(device), uv_d, depth_t, images_b, K_t
-        ).xyz[0]
+        # Cast to amp_dtype to halve the ~1.35 GB fp32 image tensor
+        images_b = images.unsqueeze(0).to(device, dtype=amp_dtype)
+        with torch.autocast(device_type=device.type, dtype=amp_dtype):
+            xyz = model(
+                ray, z_raw, vis.unsqueeze(0).to(device), uv_d, depth_t, images_b, K_t
+            ).xyz[0]
     else:  # v33
         ray = _ray_from_uv(uv_d, K_t)
         grid = (2.0 * uv_d / image_size - 1.0).view(F_, 1, -1, 2)
@@ -149,7 +156,8 @@ def _infer(
             padding_mode="border",
             align_corners=False,
         ).view(1, F_, -1)
-        xyz = model(ray, z_raw, vis.unsqueeze(0).to(device)).xyz[0]  # (F,N,3)
+        with torch.autocast(device_type=device.type, dtype=amp_dtype):
+            xyz = model(ray, z_raw, vis.unsqueeze(0).to(device)).xyz[0]  # (F,N,3)
     return xyz.transpose(0, 1).cpu().numpy(), vis.transpose(0, 1).numpy()
 
 
@@ -225,6 +233,7 @@ def main() -> int:
     ap.add_argument("--scale", type=int, default=None)
     ap.add_argument("--fb-alpha", type=float, default=0.05)
     ap.add_argument("--fb-beta", type=float, default=1.0)
+    ap.add_argument("--amp", choices=["bf16", "fp32"], default="bf16")
     args = ap.parse_args()
 
     if args.out_dir is None:
@@ -282,9 +291,10 @@ def main() -> int:
         model.load_state_dict(state["model"])
         model.eval()
         print(f"[viz] v35 ckpt {args.ckpt} (step={state.get('step', '?')})")
+    amp_dtype = {"bf16": torch.bfloat16, "fp32": torch.float32}[args.amp]
     print(
         f"[viz] method={args.method}  style={args.style}  scaling={args.scaling}  "
-        f"SEA-RAFT iters={flow_model.args.iters} scale={flow_model.args.scale}"
+        f"amp={args.amp}  SEA-RAFT iters={flow_model.args.iters} scale={flow_model.args.scale}"
     )
 
     raw_err: dict[str, list[float]] = defaultdict(list)
@@ -312,6 +322,7 @@ def main() -> int:
                     args.da3_depth_root,
                     args.max_frames,
                     device,
+                    amp_dtype,
                 )
                 F_ = pred_NF3.shape[1]
                 gt_NF3 = np.transpose(clip.tracks_XYZ[:F_].numpy(), (1, 0, 2))
