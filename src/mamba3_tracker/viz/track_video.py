@@ -232,17 +232,24 @@ def render_tracking_d4rt_html(
     head_size: float = 5.0,
     vis_thresh: float = 0.5,
     max_tracks: int = 64,
+    images_rgb: np.ndarray | None = None,  # (F, H, W, 3) uint8
+    depth_hw: np.ndarray | None = None,  # (F, H, W) float32 metres
+    K_mat: np.ndarray | None = None,  # (3, 3) intrinsics for H × W
+    pcloud_stride: int = 16,
 ) -> Path:
     """Interactive animated 3D D4RT-style visualization — self-contained HTML.
 
-    Produces a Plotly animated Scatter3d: vivid rainbow-colored dots in 3D space
-    with alpha-fading tails.  Open the file in any browser to:
+    Produces a Plotly animated Scatter3d: vivid rainbow-colored tracks in 3D space
+    with alpha-fading tails, plus an image-colored scene point cloud when
+    `images_rgb`, `depth_hw`, and `K_mat` are supplied (two Scatter3d traces).
+    Open the file in any browser to:
       - ▶ Play / ⏸ Pause the animation with the buttons
       - Drag the frame slider to jump to any frame
       - Rotate / zoom / pan the 3D scene freely
 
     Plotly.js is loaded from CDN (requires internet on first open).
     To cap HTML size, at most `max_tracks` tracks are shown (longest-visible first).
+    `pcloud_stride` controls point cloud density (higher = sparser, smaller HTML).
     """
     import plotly.graph_objects as go  # lazy import — not needed for TAPVid style
 
@@ -270,10 +277,66 @@ def render_tracking_d4rt_html(
         r, g, b = int(rgb[n, 0]), int(rgb[n, 1]), int(rgb[n, 2])
         return f"rgba({r},{g},{b},{alpha:.3f})"
 
-    # Build one Scatter3d trace per animation frame
-    # Each trace holds all tail + head points as a single call (RGBA colors encode alpha)
+    # === Precompute per-frame scene point clouds from depth + images ===
+    pcloud_frames: list | None = None
+    if images_rgb is not None and depth_hw is not None and K_mat is not None:
+        Hp, Wp = int(depth_hw.shape[1]), int(depth_hw.shape[2])
+        fx, fy = float(K_mat[0, 0]), float(K_mat[1, 1])
+        cx, cy = float(K_mat[0, 2]), float(K_mat[1, 2])
+
+        # Fixed pixel grid — same positions every frame for a stable point cloud
+        vs_arr = np.arange(0, Hp, pcloud_stride)
+        us_arr = np.arange(0, Wp, pcloud_stride)
+        ug, vg = np.meshgrid(us_arr, vs_arr, indexing="xy")
+        ug = ug.flatten().astype(np.int32)
+        vg = vg.flatten().astype(np.int32)
+
+        # Nearest-neighbour remap if images and depth are different resolutions
+        Hi, Wi = int(images_rgb.shape[1]), int(images_rgb.shape[2])
+        if Hi != Hp or Wi != Wp:
+            yi = np.round(np.arange(Hp) * Hi / Hp).astype(int).clip(0, Hi - 1)
+            xi = np.round(np.arange(Wp) * Wi / Wp).astype(int).clip(0, Wi - 1)
+            img_src = images_rgb[:, yi[:, None], xi[None, :], :]  # (F, Hp, Wp, 3)
+        else:
+            img_src = images_rgb
+
+        pcloud_frames = []
+        for t in range(F):
+            d = depth_hw[t, vg, ug]
+            valid = (d > 0.05) & (d < 500.0) & np.isfinite(d)
+            if not valid.any():
+                pcloud_frames.append(([], [], [], []))
+                continue
+            uv, vv, dv = ug[valid], vg[valid], d[valid]
+            X = ((uv - cx) * dv / fx).tolist()
+            Y = ((vv - cy) * dv / fy).tolist()
+            Z = dv.tolist()
+            rgb_pts = img_src[t, vv, uv]  # (M, 3) uint8
+            colors = ["rgb(%d,%d,%d)" % (int(r), int(g), int(b)) for r, g, b in rgb_pts]
+            pcloud_frames.append((X, Y, Z, colors))
+
+    # Build animation frames — two Scatter3d traces when point cloud is available:
+    #   trace 0: scene point cloud (image-colored background)
+    #   trace 1: track tails + heads (vivid hue, RGBA opacity)
     plotly_frames = []
     for t in range(F):
+        frame_traces = []
+
+        # Trace 0: scene point cloud
+        if pcloud_frames is not None:
+            px, py, pz, pc = pcloud_frames[t]
+            frame_traces.append(
+                go.Scatter3d(
+                    x=px,
+                    y=py,
+                    z=pz,
+                    mode="markers",
+                    marker=dict(color=pc, size=1.5, line=dict(width=0), opacity=0.8),
+                    hoverinfo="skip",
+                )
+            )
+
+        # Trace 1 (or 0 without pcloud): track tails + heads
         xs, ys, zs, clrs, szs = [], [], [], [], []
 
         # Tail: oldest step drawn first so head paints over it
@@ -308,21 +371,18 @@ def render_tracking_d4rt_html(
             clrs.append(_rgba(n, 1.0))
             szs.append(head_size)
 
-        plotly_frames.append(
-            go.Frame(
-                data=[
-                    go.Scatter3d(
-                        x=xs,
-                        y=ys,
-                        z=zs,
-                        mode="markers",
-                        marker=dict(color=clrs, size=szs, line=dict(width=0)),
-                        hoverinfo="skip",
-                    )
-                ],
-                name=str(t),
+        frame_traces.append(
+            go.Scatter3d(
+                x=xs,
+                y=ys,
+                z=zs,
+                mode="markers",
+                marker=dict(color=clrs, size=szs, line=dict(width=0)),
+                hoverinfo="skip",
             )
         )
+
+        plotly_frames.append(go.Frame(data=frame_traces, name=str(t)))
 
     frame_ms = int(1000 / max(1, fps))
     fig = go.Figure(

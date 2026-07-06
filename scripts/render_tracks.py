@@ -227,6 +227,12 @@ def main() -> int:
     ap.add_argument("--scaling", choices=["none", "median", "anchor"], default="none")
     ap.add_argument("--fps", type=int, default=15)
     ap.add_argument(
+        "--pcloud-stride",
+        type=int,
+        default=16,
+        help="D4RT point cloud: sample every N pixels (higher = sparser, smaller HTML)",
+    )
+    ap.add_argument(
         "--url", type=str, default="MemorySlices/Tartan-C-T-TSKH-spring540x960-M"
     )
     ap.add_argument("--iters", type=int, default=None)
@@ -359,12 +365,43 @@ def main() -> int:
                 )
 
                 if args.style == "d4rt":
+                    H_orig = clip.images.shape[-2]
+                    W_orig = clip.images.shape[-1]
+                    sx = args.image_size / W_orig
+                    sy = args.image_size / H_orig
+                    # images at image_size (same transform as in _infer)
+                    imgs = clip.images[:F_].clamp(0, 1)
+                    if (H_orig, W_orig) != (args.image_size, args.image_size):
+                        imgs = F.interpolate(
+                            imgs,
+                            size=(args.image_size, args.image_size),
+                            mode="bilinear",
+                            align_corners=False,
+                        )
+                    frames_rgb = (imgs * 255).byte().permute(0, 2, 3, 1).numpy()
+                    # depth resized to image_size so it's consistent with K_scaled
+                    depth_raw = _load_depth(
+                        args.da3_depth_root, clip.subset, clip.clip_id, F_
+                    )
+                    depth_np = F.interpolate(
+                        depth_raw.squeeze(0).unsqueeze(1),  # (F_, 1, Hd, Wd)
+                        size=(args.image_size, args.image_size),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze(1).numpy()  # (F_, image_size, image_size)
+                    K_scaled = K.copy()
+                    K_scaled[0] *= sx
+                    K_scaled[1] *= sy
                     render_tracking_d4rt_html(
                         pred_NF3,
                         vis_NF,
                         args.out_dir / f"{stem}_d4rt.html",
                         fps=args.fps,
                         max_tracks=args.max_tracks,
+                        images_rgb=frames_rgb,
+                        depth_hw=depth_np,
+                        K_mat=K_scaled,
+                        pcloud_stride=args.pcloud_stride,
                     )
                 else:
                     frames = (
