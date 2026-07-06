@@ -47,19 +47,21 @@ Requirements: CUDA GPU (bf16 training/inference), Python 3.11.
 
 ## Viewing v35 visual results
 
-Best checkpoint: `result/v35_20260701/ckpt_20000.pt`
+Training runs follow the datetime-first convention: `result/<YYYYMMDD-HHMM>_track_v35/`.
+Pass the checkpoint inside that directory to the render script — output lands automatically
+alongside it.
 
 ### TAPVid-style (filled circles + fading line trails)
 
 ```bash
 uv run python scripts/render_tracks.py \
     --method v35 \
-    --ckpt result/v35_20260701/ckpt_20000.pt \
+    --ckpt result/<YYYYMMDD-HHMM>_track_v35/ckpt_20000.pt \
     --style tapvid \
     --subsets drivetrack \
     --clips-per-subset 2 \
     --split minival
-# outputs to result/v35_20260701/viz_ckpt20000_tapvid/
+# outputs to result/<YYYYMMDD-HHMM>_track_v35/viz_ckpt20000_tapvid/
 ```
 
 ### D4RT-style (vivid rainbow dot trails)
@@ -71,12 +73,12 @@ a white sparkle; the tail is alpha-fading dots that shrink toward the past.
 ```bash
 uv run python scripts/render_tracks.py \
     --method v35 \
-    --ckpt result/v35_20260701/ckpt_20000.pt \
+    --ckpt result/<YYYYMMDD-HHMM>_track_v35/ckpt_20000.pt \
     --style d4rt \
     --subsets drivetrack \
     --clips-per-subset 2 \
     --split minival
-# outputs to result/v35_20260701/viz_ckpt20000_d4rt/
+# outputs to result/<YYYYMMDD-HHMM>_track_v35/viz_ckpt20000_d4rt/
 ```
 
 Per clip the script writes:
@@ -97,7 +99,7 @@ Per clip the script writes:
 # Minival eval on all 3 subsets
 uv run python scripts/eval_metric3d.py \
     --method v35 \
-    --ckpt result/v35_20260701/ckpt_20000.pt \
+    --ckpt result/<YYYYMMDD-HHMM>_track_v35/ckpt_20000.pt \
     --split minival \
     --out-dir result/eval/$(date +%Y%m%d-%H%M)_metric3d_v35
 ```
@@ -135,8 +137,8 @@ third_party/
     TrackCraft3R/                    TrackCraft3R submodule (for comparison)
 
 result/
-    v35_20260701/
-        ckpt_20000.pt                best v35 checkpoint
+    YYYYMMDD-HHMM_track_v35/
+        ckpt_20000.pt                training checkpoint
         viz_ckpt20000_tapvid/        render_tracks --style tapvid (auto-placed)
         viz_ckpt20000_d4rt/          render_tracks --style d4rt   (auto-placed)
         viz3d_ckpt20000/             render_3d_tracks             (auto-placed)
