@@ -64,11 +64,14 @@ uv run python scripts/render_tracks.py \
 # outputs to result/<YYYYMMDD-HHMM>_track_v35/viz_ckpt20000_tapvid/
 ```
 
-### D4RT-style (vivid rainbow dot trails)
+### D4RT-style (interactive 3D animated visualization)
 
 Inspired by [D4RT (DeepMind, 2024)](https://deepmind.google/blog/d4rt-teaching-ai-to-see-the-world-in-four-dimensions/):
-each track gets a distinct vivid hue; the current frame is a bright dot with
-a white sparkle; the tail is alpha-fading dots that shrink toward the past.
+produces a self-contained HTML file with an animated Plotly 3D scatter plot.
+Open it in a browser to:
+- ▶ Play / ⏸ Pause the animation and drag the frame slider
+- Rotate, zoom, and pan the 3D scene freely
+- Each track has a distinct vivid hue with alpha-fading dot trails in 3D space
 
 ```bash
 uv run python scripts/render_tracks.py \
@@ -78,7 +81,7 @@ uv run python scripts/render_tracks.py \
     --subsets drivetrack \
     --clips-per-subset 2 \
     --split minival
-# outputs to result/<YYYYMMDD-HHMM>_track_v35/viz_ckpt20000_d4rt/
+# outputs to result/<YYYYMMDD-HHMM>_track_v35/viz_ckpt20000_d4rt/<clip>_d4rt.html
 ```
 
 Per clip the script writes:

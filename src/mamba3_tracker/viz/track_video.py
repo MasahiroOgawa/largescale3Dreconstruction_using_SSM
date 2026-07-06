@@ -1,15 +1,14 @@
-"""Render point-tracking videos in two styles.
+"""Render point-tracking videos and interactive visualizations.
 
 **TAPVid style** (`render_tracking_video`):
-  Filled/hollow circles (visible/occluded) with a fading line tail.
-  Track IDs are colour-coded with a random HSV colormap.
+  Filled/hollow circles (visible/occluded) with a fading line tail.  Output: MP4.
 
-**D4RT style** (`render_tracking_video_d4rt`):
-  Vivid rainbow colors, alpha-fading dot-only trails, no connecting lines.
-  Matches the visual style from DeepMind's D4RT paper.
+**D4RT style** (`render_tracking_d4rt_html`):
+  Interactive animated 3D visualization: vivid rainbow colors, alpha-fading 3D dot
+  trails, play/pause controls and a frame slider, fully rotatable/zoomable 3D scene.
+  Open the output .html in any browser.  Matches the D4RT paper aesthetic.
   https://deepmind.google/blog/d4rt-teaching-ai-to-see-the-world-in-four-dimensions/
-
-Output: MP4 via OpenCV's VideoWriter.
+  Output: self-contained HTML via Plotly.
 """
 
 from __future__ import annotations
@@ -221,4 +220,203 @@ def render_tracking_video_d4rt(
         vw.write(canvas)
 
     vw.release()
+    return out_path
+
+
+def render_tracking_d4rt_html(
+    pred_tracks_NT3: np.ndarray,  # (N, F, 3)  camera-space XYZ metres
+    pred_visibility_NT: np.ndarray,  # (N, F)     float 0/1
+    out_path: str | Path,
+    fps: int = 15,
+    tail_len: int = 16,
+    head_size: float = 5.0,
+    vis_thresh: float = 0.5,
+    max_tracks: int = 64,
+) -> Path:
+    """Interactive animated 3D D4RT-style visualization — self-contained HTML.
+
+    Produces a Plotly animated Scatter3d: vivid rainbow-colored dots in 3D space
+    with alpha-fading tails.  Open the file in any browser to:
+      - ▶ Play / ⏸ Pause the animation with the buttons
+      - Drag the frame slider to jump to any frame
+      - Rotate / zoom / pan the 3D scene freely
+
+    Plotly.js is loaded from CDN (requires internet on first open).
+    To cap HTML size, at most `max_tracks` tracks are shown (longest-visible first).
+    """
+    import plotly.graph_objects as go  # lazy import — not needed for TAPVid style
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    N_full, F, _ = pred_tracks_NT3.shape
+
+    # Select longest-visible tracks up to max_tracks
+    vis_count = pred_visibility_NT.sum(axis=1)
+    sel = np.argsort(-vis_count)[:max_tracks]
+    tracks = pred_tracks_NT3[sel]  # (N, F, 3)
+    vis = pred_visibility_NT[sel]  # (N, F)
+    N = len(sel)
+
+    # Per-track vivid RGB colors (same hue logic as _colormap_vivid, but as (R,G,B) tuples)
+    hue = np.linspace(0, 179, N, endpoint=False).astype(np.uint8)
+    hsv = np.zeros((N, 1, 3), dtype=np.uint8)
+    hsv[:, 0, 0] = hue
+    hsv[:, 0, 1] = 255
+    hsv[:, 0, 2] = 255
+    rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[:, 0, ::-1]  # (N, 3) RGB
+
+    def _rgba(n: int, alpha: float) -> str:
+        r, g, b = int(rgb[n, 0]), int(rgb[n, 1]), int(rgb[n, 2])
+        return f"rgba({r},{g},{b},{alpha:.3f})"
+
+    # Build one Scatter3d trace per animation frame
+    # Each trace holds all tail + head points as a single call (RGBA colors encode alpha)
+    plotly_frames = []
+    for t in range(F):
+        xs, ys, zs, clrs, szs = [], [], [], [], []
+
+        # Tail: oldest step drawn first so head paints over it
+        for k in range(tail_len, 0, -1):
+            t_k = t - k
+            if t_k < 0:
+                continue
+            alpha = (1.0 - k / (tail_len + 1)) ** 1.5
+            sz = max(1.5, head_size * (1.0 - 0.6 * k / tail_len))
+            for n in range(N):
+                if vis[n, t_k] < vis_thresh:
+                    continue
+                p = tracks[n, t_k]
+                if not np.isfinite(p).all():
+                    continue
+                xs.append(float(p[0]))
+                ys.append(float(p[1]))
+                zs.append(float(p[2]))
+                clrs.append(_rgba(n, alpha))
+                szs.append(sz)
+
+        # Head: current-frame dot, full opacity
+        for n in range(N):
+            if vis[n, t] < vis_thresh:
+                continue
+            p = tracks[n, t]
+            if not np.isfinite(p).all():
+                continue
+            xs.append(float(p[0]))
+            ys.append(float(p[1]))
+            zs.append(float(p[2]))
+            clrs.append(_rgba(n, 1.0))
+            szs.append(head_size)
+
+        plotly_frames.append(
+            go.Frame(
+                data=[
+                    go.Scatter3d(
+                        x=xs,
+                        y=ys,
+                        z=zs,
+                        mode="markers",
+                        marker=dict(color=clrs, size=szs, line=dict(width=0)),
+                        hoverinfo="skip",
+                    )
+                ],
+                name=str(t),
+            )
+        )
+
+    frame_ms = int(1000 / max(1, fps))
+    fig = go.Figure(
+        data=plotly_frames[0].data if plotly_frames else [],
+        frames=plotly_frames,
+        layout=go.Layout(
+            paper_bgcolor="#0d0d0d",
+            scene=dict(
+                bgcolor="#0d0d0d",
+                xaxis=dict(visible=False, showgrid=False, zeroline=False),
+                yaxis=dict(visible=False, showgrid=False, zeroline=False),
+                zaxis=dict(visible=False, showgrid=False, zeroline=False),
+                aspectmode="data",
+            ),
+            title=dict(
+                text="D4RT — 3D point tracks  (rotate: drag | zoom: scroll)",
+                font=dict(color="#cccccc", size=13),
+            ),
+            updatemenus=[
+                dict(
+                    type="buttons",
+                    showactive=False,
+                    x=0.05,
+                    y=0.02,
+                    xanchor="left",
+                    yanchor="bottom",
+                    bgcolor="#1a1a1a",
+                    bordercolor="#444",
+                    font=dict(color="#eeeeee"),
+                    buttons=[
+                        dict(
+                            label="▶ Play",
+                            method="animate",
+                            args=[
+                                None,
+                                dict(
+                                    frame=dict(duration=frame_ms, redraw=True),
+                                    fromcurrent=True,
+                                    transition=dict(duration=0),
+                                ),
+                            ],
+                        ),
+                        dict(
+                            label="⏸ Pause",
+                            method="animate",
+                            args=[
+                                [None],
+                                dict(
+                                    frame=dict(duration=0, redraw=False),
+                                    mode="immediate",
+                                    transition=dict(duration=0),
+                                ),
+                            ],
+                        ),
+                    ],
+                )
+            ],
+            sliders=[
+                dict(
+                    active=0,
+                    x=0.1,
+                    len=0.85,
+                    y=0.02,
+                    yanchor="bottom",
+                    bgcolor="#1a1a1a",
+                    bordercolor="#333",
+                    tickcolor="#555",
+                    font=dict(color="#cccccc", size=9),
+                    currentvalue=dict(
+                        prefix="Frame ", font=dict(color="#cccccc", size=11)
+                    ),
+                    transition=dict(duration=0),
+                    steps=[
+                        dict(
+                            args=[
+                                [str(t)],
+                                dict(
+                                    frame=dict(duration=0, redraw=True),
+                                    mode="immediate",
+                                    transition=dict(duration=0),
+                                ),
+                            ],
+                            label=str(t) if t % max(1, F // 20) == 0 else "",
+                            method="animate",
+                        )
+                        for t in range(F)
+                    ],
+                )
+            ],
+            margin=dict(l=0, r=0, t=50, b=100),
+            height=750,
+            showlegend=False,
+        ),
+    )
+
+    fig.write_html(str(out_path), include_plotlyjs="cdn", full_html=True)
     return out_path

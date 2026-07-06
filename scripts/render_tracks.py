@@ -45,8 +45,8 @@ from mamba3_tracker.data.dataset import filter_to_split
 from mamba3_tracker.data.tapvid3d import SUBSETS, has_images, list_clips, load_clip
 from mamba3_tracker.train.loss import _unproject_with_depth
 from mamba3_tracker.viz.track_video import (
+    render_tracking_d4rt_html,
     render_tracking_video,
-    render_tracking_video_d4rt,
 )
 from searaft_flow import FlowModel, track_clip
 
@@ -230,7 +230,9 @@ def main() -> int:
     if args.out_dir is None:
         if args.method == "searaft":
             ap.error("--out-dir is required for --method searaft (no checkpoint)")
-        step = args.ckpt.stem.split("_")[-1] if "_" in args.ckpt.stem else args.ckpt.stem
+        step = (
+            args.ckpt.stem.split("_")[-1] if "_" in args.ckpt.stem else args.ckpt.stem
+        )
         args.out_dir = args.ckpt.parent / f"viz_ckpt{step}_{args.style}"
     args.out_dir.mkdir(parents=True, exist_ok=True)
     args.data_root = args.data_root.expanduser()
@@ -345,22 +347,21 @@ def main() -> int:
                     f"(plot scaling={args.scaling})"
                 )
 
-                frames = (
-                    (clip.images[:F_].clamp(0, 1) * 255)
-                    .byte()
-                    .permute(0, 2, 3, 1)
-                    .numpy()
-                )
                 if args.style == "d4rt":
-                    render_tracking_video_d4rt(
-                        frames,
+                    render_tracking_d4rt_html(
                         pred_NF3,
                         vis_NF,
-                        K,
-                        args.out_dir / f"{stem}.mp4",
+                        args.out_dir / f"{stem}_d4rt.html",
                         fps=args.fps,
+                        max_tracks=args.max_tracks,
                     )
                 else:
+                    frames = (
+                        (clip.images[:F_].clamp(0, 1) * 255)
+                        .byte()
+                        .permute(0, 2, 3, 1)
+                        .numpy()
+                    )
                     render_tracking_video(
                         frames,
                         pred_NF3,
@@ -397,8 +398,9 @@ def main() -> int:
                     title,
                     args.max_tracks,
                 )
+                vid_ext = "html(d4rt)" if args.style == "d4rt" else "mp4"
                 print(
-                    f"[viz] {stem}: raw={e_raw:.2f}m median={e_med:.2f}m → mp4/_3d/_st",
+                    f"[viz] {stem}: raw={e_raw:.2f}m median={e_med:.2f}m → {vid_ext}/_3d/_st",
                     flush=True,
                 )
             except Exception as e:
