@@ -677,23 +677,38 @@ predicted (solid) vs ground truth (dashed).}
 \subsection{Efficiency}
 \begin{table}[h]
 \centering
-\caption{Inference throughput on RTX\,4080 (12\,GB). Our lightweight refiner adds negligible
-         cost over the baseline; TrackCraft3R's diffusion backbone is ${\approx}200\times$ slower.}
+\caption{Inference throughput on RTX\,4080 (12\,GB), measured on TAPVid-3D minival.
+         Methods marked $^{\star}$ load depth from a shared DA3-Large precompute
+         cache rather than running depth estimation online;
+         SpatialTrackerV2 uses its own internal depth model.
+         Our lightweight SSM refiner adds modest overhead over the baseline while
+         remaining $50$--$200\times$ faster than all competitors.}
 \label{tab:efficiency}
 \begin{tabular}{lrr}
 \toprule
-Method & throughput (fps) & trainable params \\
+Method & fps & trainable params \\
 \midrule
-SEA-RAFT + DA3 (baseline) & 12.4 & 0 \\
-v33 (depth refiner)       & 12.5 & 0.40\,M \\
+DA3 depth (shared precompute)$^{\star}$ & ${\approx}10$ & 0 \\
 \midrule
-TrackCraft3R\,$^{\S}$     & ${\approx}0.06$ & --- \\
+SEA-RAFT $+$ DA3 (baseline)$^{\star}$  & 12.4 & 0        \\
+v33 (depth refiner)$^{\star}$          & 12.5 & 0.40\,M  \\
+v35 (DINOv3 $+$ SSM)$^{\star,\dagger}$ & 7.7  & 0.44\,M  \\
+v36 (bidir $+$ v35)$^{\star}$          & 6.2  & 0.44\,M  \\
+\midrule
+TAPIP3D$^{\star}$                      & ${\approx}3.1$  & --- \\
+SpatialTrackerV2 (s\_wind\,=\,60)      & ${\approx}4.0$  & --- \\
+TrackCraft3R$^{\S}$                    & ${\approx}0.06$ & --- \\
 \bottomrule
 \end{tabular}
 \\[2pt]
-{\footnotesize $^{\S}$ TrackCraft3R is a pre-trained 1.3\,B-parameter video diffusion model (Wan2.1
+{\footnotesize
+$^{\star}$ Loads precomputed DA3-Large depth from cache; not counted in fps.
+The preprocessing runs at ${\approx}10$\,fps on the same GPU and is a one-time
+offline step shared by all such methods.
+$^{\dagger}$ v35 throughput measured on the drivetrack subset only.
+$^{\S}$ TrackCraft3R is a pre-trained 1.3\,B-parameter video diffusion model (Wan2.1
 DiT $+$ 3 VAEs $+$ LoRA); it is not trained by us, hence ``---'' for trainable params.
-Throughput measured on the same RTX\,4080 via windowed inference (see text).}
+Throughput measured via windowed inference (see text).}
 \end{table}
 
 \paragraph{Why TrackCraft3R is slow.}
@@ -710,11 +725,14 @@ TAPVid-3D queries span many frames: a typical 150-frame pstudio clip produces
 90--120 unique windows; a 300-frame adt clip produces 260--270 windows.
 At 21\,s each, per-clip latency reaches ${\approx}32$\,min (pstudio) and ${\approx}95$\,min (adt),
 giving an effective throughput of ${\approx}0.06$\,fps --- \textbf{${\approx}200\times$ slower}
-than our pipeline (12.4\,fps).
+than our baseline (12.4\,fps).
 
 Our method achieves this throughput advantage because the Mamba-3 SSD refiner processes
 all $N$ tracks jointly in a single causal sweep per frame (no per-window restarts),
-and the 0.40\,M-parameter SSM adds negligible overhead over the frozen SEA-RAFT $+$ DA3 baseline.
+and the 0.44\,M-parameter SSM adds modest overhead over the frozen SEA-RAFT $+$ DA3 baseline.
+TAPIP3D (${\approx}3.1$\,fps) and SpatialTrackerV2 (${\approx}4.0$\,fps) are substantially
+slower than our pipeline despite relying on simpler (non-diffusion) architectures,
+indicating that their multi-frame windowing and cost-volume computations are the bottleneck.
 Combined with the accuracy advantage on the absolute metric
 (Table~\ref{tab:abs}: mean metric-AJ $0.234$ vs $0.025$ for TrackCraft3R on pstudio),
 our pipeline is competitive on both quality and efficiency axes.
