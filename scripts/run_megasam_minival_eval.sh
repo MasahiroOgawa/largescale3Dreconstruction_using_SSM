@@ -22,7 +22,7 @@ export LD_LIBRARY_PATH=$VENV/lib/python3.11/site-packages/torch/lib:$CU13/lib:${
 export PYTHONPATH=$TAPIP3D:${REPO}/scripts:${PYTHONPATH:-}
 
 TS=$(date +%Y%m%d-%H%M)
-LOG_DIR="$REPO/result/megasam_eval_${TS}"
+LOG_DIR="$REPO/result/${TS}_megasam_eval"
 mkdir -p "$LOG_DIR"
 
 echo "============================================================"
@@ -112,7 +112,7 @@ uv run python scripts/eval_metric3d.py \
     --da3-depth-root result/tapvid3d_megasam \
     --split minival \
     --subsets drivetrack pstudio \
-    --out-dir "result/metric3d_searaft_megasam_minival_${TS}" \
+    --out-dir "result/${TS}_metric3d_searaft_megasam_minival" \
     2>&1 | tee "$LOG_DIR/searaft_megasam_eval.log"
 echo "Stage 4 done: $(date)"
 
@@ -142,10 +142,10 @@ echo "============================================================"
 echo "ALL DONE: $(date)"
 echo "============================================================"
 echo "Results:"
-echo "  SEA-RAFT + MegaSAM:  result/metric3d_searaft_megasam_minival_${TS}/"
+echo "  SEA-RAFT + MegaSAM:  result/${TS}_metric3d_searaft_megasam_minival/"
 echo "  TAPIP3D + MegaSAM:   $TAPIP3D/result/  (look for megasam run)"
 echo ""
 echo "Existing baselines (all 3 subsets):"
-echo "  SEA-RAFT + DA3:      result/metric3d_searaft_20260618-1139/"
-echo "  v33:                 result/metric3d_v33_20260618-1139/"
-echo "  SEA-RAFT + depthn (ADT): result/metric3d_searaft_depthn_minival_20260625-2015/"
+echo "  SEA-RAFT + DA3:      result/20260618-1139_metric3d_searaft/"
+echo "  v33:                 result/20260618-1139_metric3d_v33/"
+echo "  SEA-RAFT + depthn (ADT): result/20260625-2015_metric3d_searaft_depthn_minival/"

@@ -7,7 +7,7 @@ Generates:
 
 Usage:
     uv run python scripts/plot_tapip3d_vs_v33.py \\
-        --tapip3d-abs-dir result/tapip3d_absolute_eval_YYYYMMDD-HHMM
+        --tapip3d-abs-dir result/YYYYMMDD-HHMM_tapip3d_absolute_eval
 """
 
 from __future__ import annotations

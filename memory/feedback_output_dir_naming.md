@@ -1,19 +1,26 @@
 ---
 name: output-dir-naming-flat-track-version-datetime
-description: Single flat output directory per training run — `outputs/track_v<version>_<YYYYMMDD-HHMM>/` holds checkpoints, logs, eval JSONs, render MP4s, and plots together. No separate `outputs/runs/` vs `outputs/eval_tracker/` split.
+description: Output dirs use datetime-first naming — `result/<YYYYMMDD-HHMM>_<name>/` — so ls and shell history show newest runs first.
 metadata:
   type: feedback
 ---
 
 ## Convention
 
-Each training run gets **one** top-level directory whose name carries the
-datetime. **Child directories inside it do NOT repeat the datetime** — the
-parent already disambiguates the run, and nested timestamps make paths
-unreadable.
+Datetime goes **first** in every result directory name so that `ls` and shell
+history sort chronologically at a glance:
 
 ```
-outputs/track_v<version>_<YYYYMMDD-HHMM>/              ← datetime ONLY here
+result/<YYYYMMDD-HHMM>_<name>/      ← datetime FIRST, always
+```
+
+e.g. `result/20260702-1739_metric3d_v36_bidir/`
+
+Each run gets **one** top-level directory. **Child directories inside it do
+NOT repeat the datetime** — the parent already disambiguates the run.
+
+```
+result/<YYYYMMDD-HHMM>_track_v<version>/    ← datetime ONLY here
     ├─ cfg.json                         resolved config + launch args snapshot
     ├─ train.log                        stdout of the training process
     ├─ loss_history.json                per-step + per-val loss rows
@@ -40,7 +47,8 @@ the collision.
 
 ## Why one dir
 
-- Resume: pass the same `--out-dir outputs/track_v13_<datetime>` and the train
+- Chronological order: `ls result/` shows newest runs last; trivial to find the latest.
+- Resume: pass the same `--out-dir result/<datetime>_track_v13` and the train
   script auto-resumes from the latest `ckpt_*.pt` inside.
 - Co-located artifacts: easy diff across runs (`diff -r outputs/track_v13_… outputs/track_v14_…`).
 - One commit message references one path.
@@ -52,7 +60,8 @@ the collision.
 - `outputs/eval_tracker/v13_<…>/` — split eval/render away from training.
 - `outputs/runs/mamba3_tracker_v13/` — buried under a fixed `mamba3_tracker_*`
   prefix that we used for v6–v12. New runs go straight under `outputs/`.
-- `outputs/track_v13/` without a datetime — risks silent overwrite on re-launches.
+- `result/track_v13_<datetime>/` (old style) — datetime last, ruins chronological `ls`.
+- `result/track_v13/` without a datetime — risks silent overwrite on re-launches.
 - `outputs/track_v13_<datetime>/runs/`, `outputs/track_v13_<datetime>/eval/v2/`,
   or any deeper version nesting. One dir per run, period.
 - **`outputs/track_v16_<datetime>/viz_step12500_<datetime>/`** — datetime
@@ -71,5 +80,5 @@ the collision.
   systemd-run --user --scope --quiet -p MemoryMax=18G ... \
       uv run python scripts/train_mamba3_tracker.py \
       --config configs/v13.yaml \
-      --out-dir outputs/track_v13_$(date +%Y%m%d-%H%M)
+      --out-dir result/$(date +%Y%m%d-%H%M)_track_v13
   ```

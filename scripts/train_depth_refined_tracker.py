@@ -6,11 +6,11 @@ v35: Adds DINOv3 image features + depth patch; outputs Δuv and Δlog_z jointly.
 Usage:
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \\
         uv run python scripts/train_depth_refined_tracker.py \\
-            --config configs/v33.yaml --out-dir result/v33_YYYYMMDD-HHMM
+            --config configs/v33.yaml --out-dir result/YYYYMMDD-HHMM_v33
 
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \\
         uv run python scripts/train_depth_refined_tracker.py \\
-            --config configs/v35.yaml --out-dir result/v35_YYYYMMDD-HHMM
+            --config configs/v35.yaml --out-dir result/YYYYMMDD-HHMM_v35
 
 Smoke (50 steps):
     uv run python scripts/train_depth_refined_tracker.py \\

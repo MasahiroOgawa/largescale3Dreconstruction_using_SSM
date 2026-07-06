@@ -18,8 +18,8 @@
 #
 # Usage:
 #   scripts/render_all_latest_results.sh                                 # latest run dir, latest ckpt
-#   scripts/render_all_latest_results.sh result/track_v19_<dt>          # specific run dir
-#   scripts/render_all_latest_results.sh result/track_v19_<dt>/ckpt_5000.pt   # specific ckpt
+#   scripts/render_all_latest_results.sh result/<dt>_track_v19          # specific run dir
+#   scripts/render_all_latest_results.sh result/<dt>_track_v19/ckpt_5000.pt   # specific ckpt
 #
 # Flags (each mirrors an env var; either works):
 #   --quick                fast preview (~1-2 min): skip eval+comparison, skip

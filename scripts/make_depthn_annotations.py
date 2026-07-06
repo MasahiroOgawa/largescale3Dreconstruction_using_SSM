@@ -171,7 +171,7 @@ if __name__ == "__main__":
     print("  # SEA-RAFT + depthn eval:")
     print("  uv run python scripts/eval_metric3d.py --method searaft \\")
     print(f"    --da3-depth-root result/tapvid3d_depthn --split minival \\")
-    print(f"    --out-dir result/metric3d_searaft_depthn_minival_$(date +%Y%m%d-%H%M)")
+    print(f"    --out-dir result/$(date +%Y%m%d-%H%M)_metric3d_searaft_depthn_minival")
     print()
     print("  # TAPIP3D + depthn eval:")
     print("  See scripts/run_tapip3d_depthn_eval.sh")

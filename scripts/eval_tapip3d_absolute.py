@@ -12,7 +12,7 @@ Usage:
     PYTHONPATH=$TAPIP3D:$PYTHONPATH \\
     $VENV/bin/python scripts/eval_tapip3d_absolute.py \\
         --subsets drivetrack pstudio adt \\
-        --out-dir result/tapip3d_absolute_eval_$(date +%Y%m%d-%H%M)
+        --out-dir result/$(date +%Y%m%d-%H%M)_tapip3d_absolute_eval
 """
 
 from __future__ import annotations

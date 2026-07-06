@@ -35,8 +35,8 @@ uv run python scripts/eval_metric3d.py \
     --da3-depth-root result/tapvid3d_depthn \
     --split minival \
     --subsets adt \
-    --out-dir "result/metric3d_searaft_depthn_minival_${TS}" \
-    2>&1 | tee "result/metric3d_searaft_depthn_minival_${TS}.log"
+    --out-dir "result/${TS}_metric3d_searaft_depthn_minival" \
+    2>&1 | tee "result/${TS}_metric3d_searaft_depthn_minival.log"
 
 echo ""
 echo "================================================================"
@@ -52,16 +52,16 @@ $VENV/bin/python train_eval.py \
     wandb.enable=false \
     "train.checkpoint=$TAPIP3D_CKPT" \
     '~test_datasets.kubric_24frames_384trajs_200samples' \
-    2>&1 | tee "$REPO/result/tapip3d_depthn_eval_${TS}.log"
+    2>&1 | tee "$REPO/result/${TS}_tapip3d_depthn_eval.log"
 cd "$REPO"
 
 echo ""
 echo "================================================================"
 echo "ALL DONE — summary"
 echo "================================================================"
-echo "SEA-RAFT + depthn:  result/metric3d_searaft_depthn_minival_${TS}/"
-echo "TAPIP3D + depthn:   $TAPIP3D/result/tapip3d_depthn_minival_${TS}/"
+echo "SEA-RAFT + depthn:  result/${TS}_metric3d_searaft_depthn_minival/"
+echo "TAPIP3D + depthn:   $TAPIP3D/result/${TS}_tapip3d_depthn_minival/"
 echo ""
 echo "Compare against baselines:"
-echo "  SEA-RAFT + DA3:   result/metric3d_searaft_fix_20260618-1718/"
+echo "  SEA-RAFT + DA3:   result/20260618-1718_metric3d_searaft_fix/"
 echo "  TAPIP3D + DA3:    $TAPIP3D/result/auto_generated/*/"

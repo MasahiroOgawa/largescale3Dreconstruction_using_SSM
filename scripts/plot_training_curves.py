@@ -168,7 +168,7 @@ def main() -> None:
         "--run-dir",
         type=Path,
         default=None,
-        help="path to result/track_v*_<dt>/ (default: most recent)",
+        help="path to result/<dt>_track_v*/ (default: most recent)",
     )
     args = ap.parse_args()
     run_dir = args.run_dir
