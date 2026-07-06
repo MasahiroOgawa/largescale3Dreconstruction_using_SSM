@@ -44,15 +44,20 @@ import torch.nn.functional as F
 from mamba3_tracker.data.dataset import filter_to_split
 from mamba3_tracker.data.tapvid3d import SUBSETS, has_images, list_clips, load_clip
 from mamba3_tracker.train.loss import _unproject_with_depth
-from mamba3_tracker.viz.track_video import render_tracking_video
+from mamba3_tracker.viz.track_video import (
+    render_tracking_video,
+    render_tracking_video_d4rt,
+)
 from searaft_flow import FlowModel, track_clip
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import render_3d_tracks as r3d          # noqa: E402
+import render_3d_tracks as r3d  # noqa: E402
 import render_space_time_tracks as rst  # noqa: E402
 
 
-def _load_depth(da3_depth_root: Path, subset: str, clip_id: str, F_: int) -> torch.Tensor:
+def _load_depth(
+    da3_depth_root: Path, subset: str, clip_id: str, F_: int
+) -> torch.Tensor:
     depth_path = Path(da3_depth_root).expanduser() / subset / (clip_id + ".npz")
     with np.load(depth_path) as dd:
         if "depth_q" in dd:
@@ -61,7 +66,7 @@ def _load_depth(da3_depth_root: Path, subset: str, clip_id: str, F_: int) -> tor
             depth_full = d_min + q * (max(d_max - d_min, 1e-6) / 65535.0)
         else:
             depth_full = np.asarray(dd["depth"][:F_], dtype=np.float32)
-    return torch.from_numpy(depth_full).unsqueeze(0)   # (1, F, Hd, Wd)
+    return torch.from_numpy(depth_full).unsqueeze(0)  # (1, F, Hd, Wd)
 
 
 def _ray_from_uv(uv: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
@@ -71,14 +76,30 @@ def _ray_from_uv(uv: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
 
 
 @torch.no_grad()
-def _infer(method, flow_model, model, clip, image_size, fb_alpha, fb_beta,
-           da3_depth_root, max_frames, device):
+def _infer(
+    method,
+    flow_model,
+    model,
+    clip,
+    image_size,
+    fb_alpha,
+    fb_beta,
+    da3_depth_root,
+    max_frames,
+    device,
+):
     """Return (pred_tracks (N,F,3) camera-frame XYZ, pred_vis (N,F))."""
-    F_ = int(clip.images.shape[0]) if not max_frames else min(int(clip.images.shape[0]), max_frames)
+    F_ = (
+        int(clip.images.shape[0])
+        if not max_frames
+        else min(int(clip.images.shape[0]), max_frames)
+    )
     images = clip.images[:F_].clone()
     H_orig, W_orig = images.shape[-2], images.shape[-1]
     if (H_orig, W_orig) != (image_size, image_size):
-        images = F.interpolate(images, size=(image_size, image_size), mode="bilinear", align_corners=False)
+        images = F.interpolate(
+            images, size=(image_size, image_size), mode="bilinear", align_corners=False
+        )
     images_255 = images * 255.0
 
     sx, sy = image_size / float(W_orig), image_size / float(H_orig)
@@ -86,8 +107,15 @@ def _infer(method, flow_model, model, clip, image_size, fb_alpha, fb_beta,
     queries_xy = torch.stack([q[:, 0] * sx, q[:, 1] * sy], dim=-1)
     anchor_t = q[:, 2].long().clamp(0, F_ - 1)
 
-    uv, vis = track_clip(flow_model, images_255.to(device), queries_xy, anchor_t,
-                         image_size, fb_alpha, fb_beta)
+    uv, vis = track_clip(
+        flow_model,
+        images_255.to(device),
+        queries_xy,
+        anchor_t,
+        image_size,
+        fb_alpha,
+        fb_beta,
+    )
     depth_t = _load_depth(da3_depth_root, clip.subset, clip.clip_id, F_).to(device)
     K = clip.K.clone()
     K[0] *= sx
@@ -97,12 +125,31 @@ def _infer(method, flow_model, model, clip, image_size, fb_alpha, fb_beta,
 
     if method == "searaft":
         xyz = _unproject_with_depth(uv_d, depth_t, K_t, float(image_size))[0]  # (F,N,3)
-    else:  # v33 depth refiner
+    elif method == "v35":
         ray = _ray_from_uv(uv_d, K_t)
         grid = (2.0 * uv_d / image_size - 1.0).view(F_, 1, -1, 2)
-        z_raw = F.grid_sample(depth_t.squeeze(0).unsqueeze(1), grid,
-                              mode="bilinear", padding_mode="border", align_corners=False).view(1, F_, -1)
-        xyz = model(ray, z_raw, vis.unsqueeze(0).to(device)).xyz[0]            # (F,N,3)
+        z_raw = F.grid_sample(
+            depth_t.squeeze(0).unsqueeze(1),
+            grid,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=False,
+        ).view(1, F_, -1)
+        images_b = images.unsqueeze(0).to(device)  # (1,F,3,H,W) in [0,1]
+        xyz = model(
+            ray, z_raw, vis.unsqueeze(0).to(device), uv_d, depth_t, images_b, K_t
+        ).xyz[0]
+    else:  # v33
+        ray = _ray_from_uv(uv_d, K_t)
+        grid = (2.0 * uv_d / image_size - 1.0).view(F_, 1, -1, 2)
+        z_raw = F.grid_sample(
+            depth_t.squeeze(0).unsqueeze(1),
+            grid,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=False,
+        ).view(1, F_, -1)
+        xyz = model(ray, z_raw, vis.unsqueeze(0).to(device)).xyz[0]  # (F,N,3)
     return xyz.transpose(0, 1).cpu().numpy(), vis.transpose(0, 1).numpy()
 
 
@@ -113,7 +160,13 @@ def _apply_scaling(pred_NF3, gt_NF3, vis_NF, anchor_n, mode):
     pred = pred_NF3.copy()
     pZ, gZ = pred[..., 2], gt_NF3[..., 2]
     if mode == "median":
-        m = (vis_NF > 0.5) & np.isfinite(pZ) & np.isfinite(gZ) & (pZ > 1e-3) & (gZ > 1e-3)
+        m = (
+            (vis_NF > 0.5)
+            & np.isfinite(pZ)
+            & np.isfinite(gZ)
+            & (pZ > 1e-3)
+            & (gZ > 1e-3)
+        )
         s = np.median(gZ[m] / pZ[m]) if m.any() else 1.0
         return pred * s
     if mode == "anchor":  # per-track scale to match GT depth at the anchor frame
@@ -122,7 +175,7 @@ def _apply_scaling(pred_NF3, gt_NF3, vis_NF, anchor_n, mode):
             a = int(anchor_n[n])
             pa, ga = pZ[n, a], gZ[n, a]
             if pa > 1e-3 and ga > 1e-3:
-                pred[n] *= (ga / pa)
+                pred[n] *= ga / pa
         return pred
     raise ValueError(mode)
 
@@ -137,20 +190,32 @@ def _metric_err(pred_NF3, gt_NF3, vis_NF):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--method", choices=["searaft", "v33"], required=True)
-    ap.add_argument("--ckpt", type=Path, default=None, help="required for --method v33")
+    ap.add_argument("--method", choices=["searaft", "v33", "v35"], required=True)
+    ap.add_argument(
+        "--ckpt", type=Path, default=None, help="required for --method v33/v35"
+    )
+    ap.add_argument(
+        "--style",
+        choices=["tapvid", "d4rt"],
+        default="tapvid",
+        help="tapvid: fading lines + circles; d4rt: vivid rainbow dot trails",
+    )
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--data-root", type=Path, default=Path("~/data"))
     ap.add_argument("--da3-depth-root", type=Path, default=Path("~/data/tapvid3d_da3"))
     ap.add_argument("--subsets", nargs="+", default=list(SUBSETS))
-    ap.add_argument("--split", choices=["all", "minival", "full_eval"], default="minival")
+    ap.add_argument(
+        "--split", choices=["all", "minival", "full_eval"], default="minival"
+    )
     ap.add_argument("--clips-per-subset", type=int, default=2)
     ap.add_argument("--max-frames", type=int, default=0)
     ap.add_argument("--max-tracks", type=int, default=32)
     ap.add_argument("--image-size", type=int, default=896)
     ap.add_argument("--scaling", choices=["none", "median", "anchor"], default="none")
     ap.add_argument("--fps", type=int, default=15)
-    ap.add_argument("--url", type=str, default="MemorySlices/Tartan-C-T-TSKH-spring540x960-M")
+    ap.add_argument(
+        "--url", type=str, default="MemorySlices/Tartan-C-T-TSKH-spring540x960-M"
+    )
     ap.add_argument("--iters", type=int, default=None)
     ap.add_argument("--scale", type=int, default=None)
     ap.add_argument("--fb-alpha", type=float, default=0.05)
@@ -167,33 +232,75 @@ def main() -> int:
         if args.ckpt is None:
             ap.error("--method v33 requires --ckpt")
         from mamba3_tracker.model.depth_refined_tracker import Mamba3DepthRefiner
+
         state = torch.load(args.ckpt, map_location="cpu", weights_only=False)
         mc = state.get("cfg", {}).get("model", {})
         model = Mamba3DepthRefiner(
-            dim=int(mc.get("dim", 128)), state_dim=int(mc.get("state_dim", 64)),
-            num_heads=int(mc.get("num_heads", 4)), num_layers=int(mc.get("num_layers", 2)),
+            dim=int(mc.get("dim", 128)),
+            state_dim=int(mc.get("state_dim", 64)),
+            num_heads=int(mc.get("num_heads", 4)),
+            num_layers=int(mc.get("num_layers", 2)),
             max_log_correction=float(mc.get("max_log_correction", 2.0)),
         ).to(device)
         model.load_state_dict(state["model"])
         model.eval()
         print(f"[viz] v33 ckpt {args.ckpt} (step={state.get('step', '?')})")
-    print(f"[viz] method={args.method}  scaling={args.scaling}  "
-          f"SEA-RAFT iters={flow_model.args.iters} scale={flow_model.args.scale}")
+    elif args.method == "v35":
+        if args.ckpt is None:
+            ap.error("--method v35 requires --ckpt")
+        from mamba3_tracker.model.depth_refined_tracker import Mamba3V35Refiner
+
+        state = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+        mc = state.get("cfg", {}).get("model", {})
+        model = Mamba3V35Refiner(
+            dim=int(mc.get("dim", 128)),
+            state_dim=int(mc.get("state_dim", 64)),
+            num_heads=int(mc.get("num_heads", 4)),
+            num_layers=int(mc.get("num_layers", 2)),
+            max_log_correction=float(mc.get("max_log_correction", 2.0)),
+            max_delta_uv=float(mc.get("max_delta_uv", 2.0)),
+            patch_size=int(mc.get("patch_size", 5)),
+            d_proj=int(mc.get("d_proj", 64)),
+            dino_model=str(
+                mc.get("dino_model", "facebook/dinov3-vits16-pretrain-lvd1689m")
+            ),
+            dino_image_size=int(mc.get("dino_image_size", 448)),
+            image_size=int(mc.get("image_size", 896)),
+        ).to(device)
+        model.load_state_dict(state["model"])
+        model.eval()
+        print(f"[viz] v35 ckpt {args.ckpt} (step={state.get('step', '?')})")
+    print(
+        f"[viz] method={args.method}  style={args.style}  scaling={args.scaling}  "
+        f"SEA-RAFT iters={flow_model.args.iters} scale={flow_model.args.scale}"
+    )
 
     raw_err: dict[str, list[float]] = defaultdict(list)
     med_err: dict[str, list[float]] = defaultdict(list)
     per_clip_metrics: list[dict] = []
 
     for sub in args.subsets:
-        clips = [p for p in filter_to_split(list_clips(args.data_root, [sub]), args.split)
-                 if has_images(p)][: args.clips_per_subset]
+        clips = [
+            p
+            for p in filter_to_split(list_clips(args.data_root, [sub]), args.split)
+            if has_images(p)
+        ][: args.clips_per_subset]
         print(f"[viz] {sub}: {len(clips)} clips")
         for path in clips:
             try:
                 clip = load_clip(path)
-                pred_NF3, vis_NF = _infer(args.method, flow_model, model, clip, args.image_size,
-                                          args.fb_alpha, args.fb_beta, args.da3_depth_root,
-                                          args.max_frames, device)
+                pred_NF3, vis_NF = _infer(
+                    args.method,
+                    flow_model,
+                    model,
+                    clip,
+                    args.image_size,
+                    args.fb_alpha,
+                    args.fb_beta,
+                    args.da3_depth_root,
+                    args.max_frames,
+                    device,
+                )
                 F_ = pred_NF3.shape[1]
                 gt_NF3 = np.transpose(clip.tracks_XYZ[:F_].numpy(), (1, 0, 2))
                 gt_vis_NF = np.transpose(clip.visibility[:F_].float().numpy(), (1, 0))
@@ -203,42 +310,120 @@ def main() -> int:
                 stem = f"{sub}_{clip.clip_id}"
 
                 e_raw = _metric_err(pred_NF3, gt_NF3, gt_vis_NF)
-                e_med = _metric_err(_apply_scaling(pred_NF3, gt_NF3, gt_vis_NF, anchor_n, "median"),
-                                    gt_NF3, gt_vis_NF)
+                e_med = _metric_err(
+                    _apply_scaling(pred_NF3, gt_NF3, gt_vis_NF, anchor_n, "median"),
+                    gt_NF3,
+                    gt_vis_NF,
+                )
                 raw_err[sub].append(e_raw)
                 med_err[sub].append(e_med)
-                per_clip_metrics.append({"subset": sub, "clip_id": clip.clip_id,
-                                         "metric_err_raw_m": e_raw, "metric_err_median_m": e_med})
+                per_clip_metrics.append(
+                    {
+                        "subset": sub,
+                        "clip_id": clip.clip_id,
+                        "metric_err_raw_m": e_raw,
+                        "metric_err_median_m": e_med,
+                    }
+                )
 
-                pred_plot = _apply_scaling(pred_NF3, gt_NF3, gt_vis_NF, anchor_n, args.scaling)
-                title = (f"{args.method.upper()}  —  {sub}/{clip.clip_id}\n"
-                         f"real-metric 3D err: raw={e_raw:.2f} m, median-scaled={e_med:.2f} m "
-                         f"(plot scaling={args.scaling})")
+                pred_plot = _apply_scaling(
+                    pred_NF3, gt_NF3, gt_vis_NF, anchor_n, args.scaling
+                )
+                title = (
+                    f"{args.method.upper()}  —  {sub}/{clip.clip_id}\n"
+                    f"real-metric 3D err: raw={e_raw:.2f} m, median-scaled={e_med:.2f} m "
+                    f"(plot scaling={args.scaling})"
+                )
 
-                frames = (clip.images[:F_].clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).numpy()
-                render_tracking_video(frames, pred_NF3, vis_NF, K,
-                                      args.out_dir / f"{stem}.mp4", fps=args.fps)
-                r3d._plot_clip_3d_png(pred_plot, gt_NF3, gt_vis_NF, anchor_n,
-                                      args.out_dir / f"{stem}_3d.png", title, args.max_tracks)
-                r3d._plot_clip_3d_html(pred_plot, gt_NF3, gt_vis_NF, anchor_n,
-                                       args.out_dir / f"{stem}_3d.html", title, args.max_tracks)
-                rst._plot_clip_st_png(pred_plot, gt_NF3, gt_vis_NF, anchor_n, times_s,
-                                      args.out_dir / f"{stem}_st.png", title, args.max_tracks)
-                print(f"[viz] {stem}: raw={e_raw:.2f}m median={e_med:.2f}m → mp4/_3d/_st", flush=True)
+                frames = (
+                    (clip.images[:F_].clamp(0, 1) * 255)
+                    .byte()
+                    .permute(0, 2, 3, 1)
+                    .numpy()
+                )
+                if args.style == "d4rt":
+                    render_tracking_video_d4rt(
+                        frames,
+                        pred_NF3,
+                        vis_NF,
+                        K,
+                        args.out_dir / f"{stem}.mp4",
+                        fps=args.fps,
+                    )
+                else:
+                    render_tracking_video(
+                        frames,
+                        pred_NF3,
+                        vis_NF,
+                        K,
+                        args.out_dir / f"{stem}.mp4",
+                        fps=args.fps,
+                    )
+                r3d._plot_clip_3d_png(
+                    pred_plot,
+                    gt_NF3,
+                    gt_vis_NF,
+                    anchor_n,
+                    args.out_dir / f"{stem}_3d.png",
+                    title,
+                    args.max_tracks,
+                )
+                r3d._plot_clip_3d_html(
+                    pred_plot,
+                    gt_NF3,
+                    gt_vis_NF,
+                    anchor_n,
+                    args.out_dir / f"{stem}_3d.html",
+                    title,
+                    args.max_tracks,
+                )
+                rst._plot_clip_st_png(
+                    pred_plot,
+                    gt_NF3,
+                    gt_vis_NF,
+                    anchor_n,
+                    times_s,
+                    args.out_dir / f"{stem}_st.png",
+                    title,
+                    args.max_tracks,
+                )
+                print(
+                    f"[viz] {stem}: raw={e_raw:.2f}m median={e_med:.2f}m → mp4/_3d/_st",
+                    flush=True,
+                )
             except Exception as e:
-                print(f"[viz] {sub}/{path.stem}: FAIL {type(e).__name__}: {e}", flush=True)
+                print(
+                    f"[viz] {sub}/{path.stem}: FAIL {type(e).__name__}: {e}", flush=True
+                )
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    overall_raw = np.nanmean([v for vs in raw_err.values() for v in vs]) if raw_err else float("nan")
-    overall_med = np.nanmean([v for vs in med_err.values() for v in vs]) if med_err else float("nan")
-    summary = {"method": args.method, "scaling": args.scaling,
-               "per_subset": {s: {"metric_err_raw_m": float(np.nanmean(raw_err[s])),
-                                  "metric_err_median_m": float(np.nanmean(med_err[s]))}
-                              for s in raw_err},
-               "overall": {"metric_err_raw_m": float(overall_raw),
-                           "metric_err_median_m": float(overall_med)},
-               "per_clip": per_clip_metrics}
+    overall_raw = (
+        np.nanmean([v for vs in raw_err.values() for v in vs])
+        if raw_err
+        else float("nan")
+    )
+    overall_med = (
+        np.nanmean([v for vs in med_err.values() for v in vs])
+        if med_err
+        else float("nan")
+    )
+    summary = {
+        "method": args.method,
+        "scaling": args.scaling,
+        "per_subset": {
+            s: {
+                "metric_err_raw_m": float(np.nanmean(raw_err[s])),
+                "metric_err_median_m": float(np.nanmean(med_err[s])),
+            }
+            for s in raw_err
+        },
+        "overall": {
+            "metric_err_raw_m": float(overall_raw),
+            "metric_err_median_m": float(overall_med),
+        },
+        "per_clip": per_clip_metrics,
+    }
     (args.out_dir / "metrics.json").write_text(json.dumps(summary, indent=2))
 
     print(f"\n[viz] === real-metric 3D error ({args.method}) ===")

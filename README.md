@@ -1,35 +1,35 @@
 # largescale3Dreconstruction_using_SSM
 
-## 1. About this repository
+3D point tracking from monocular video using a lightweight SSM refiner on top of optical flow + metric depth.
 
-This project is an ablation study that replaces the softmax self-attention
-blocks in **Depth-Anything-3** (DA3) with **Mamba-3 SSD** mixers, to ask
-whether a state-space backbone of matched parameter budget can reach the
-same monocular-depth quality as an attention backbone. The depth head
-(DualDPT) is kept frozen from the DA3-SMALL checkpoint for most of
-training, so the comparison isolates the backbone.
+**Current best (v35):** metric-AJ 0.234, 7.7 fps on drivetrack subset.
 
-- Architecture: DINOv2-ViT-S/14 backbone (~22 M params, matched to
-  DA3-SMALL) with its attention layers patched at import time via
-  `mamba3_attn.patch.install_mamba3`. See
-  `outputs/eval_cm22_1000/arch_{da3,ssm3d,diff}.png` for the block-level
-  diagrams.
-- Training is two-phase: **Phase B** distils backbone features from a
-  frozen DA3-SMALL teacher into the SSM student with a per-layer
-  `DimBridge`; **Phase C** fine-tunes for depth on ETH3D `terrains` with
-  DualDPT unfrozen.
-- Current best: **CM22@1000**
-  (`|relative_depth_error|` = **0.0531**, δ<1.25 = **0.9972**) on ETH3D
-  `terrains`, median-aligned. DA3-SMALL reference on the same views is
-  **0.0417**, so the gap is **1.27×**. See `doc/PLAN_mamba3_DA3.md §15.13` for the
-  full recipe and `outputs/eval_cm22_1000/summary.md` for head-to-head
-  numbers.
-- The DA3 submodule is treated as read-only upstream. Swaps happen at
-  runtime via the patch module; see `src/mamba3_attn/patch.py`.
+---
 
-## 2. How to set up
+## How it works
 
-The venv is managed by **`uv`**. `pip` is not used in this project.
+```
+video frames
+    └─► SEA-RAFT optical flow  ─► 2D tracks (uv, visibility)
+    └─► Depth-Anything-3 depth ─► per-frame depth maps (cached)
+                                           │
+                            Mamba3V35Refiner (0.44 M trainable params)
+                            ┌─ frozen DINOv3-ViT-S/16 visual features
+                            ├─ SSM depth refinement  → Δlog_z
+                            └─ 2D correction         → Δuv
+                                           │
+                                   3D tracks (XYZ) in camera space
+```
+
+DA3 depth is precomputed once offline (~10 fps) and cached at
+`~/data/tapvid3d_da3/<subset>/<clip>.npz`.  All per-frame inference
+(SEA-RAFT + v35 refinement) runs at ~7.7 fps.
+
+Evaluated on [TAPVid-3D](https://tapvid3d.github.io/) (drivetrack / pstudio / adt subsets).
+
+---
+
+## Setup
 
 ```bash
 git clone --recurse-submodules <repo-url>
@@ -37,89 +37,104 @@ cd largescale3Dreconstruction_using_SSM
 uv sync
 ```
 
-`uv sync` installs the pinned dependency set from `pyproject.toml` +
-`uv.lock`, including the local editable submodule at
+The venv is managed by **`uv`** — `pip` is never used.  
+`uv sync` installs all pinned deps including the local submodule at
 `third_party/depth-anything-3`.
 
-Requirements:
+Requirements: CUDA GPU (bf16 training/inference), Python 3.11.
 
-- CUDA-capable GPU (training uses bf16; inference works on CPU but is
-  slow). Mamba-3 SSD requires the CUDA kernels from `mamba-ssm` installed
-  by `uv sync`.
-- First run downloads **ETH3D `terrains`** into `data/` and the
-  **DINOv2-ViT-S/14** backbone weights via Hugging Face; both are cached.
-- See `CLAUDE.md` for the full packaging rules. In particular: never
-  invoke `pip` directly — always go through `uv`.
+---
 
-## 3. How to use
+## Viewing v35 visual results
 
-### Quick demo (a few views, no training)
+Best checkpoint: `result/v35_20260701/ckpt_20000.pt`
+
+### TAPVid-style (filled circles + fading line trails)
 
 ```bash
-uv run python scripts/run_demo.py
+uv run python scripts/render_tracks.py \
+    --method v35 \
+    --ckpt result/v35_20260701/ckpt_20000.pt \
+    --out-dir result/$(date +%Y%m%d-%H%M)_viz_v35_tapvid \
+    --style tapvid \
+    --subsets drivetrack \
+    --clips-per-subset 2 \
+    --split minival
 ```
 
-Produces patch-feature PCA visualisations, SSM-3D depth predictions, and
-a collapse-smoke-check report (see `doc/PLAN_mamba3_DA3.md §3`). Artifacts land in
-`outputs/demo/`.
+### D4RT-style (vivid rainbow dot trails)
 
-### Train (Phase B distil → Phase C depth FT, CM22 recipe)
+Inspired by [D4RT (DeepMind, 2024)](https://deepmind.google/blog/d4rt-teaching-ai-to-see-the-world-in-four-dimensions/):
+each track gets a distinct vivid hue; the current frame is a bright dot with
+a white sparkle; the tail is alpha-fading dots that shrink toward the past.
 
 ```bash
-# Phase B: distil DA3-SMALL teacher features into the SSM student
-uv run python scripts/train_phase_b.py \
-    --img-size 504 --patch-size 14 --chunk-size 128 \
-    --steps 20000 --bs 1
-
-# Phase C: depth fine-tune on ETH3D `terrains` (DualDPT unfrozen)
-uv run python scripts/train_phase_c.py \
-    --init outputs/runs/phase_b/ckpt_final.pt \
-    --img-size 504 --patch-size 14 --chunk-size 128 \
-    --steps 1000 --bs 1 \
-    --lr-attn 1e-5 --lr-bridge 3e-5 --lr-dpt 1e-5 \
-    --augment
+uv run python scripts/render_tracks.py \
+    --method v35 \
+    --ckpt result/v35_20260701/ckpt_20000.pt \
+    --out-dir result/$(date +%Y%m%d-%H%M)_viz_v35_d4rt \
+    --style d4rt \
+    --subsets drivetrack \
+    --clips-per-subset 2 \
+    --split minival
 ```
 
-The exact CM22 recipe (and why each hyperparameter is set this way) is
-in `doc/PLAN_mamba3_DA3.md §15.13`.
+Per clip the script writes:
+- `<subset>_<clip_id>.mp4` — 2D tracking video (TAPVid or D4RT style)
+- `<subset>_<clip_id>_3d.png` — static 3D trajectory (pred solid / GT dashed)
+- `<subset>_<clip_id>_3d.html` — interactive 3D trajectory (plotly, open in browser)
+- `<subset>_<clip_id>_st.png` — space-time plot (X/Y/Z vs time)
+- `metrics.json` — real-metric 3D error (metres) per clip
 
-### Evaluate (SSM-3D vs DA3-SMALL, head-to-head on ETH3D)
+`--scaling none|median|anchor` controls depth scaling applied to the plots
+(default `none` = raw output; `median` = global scale that TAPVid-3D AJ uses).
+
+---
+
+## Running evaluation
 
 ```bash
-uv run python scripts/eval_mamba3_attn_vs_da3.py \
-    --ckpt outputs/runs/depth_ft_cm22/ckpt_1000.pt \
-    --out  outputs/eval_cm22_1000
+# Minival eval on all 3 subsets
+uv run python scripts/eval_metric3d.py \
+    --method v35 \
+    --ckpt result/v35_20260701/ckpt_20000.pt \
+    --split minival \
+    --out-dir result/$(date +%Y%m%d-%H%M)_metric3d_v35
 ```
 
-Writes per-metric bar plots, head-to-head grids, `summary.md` with the
-acceptance-gate table, and architecture diagrams. See
-`doc/evaluation.md` for metric definitions and gate thresholds.
+---
 
-## 4. References
+## Key results (minival, 50 clips per subset)
 
-### Upstream papers / repos
+| Method | norm-AJ | abs-AJ | metric-AJ | fps |
+|--------|---------|--------|-----------|-----|
+| SEA-RAFT + DA3 (baseline) | 0.083 | — | 0.147 | ~10 |
+| v35 (ours) | — | — | 0.234 | 7.7 |
 
-- **Depth Anything 3** — backbone + DualDPT head we patch.
-  <https://github.com/ByteDance-Seed/DepthAnything>
-- **Mamba / Mamba-3 SSD** — state-space mixer that replaces softmax
-  attention. See Dao & Gu, *"Transformers are SSMs: Generalized Models
-  and Efficient Algorithms Through Structured State Space Duality"*
-  (ICML 2024).
-- **DINOv2** — shared ViT-S/14 initialisation.
-  <https://github.com/facebookresearch/dinov2>
-- **ETH3D** benchmark — evaluation dataset (`terrains` scene, 42 views
-  used for the held-out comparison).
-  <https://www.eth3d.net/>
+Full tables with TAPIP3D and SpatialTrackerV2 comparisons are in
+`doc/vmamba3_3dpointtrack/vmamba3_3dpointtrack.tex`.
 
-### Internal docs
+---
 
-- `doc/PLAN.md` — current side-track plan (CIFAR-10 sanity check:
-  Mamba-3 vs softmax attention vs CNN, from scratch).
-- `doc/PLAN_mamba3_DA3.md` — experiment log for the DA3 ↔ Mamba-3
-  distillation pipeline: acceptance gates, candidate-modification
-  (CM) index, and reverted / kept decisions.
-- `doc/evaluation.md` — metric definitions, median-alignment convention,
-  and the head-to-head snapshot at CM22@1000.
-- `CLAUDE.md` — project-local rules (uv / DA3 submodule / memory /
-  sudo).
-- `MEMORY.md` — index into `memory/*.md` for per-topic project memory.
+## Project structure
+
+```
+src/mamba3_tracker/
+    model/depth_refined_tracker.py   Mamba3V35Refiner (main model)
+    data/tapvid3d.py                 TAPVid-3D data loader
+    eval/tapvid3d_official_metrics.py  3D-AJ / APD3D evaluation
+    viz/track_video.py               render_tracking_video, render_tracking_video_d4rt
+
+scripts/
+    eval_metric3d.py                 full minival evaluation
+    render_tracks.py                 qualitative rendering (--method v35 --style d4rt)
+    train_depth_refined_tracker.py   v35 training
+
+third_party/
+    depth-anything-3/                DA3 submodule (read-only)
+    TrackCraft3R/                    TrackCraft3R submodule (for comparison)
+
+result/
+    v35_20260701/ckpt_20000.pt       best v35 checkpoint
+    YYYYMMDD-HHMM_<name>/            eval + viz outputs (datetime-first naming)
+```
