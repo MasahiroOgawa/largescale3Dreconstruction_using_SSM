@@ -400,21 +400,96 @@ lr $3\!\times\!10^{-4}$, warmup $500$, $8$-frame windows, bf16; $\sim$9.5\,h on 
 \section{Evaluation}
 
 \subsection{Protocol and metrics}
+\label{sec:metrics}
+
+\paragraph{Dataset.}
 We evaluate on the TAPVid-3D~\cite{tapvid3d} \textbf{minival} split (150 clips: 50 each of
 \emph{pstudio} indoor mocap $\sim$3\,m, \emph{drivetrack} driving $\sim$20\,m, \emph{adt} egocentric
-$\sim$1\,m). The headline metric is 3D Average Jaccard (3D-AJ), combining within-threshold position
-accuracy and occlusion. Crucially, the official 3D-AJ is \emph{scale-invariant twice over}: (i) it
-rescales the predicted cloud by the per-clip median $\lVert\mathbf X^{*}\rVert/\lVert\hat{\mathbf X}\rVert$
-before scoring, and (ii) its within-threshold radii are depth-relative pixel thresholds (referenced
-to $256$-px images). Both choices discard absolute depth --- exactly the quantity that matters for
-metric 3D reconstruction.
+$\sim$1\,m).
 
-We therefore additionally report an \textbf{absolute-metric} protocol: the same official metric with
-\emph{no} median scaling and \emph{fixed metre} thresholds ($1$\,cm$\,\ldots\,2.56$\,m), giving
-metric-AJ and metric-APD3D, plus the mean/median 3D error in metres. Our pipeline reproduces the
-official scale-invariant metric exactly (we recover SpatialTracker's published drivetrack 3D-AJ of
-$0.058$ to three decimals once the $256$-px intrinsics convention is applied), so the absolute
-variant is a faithful, scale-sensitive extension rather than a re-implementation.
+\paragraph{Notation.}
+Let a clip have $N$ query tracks over $T$ frames with ground-truth 3D positions
+$\mathbf{X}^*_{n,t}\!\in\!\mathbb{R}^3$ and visibility flags $v^*_{n,t}\!\in\!\{0,1\}$
+(1\,=\,visible) in per-frame camera coordinates; predictions are
+$\hat{\mathbf{X}}_{n,t}$ and $\hat{v}_{n,t}$.
+Define the within-threshold indicator at level $\alpha$:
+\begin{equation}
+  w^{(\alpha)}_{n,t}
+  = \mathbf{1}\!\left[\lVert\hat{\mathbf{X}}_{n,t}-\mathbf{X}^*_{n,t}\rVert
+    < \delta^{(\alpha)}_{n,t}\right],
+  \label{eq:within}
+\end{equation}
+where the threshold $\delta^{(\alpha)}_{n,t}$ differs between the two protocols below.
+
+\paragraph{3D Average Jaccard (3D-AJ).}
+For each level $\alpha\in\{1,2,4,8,16\}$, define
+\begin{align}
+  \mathrm{TP}(\alpha) &= \textstyle\sum_{n,t} v^*_{n,t}\,\hat{v}_{n,t}\,w^{(\alpha)}_{n,t},
+  \label{eq:tp}\\
+  \mathrm{FN}(\alpha) &= \textstyle\sum_{n,t} v^*_{n,t}\!\left(1-\hat{v}_{n,t}\,w^{(\alpha)}_{n,t}\right),
+  \label{eq:fn}\\
+  \mathrm{FP}(\alpha) &= \textstyle\sum_{n,t} \hat{v}_{n,t}\!\left(1-v^*_{n,t}\,w^{(\alpha)}_{n,t}\right).
+  \label{eq:fp}
+\end{align}
+The per-level Jaccard is $J(\alpha)=\mathrm{TP}/(\mathrm{TP}+\mathrm{FN}+\mathrm{FP})$, and
+the headline metric averages over all five levels:
+\begin{equation}
+  \text{3D-AJ} = \tfrac{1}{5}\!\sum_{\alpha\in\{1,2,4,8,16\}}\!J(\alpha).
+  \label{eq:3daj}
+\end{equation}
+We additionally report \textbf{APD3D} (fraction of visible GT points within threshold,
+regardless of predicted visibility):
+\begin{equation}
+  \text{APD3D} = \tfrac{1}{5}\!\sum_{\alpha}
+  \frac{\sum_{n,t} v^*_{n,t}\,w^{(\alpha)}_{n,t}}{\sum_{n,t} v^*_{n,t}},
+  \label{eq:apd3d}
+\end{equation}
+and \textbf{OA} (occlusion accuracy):
+$\text{OA}=\frac{1}{NT}\sum_{n,t}\mathbf{1}[\hat{v}_{n,t}=v^*_{n,t}]$.
+
+\paragraph{Normalized (scale-invariant) protocol.}
+The official 3D-AJ is \emph{scale-invariant twice over}.
+First, the predicted cloud is rescaled globally by
+\begin{equation}
+  s = \frac{\operatorname{median}_{(n,t)\in\mathcal{V}}
+            \lVert\mathbf{X}^*_{n,t}\rVert}
+           {\operatorname{median}_{(n,t)\in\mathcal{V}}
+            \lVert\hat{\mathbf{X}}_{n,t}\rVert},
+  \qquad
+  \mathcal{V}=\{(n,t): v^*_{n,t}=1,\;\hat{v}_{n,t}=1\},
+  \label{eq:scale}
+\end{equation}
+setting $\hat{\mathbf{X}}\leftarrow s\hat{\mathbf{X}}$ before~\eqref{eq:within}.
+Second, the threshold in~\eqref{eq:within} is depth-relative:
+\begin{equation}
+  \delta^{(\alpha)}_{n,t}(\text{norm})
+  = \frac{\alpha\cdot(\mathbf{X}^*_{n,t})_z}{\sqrt{f_x f_y}},
+  \label{eq:thresh_norm}
+\end{equation}
+where $(\mathbf{X}^*_{n,t})_z$ is the GT depth at frame $t$ and $\sqrt{f_x f_y}$ is the
+geometric-mean focal length.
+Geometrically, \eqref{eq:thresh_norm} equals the world-space radius subtended by
+$\alpha$\,pixels at that point's depth.
+Both~\eqref{eq:scale} and~\eqref{eq:thresh_norm} discard absolute depth ---
+exactly the quantity that matters for metric 3D reconstruction.
+
+\paragraph{Absolute-metric protocol.}
+We additionally report an \textbf{absolute-metric} version: no median scaling ($s=1$) and
+fixed metric thresholds
+\begin{equation}
+  \delta^{(\alpha)}(\text{abs})
+  \;\in\;
+  \{1,\;4,\;16,\;64,\;256\}\,\text{cm}
+  \quad\text{for}\quad
+  \alpha\in\{1,2,4,8,16\},
+  \label{eq:thresh_abs}
+\end{equation}
+giving \textbf{metric-AJ} and \textbf{metric-APD3D} from~\eqref{eq:3daj}--\eqref{eq:apd3d},
+plus mean/median 3D error in metres.
+Our pipeline reproduces the official scale-invariant metric exactly
+(we recover SpatialTracker's published drivetrack 3D-AJ of $0.058$ to three decimals
+once the $256$-px intrinsics convention is applied), so the absolute variant is a
+faithful, scale-sensitive extension rather than a re-implementation.
 
 \subsection{Leaderboard (scale-invariant) results}
 Table~\ref{tab:median} reports median-scaled 3D-AJ.
