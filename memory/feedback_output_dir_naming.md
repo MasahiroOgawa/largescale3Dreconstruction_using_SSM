@@ -70,6 +70,41 @@ the collision.
   Rule added 2026-05-23 after the redundant timestamp pattern made
   paths unreadable in shell history.
 
+## Per-checkpoint outputs (viz + single-model eval)
+
+Scripts that take `--ckpt` write their outputs **inside the checkpoint's own
+result directory**, not as a new top-level entry under `result/`. The `--out-dir`
+argument is optional and auto-derived when omitted:
+
+| Script | Default sub-directory |
+|--------|----------------------|
+| `render_tracks.py` | `viz_ckpt<step>_<style>/` |
+| `render_3d_tracks.py` | `viz3d_ckpt<step>/` |
+| `render_space_time_tracks.py` | `viz_st_ckpt<step>/` |
+| `render_tracker_video.py` | `viz_ckpt<step>/` |
+| `eval_mamba3_tracker.py` | `eval_ckpt<step>/` |
+| `eval_flow_conditioned_tracker.py` | `eval_ckpt<step>/` |
+
+Example after running with `--ckpt result/v35_20260701/ckpt_20000.pt`:
+```
+result/v35_20260701/
+    ckpt_20000.pt
+    viz_ckpt20000_tapvid/    ← render_tracks --style tapvid
+    viz_ckpt20000_d4rt/      ← render_tracks --style d4rt
+    viz3d_ckpt20000/         ← render_3d_tracks
+    eval_ckpt20000/          ← eval_mamba3_tracker
+```
+
+## Multi-method / cross-run evaluation
+
+Scripts that compare multiple training results (e.g. `eval_metric3d.py`,
+shell pipelines) write to `result/eval/YYYYMMDD-HHMM_<name>/`:
+
+```bash
+--out-dir result/eval/$(date +%Y%m%d-%H%M)_metric3d_v35
+LOG_DIR="$REPO/result/eval/${TS}_megasam_eval"
+```
+
 ## Scope
 
 - Applies to **v13 and later**.

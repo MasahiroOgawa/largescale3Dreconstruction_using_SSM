@@ -55,11 +55,11 @@ Best checkpoint: `result/v35_20260701/ckpt_20000.pt`
 uv run python scripts/render_tracks.py \
     --method v35 \
     --ckpt result/v35_20260701/ckpt_20000.pt \
-    --out-dir result/$(date +%Y%m%d-%H%M)_viz_v35_tapvid \
     --style tapvid \
     --subsets drivetrack \
     --clips-per-subset 2 \
     --split minival
+# outputs to result/v35_20260701/viz_ckpt20000_tapvid/
 ```
 
 ### D4RT-style (vivid rainbow dot trails)
@@ -72,11 +72,11 @@ a white sparkle; the tail is alpha-fading dots that shrink toward the past.
 uv run python scripts/render_tracks.py \
     --method v35 \
     --ckpt result/v35_20260701/ckpt_20000.pt \
-    --out-dir result/$(date +%Y%m%d-%H%M)_viz_v35_d4rt \
     --style d4rt \
     --subsets drivetrack \
     --clips-per-subset 2 \
     --split minival
+# outputs to result/v35_20260701/viz_ckpt20000_d4rt/
 ```
 
 Per clip the script writes:
@@ -99,7 +99,7 @@ uv run python scripts/eval_metric3d.py \
     --method v35 \
     --ckpt result/v35_20260701/ckpt_20000.pt \
     --split minival \
-    --out-dir result/$(date +%Y%m%d-%H%M)_metric3d_v35
+    --out-dir result/eval/$(date +%Y%m%d-%H%M)_metric3d_v35
 ```
 
 ---
@@ -135,6 +135,12 @@ third_party/
     TrackCraft3R/                    TrackCraft3R submodule (for comparison)
 
 result/
-    v35_20260701/ckpt_20000.pt       best v35 checkpoint
-    YYYYMMDD-HHMM_<name>/            eval + viz outputs (datetime-first naming)
+    v35_20260701/
+        ckpt_20000.pt                best v35 checkpoint
+        viz_ckpt20000_tapvid/        render_tracks --style tapvid (auto-placed)
+        viz_ckpt20000_d4rt/          render_tracks --style d4rt   (auto-placed)
+        viz3d_ckpt20000/             render_3d_tracks             (auto-placed)
+        eval_ckpt20000/              eval_mamba3_tracker          (auto-placed)
+    eval/
+        YYYYMMDD-HHMM_metric3d_v35/  eval_metric3d (multi-method comparison)
 ```

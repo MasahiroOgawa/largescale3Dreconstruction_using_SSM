@@ -22,7 +22,7 @@ export LD_LIBRARY_PATH=$VENV/lib/python3.11/site-packages/torch/lib:$CU13/lib:${
 export PYTHONPATH=$TAPIP3D:${REPO}/scripts:${PYTHONPATH:-}
 
 TS=$(date +%Y%m%d-%H%M)
-LOG_DIR="$REPO/result/${TS}_megasam_eval"
+LOG_DIR="$REPO/result/eval/${TS}_megasam_eval"
 mkdir -p "$LOG_DIR"
 
 echo "============================================================"
@@ -112,7 +112,7 @@ uv run python scripts/eval_metric3d.py \
     --da3-depth-root result/tapvid3d_megasam \
     --split minival \
     --subsets drivetrack pstudio \
-    --out-dir "result/${TS}_metric3d_searaft_megasam_minival" \
+    --out-dir "result/eval/${TS}_metric3d_searaft_megasam_minival" \
     2>&1 | tee "$LOG_DIR/searaft_megasam_eval.log"
 echo "Stage 4 done: $(date)"
 
@@ -142,7 +142,7 @@ echo "============================================================"
 echo "ALL DONE: $(date)"
 echo "============================================================"
 echo "Results:"
-echo "  SEA-RAFT + MegaSAM:  result/${TS}_metric3d_searaft_megasam_minival/"
+echo "  SEA-RAFT + MegaSAM:  result/eval/${TS}_metric3d_searaft_megasam_minival/"
 echo "  TAPIP3D + MegaSAM:   $TAPIP3D/result/  (look for megasam run)"
 echo ""
 echo "Existing baselines (all 3 subsets):"

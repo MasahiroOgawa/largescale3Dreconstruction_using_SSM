@@ -35,8 +35,8 @@ uv run python scripts/eval_metric3d.py \
     --da3-depth-root result/tapvid3d_depthn \
     --split minival \
     --subsets adt \
-    --out-dir "result/${TS}_metric3d_searaft_depthn_minival" \
-    2>&1 | tee "result/${TS}_metric3d_searaft_depthn_minival.log"
+    --out-dir "result/eval/${TS}_metric3d_searaft_depthn_minival" \
+    2>&1 | tee "result/eval/${TS}_metric3d_searaft_depthn_minival.log"
 
 echo ""
 echo "================================================================"
@@ -59,7 +59,7 @@ echo ""
 echo "================================================================"
 echo "ALL DONE — summary"
 echo "================================================================"
-echo "SEA-RAFT + depthn:  result/${TS}_metric3d_searaft_depthn_minival/"
+echo "SEA-RAFT + depthn:  result/eval/${TS}_metric3d_searaft_depthn_minival/"
 echo "TAPIP3D + depthn:   $TAPIP3D/result/${TS}_tapip3d_depthn_minival/"
 echo ""
 echo "Compare against baselines:"

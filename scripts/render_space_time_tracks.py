@@ -249,7 +249,12 @@ def _plot_clip_st_html(
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--ckpt", type=Path, required=True)
-    ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="output dir; defaults to <ckpt_parent>/viz_st_ckpt<step>/",
+    )
     ap.add_argument("--data-root", type=Path, default=Path("~/data"))
     ap.add_argument("--subsets", nargs="+", default=list(SUBSETS))
     ap.add_argument("--clips-per-subset", type=int, default=2)
@@ -260,6 +265,9 @@ def main() -> int:
     ap.add_argument("--amp", choices=["bf16", "fp32"], default="bf16")
     args = ap.parse_args()
 
+    if args.out_dir is None:
+        step = args.ckpt.stem.split("_")[-1] if "_" in args.ckpt.stem else args.ckpt.stem
+        args.out_dir = args.ckpt.parent / f"viz_st_ckpt{step}"
     args.out_dir.mkdir(parents=True, exist_ok=True)
     args.data_root = args.data_root.expanduser()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

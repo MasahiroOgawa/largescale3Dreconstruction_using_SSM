@@ -121,7 +121,12 @@ def _motion_ratio(clip, pred_tracks: np.ndarray, F_: int) -> tuple[float, float]
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt",           type=Path, required=True, help="Path to ckpt_<step>.pt")
-    ap.add_argument("--out-dir",        type=Path, required=True)
+    ap.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="output dir; defaults to <ckpt_parent>/eval_ckpt<step>/",
+    )
     ap.add_argument("--data-root",      type=Path, default=Path("~/data"))
     ap.add_argument("--da3-depth-root", type=Path, default=Path("~/data/tapvid3d_da3"))
     ap.add_argument("--subsets",        nargs="+", default=list(SUBSETS))
@@ -136,6 +141,9 @@ def main() -> int:
     ap.add_argument("--fb-beta",        type=float, default=1.0)
     args = ap.parse_args()
 
+    if args.out_dir is None:
+        step = args.ckpt.stem.split("_")[-1] if "_" in args.ckpt.stem else args.ckpt.stem
+        args.out_dir = args.ckpt.parent / f"eval_ckpt{step}"
     args.out_dir.mkdir(parents=True, exist_ok=True)
     args.data_root = args.data_root.expanduser()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
