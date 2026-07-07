@@ -228,7 +228,7 @@ def render_tracking_d4rt_html(
     pred_visibility_NT: np.ndarray,  # (N, F)     float 0/1
     out_path: str | Path,
     fps: int = 15,
-    tail_len: int = 16,
+    tail_len: int | None = None,  # None = 3 s worth of frames at the given fps
     head_size: float = 5.0,
     vis_thresh: float = 0.5,
     max_tracks: int = 64,
@@ -255,6 +255,9 @@ def render_tracking_d4rt_html(
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if tail_len is None:
+        tail_len = max(1, round(3.0 * fps))
 
     N_full, F, _ = pred_tracks_NT3.shape
 
