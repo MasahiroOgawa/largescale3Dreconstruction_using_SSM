@@ -398,7 +398,7 @@ def render_tracking_d4rt_html(
                 aspectmode="data",
             ),
             title=dict(
-                text="D4RT — 3D point tracks  (rotate: drag | zoom: scroll)",
+                text="3D point tracks  (rotate: drag | zoom: scroll)",
                 font=dict(color="#cccccc", size=13),
             ),
             updatemenus=[
