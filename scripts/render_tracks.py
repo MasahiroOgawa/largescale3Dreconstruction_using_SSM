@@ -230,7 +230,7 @@ def main() -> int:
         "--tail-seconds",
         type=float,
         default=3.0,
-        help="D4RT: seconds of track history shown as fading trail (default 3.0)",
+        help="D4RT: seconds of track history shown as fading trail (default 1.0)",
     )
     ap.add_argument(
         "--pcloud-stride",

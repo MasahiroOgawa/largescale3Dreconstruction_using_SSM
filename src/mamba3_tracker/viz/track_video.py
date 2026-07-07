@@ -228,7 +228,7 @@ def render_tracking_d4rt_html(
     pred_visibility_NT: np.ndarray,  # (N, F)     float 0/1
     out_path: str | Path,
     fps: int = 15,
-    tail_seconds: float = 3.0,
+    tail_seconds: float = 1.0,
     head_size: float = 5.0,
     vis_thresh: float = 0.5,
     max_tracks: int = 64,
