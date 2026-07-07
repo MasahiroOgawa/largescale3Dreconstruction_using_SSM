@@ -531,7 +531,7 @@ Ours (v34, MegaSAM depth)      & 0.059 & 0.048 & 0.119 & 0.075 \\
 Ours (v35, DINOv3)             & 0.093 & 0.054 & 0.141 & 0.096 \\
 Ours (v36, DINOv3\,+\,bidir)  & 0.093 & 0.057 & 0.141 & 0.097 \\
 \midrule
-TrackCraft3R\,$^{\P}$          & ---   & 0.014 & ---   & ---   \\
+TrackCraft3R\,$^{\P}$          & 0.003 & 0.013 & 0.010 & 0.009 \\
 \bottomrule
 \end{tabular}
 \\[2pt]
@@ -539,8 +539,9 @@ TrackCraft3R\,$^{\P}$          & ---   & 0.014 & ---   & ---   \\
 $s_{\text{wind}}{=}60$ (paper uses $s_{\text{wind}}{=}500$, requiring ${\sim}40$\,GB); see \S\ref{sec:spatrackerv2}.
 $^{\dagger}$ TAPIP3D evaluated with our pipeline using its released checkpoint.
 $^{\ddagger}$ Near-zero on all three subsets; DROID-SLAM fails on subsampled NPZ clips (see \S\ref{sec:megasam-fail}).
-$^{\P}$ TrackCraft3R~\cite{trackcraft3r} evaluated with our standard pipeline; pstudio column is based on
-36/50 clips (evaluation in progress), adt and drivetrack pending.
+$^{\P}$ TrackCraft3R~\cite{trackcraft3r} evaluated with our standard pipeline on all 150 clips (50 per subset).
+The near-zero drivetrack score reflects out-of-distribution failure: TCR's Wan2.1 video-diffusion backbone
+is trained on indoor/studio content, and outdoor ego-motion (drivetrack) is OOD.
 The paper reports Sim(3)-aligned AJ ($0.73$ pstudio, $0.86$ adt), which uses 7-DoF alignment and is
 not comparable to the 1-DoF median-scaled metric used in this table.}
 \end{table}
@@ -579,13 +580,12 @@ Ours (v34, MegaSAM depth)  & 0.001 & 0.092 & 0.208 & 0.100 \\
 Ours (v35, DINOv3)         & \textbf{0.130} & \textbf{0.274} & \textbf{0.298} & \textbf{0.234} \\
 Ours (v36, DINOv3\,+\,bidir) & \textbf{0.130} & 0.249 & \textbf{0.298} & 0.226 \\
 \midrule
-TrackCraft3R\,$^{\P}$         & ---   & 0.025 & ---   & ---   \\
+TrackCraft3R\,$^{\P}$         & 0.002 & 0.025 & 0.032 & 0.020 \\
 \bottomrule
 \end{tabular}
 \\[2pt]
 {\footnotesize $^{*}$ SpatialTrackerV2 evaluated with $s_{\text{wind}}{=}60$ on RTX\,4080\,Laptop (12\,GB); see Table~\ref{tab:median} footnote.
-$^{\P}$ TrackCraft3R pstudio metric-AJ based on 36/50 clips; adt and drivetrack pending.
-See Table~\ref{tab:median} footnote for explanation of low scores vs.\ the paper's Sim(3)-aligned numbers.}
+$^{\P}$ TrackCraft3R evaluated on all 150 clips; see Table~\ref{tab:median} footnote for explanation of low scores vs.\ the paper's Sim(3)-aligned numbers.}
 \end{table}
 
 \subsubsection*{Why BootsTAPIR + ZoeDepth cannot be evaluated under the absolute metric}
