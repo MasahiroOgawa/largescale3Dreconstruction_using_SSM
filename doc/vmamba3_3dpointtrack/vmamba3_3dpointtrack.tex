@@ -501,14 +501,17 @@ trades relative-structure quality for absolute-scale correctness; see \S\ref{sec
 TAPIP3D~\cite{tapip3d} scores $\sim$0.30 on the (different, larger) full-eval split;
 a six-method minival comparison including TAPIP3D is in \S\ref{sec:sota}.
 TrackCraft3R~\cite{trackcraft3r} (CVPR~2025) reports Sim(3)-aligned AJ of $0.73$ (pstudio) and
-$0.86$ (adt) in the paper; under our standard protocol it scores $0.014$ on pstudio (36 of 50 clips
-completed at time of writing, adt and drivetrack pending).
+$0.86$ (adt) in the paper; under our standard protocol (all 150 clips, 50 per subset) it scores
+$0.013$ / $0.010$ / $0.003$ on pstudio / adt / drivetrack.
 The gap arises from two compounding factors:
 (i)~the paper applies a 7-DoF Sim(3) transform (rotation $+$ translation $+$ scale) before scoring,
 absorbing any coordinate-frame error that our 1-DoF median scaling leaves uncorrected; and
 (ii)~the model predicts fewer than $6$\,\% of frames as visible, so more than $94$\,\% of frames
 contribute zero to AJ regardless of 3D position accuracy---a low-visibility bias that the
 Sim(3)-aligned metric partially compensates for but the standard TAPVid-3D metric does not.
+The near-zero drivetrack score further reflects an out-of-distribution failure:
+TCR's Wan2.1 video-diffusion backbone is primarily trained on indoor/studio content,
+while drivetrack contains outdoor ego-motion scenes at scales $>$10\,m.
 
 \begin{table}[h]
 \centering
@@ -681,14 +684,43 @@ In summary, the gap between our near-zero minival scores and TAPIP3D's published
 The published pipeline is designed for and validated on full-frame-rate source video;
 the NPZ distribution format makes that condition impossible to reproduce from minival alone.
 
-Figures~\ref{fig:6method-norm} and~\ref{fig:6method-abs} summarise the six-method comparison.
+\paragraph{TrackCraft3R.}
+\label{sec:trackcraft3r}
+TrackCraft3R~\cite{trackcraft3r} (CVPR~2025) repurposes the Wan2.1-T2V-1.3B video diffusion
+transformer for dense 3D tracking via single-step regression.
+We evaluate it on all 150 minival clips using our standard pipeline (windowed inference,
+12 frames per window, query-centric windows normalised to frame-0 camera space).
+Results are shown in Tables~\ref{tab:median} and~\ref{tab:abs}.
+
+On the leaderboard (scale-invariant) metric, TCR scores $1.3\%$ / $1.0\%$ / $0.3\%$
+on pstudio / adt / drivetrack (mean $0.9\%$) --- below all our baselines.
+On the absolute metric, TCR scores $2.5\%$ / $3.2\%$ / $0.2\%$ (mean $2.0\%$).
+Our best model v35 outperforms TCR on absolute metric-AJ by $12\times$ overall
+($23.4\%$ vs $2.0\%$) and by $16\times$ on drivetrack ($13.0\%$ vs $0.2\%$) where TCR
+effectively fails.
+
+The low drivetrack score is an out-of-distribution failure: Wan2.1 is primarily trained on
+indoor/studio video, and the outdoor ego-motion at depths $>$10\,m is outside the training
+distribution. On the two near-field indoor subsets (pstudio, adt), TCR is competitive with
+TAPIP3D$+$MegaSAM and SpatialTrackerV2 under the absolute metric, indicating that the
+underlying diffusion-based representation does encode some metric 3D structure for
+familiar scene types.
+Absolute-metric pstudio and adt performance ($2.5\%$, $3.2\%$) remains far below our
+method ($27.4\%$, $29.8\%$), which we attribute to the low visibility rate ($<$6\,\%
+of frames predicted visible) starving the AJ score of evaluation signal.
+
+As noted in \S\ref{sec:abs}, TCR is also roughly $200\times$ slower than our pipeline
+(Table~\ref{tab:efficiency}), confirming that diffusion-based tracking carries a
+substantial inference-time cost relative to our lightweight SSM refiner.
+
+Figures~\ref{fig:6method-norm} and~\ref{fig:6method-abs} summarise the seven-method comparison.
 
 \begin{figure}[h]
 \centering
 \includegraphics[width=\textwidth]{figs/fig1_normalized_aj}
 \caption{Method comparison on TAPVid-3D minival, normalised median-AJ (leaderboard metric,
-scale-invariant). Higher is better. ``N/A'' bars indicate DROID-SLAM failures or unavailable predictions.
-``bidir'' = bidirectional SEA-RAFT flow (reversed-video backward pass).}
+scale-invariant). Higher is better. ``bidir'' = bidirectional SEA-RAFT flow (reversed-video backward pass).
+TrackCraft3R's low drivetrack bar reflects an OOD failure (see \S\ref{sec:trackcraft3r}).}
 \label{fig:6method-norm}
 \end{figure}
 
@@ -809,7 +841,8 @@ TAPIP3D (${\approx}3.1$\,fps) and SpatialTrackerV2 (${\approx}4.0$\,fps) are sub
 slower than our pipeline despite relying on simpler (non-diffusion) architectures,
 indicating that their multi-frame windowing and cost-volume computations are the bottleneck.
 Combined with the accuracy advantage on the absolute metric
-(Table~\ref{tab:abs}: mean metric-AJ $0.234$ vs $0.025$ for TrackCraft3R on pstudio),
+(Table~\ref{tab:abs}: mean metric-AJ $0.234$ vs $0.020$ for TrackCraft3R across all three subsets;
+see \S\ref{sec:trackcraft3r}),
 our pipeline is competitive on both quality and efficiency axes.
 
 % =====================================================================

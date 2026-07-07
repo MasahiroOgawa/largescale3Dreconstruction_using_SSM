@@ -1,22 +1,16 @@
-"""Generate two grouped-bar figures comparing 6 methods on TAPVid-3D minival.
+"""Generate two grouped-bar figures comparing methods on TAPVid-3D minival.
 
 Figure 1: TAPVid-3D normalised median-AJ (leaderboard metric, scale-invariant)
 Figure 2: Absolute metric-AJ (fixed-metre thresholds, real 3D accuracy)
 
 Methods:
-  1. SEA-RAFT + DA3
-  2. SEA-RAFT + MegaSAM
-  3. TAPIP3D + DA3
-  4. TAPIP3D + MegaSAM (image-only, no GT poses)
-  5. Ours (DA3)      = v33 = SEA-RAFT + DA3 + Mamba3SSD
-  6. Ours (MegaSAM)  = v34 = SEA-RAFT + MegaSAM + Mamba3SSD
+  SOTA: SpatialTrackerV2, TAPIP3D+DA3, TAPIP3D+MegaSAM, TrackCraft3R
+  Ours: SEA-RAFT+DA3, SEA-RAFT+MegaSAM, bidir, v33, v34, v35, v36
 
 Run after each new eval completes to update the figures.
 NaN values are shown as hatched empty bars labelled "N/A".
 """
 
-import json
-import re
 from pathlib import Path
 
 import matplotlib
@@ -26,8 +20,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
-OUT_DIR = Path("result/figures")
 REPO = Path(__file__).parent.parent
+OUT_DIR = REPO / "result" / "figures"
 
 SUBSETS = ["drivetrack", "pstudio", "adt"]
 SUBSET_LABELS = {"drivetrack": "Drivetrack", "pstudio": "Panoptic Studio", "adt": "ADT"}
@@ -37,6 +31,7 @@ METHODS = [
     "SpatialTracker\nV2",
     "TAPIP3D\n+DA3",
     "TAPIP3D\n+MegaSAM",
+    "TrackCraft3R",
     # ── Ours ─────────────────────────────────────────────────────────────────
     "SEA-RAFT+DA3\n(Ours)",
     "SEA-RAFT+MegaSAM\n(Ours)",
@@ -48,7 +43,7 @@ METHODS = [
 ]
 
 # Number of SOTA methods listed first; used to draw the group separator.
-SOTA_COUNT = 3
+SOTA_COUNT = 4
 
 SUBSET_COLORS = {
     "drivetrack": "#4878CF",  # steel blue
@@ -59,142 +54,60 @@ SUBSET_COLORS = {
 HATCH_PENDING = "///"
 
 
-def _read_summary(path: Path) -> dict[str, dict]:
-    """Parse summary.md → {subset: {3d_aj, metric_aj}}. Returns {} if not found."""
-    if not path.exists():
-        return {}
-    txt = path.read_text()
-    results = {}
-    for line in txt.splitlines():
-        m = re.match(
-            r"\|\s*(\w+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|"
-            r"\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|",
-            line,
-        )
-        if m:
-            subset = m.group(1)
-            if subset in SUBSETS:
-                results[subset] = {
-                    "3d_aj": float(m.group(2)),
-                    "metric_aj": float(m.group(5)),
-                }
-    return results
-
 
 def build_data_tables() -> tuple[dict, dict]:
     """Return (norm_aj, abs_aj) tables: {method_idx: {subset: float_or_nan}}."""
 
+    # All values are hardcoded from the paper tables (tab:median / tab:abs) so that
+    # figures can be regenerated without needing the gitignored result directories.
+    # Source columns order: drivetrack, pstudio, adt  (matches METHODS order above).
+
+    # fmt: off
+    # (3D-AJ norm, metric-AJ abs) per method × subset
+    data_norm = {
+        # SOTA ──────────────────────────────────────────────────────────────────
+        "SpatialTrackerV2":   {"drivetrack": 0.017,  "pstudio": 0.012,  "adt": 0.025},
+        "TAPIP3D+DA3":        {"drivetrack": 0.065,  "pstudio": 0.023,  "adt": 0.004},
+        "TAPIP3D+MegaSAM":    {"drivetrack": 0.000,  "pstudio": 0.003,  "adt": 0.004},
+        "TrackCraft3R":       {"drivetrack": 0.003,  "pstudio": 0.013,  "adt": 0.010},
+        # Ours ──────────────────────────────────────────────────────────────────
+        "SEA-RAFT+DA3":       {"drivetrack": 0.108,  "pstudio": 0.111,  "adt": 0.132},
+        "SEA-RAFT+MegaSAM":   {"drivetrack": 0.103,  "pstudio": 0.135,  "adt": 0.163},
+        "SEA-RAFT+DA3 bidir": {"drivetrack": 0.112,  "pstudio": 0.111,  "adt": 0.132},
+        "v33":                {"drivetrack": 0.057,  "pstudio": 0.041,  "adt": 0.123},
+        "v34":                {"drivetrack": 0.059,  "pstudio": 0.048,  "adt": 0.119},
+        "v35":                {"drivetrack": 0.093,  "pstudio": 0.054,  "adt": 0.141},
+        "v36":                {"drivetrack": 0.093,  "pstudio": 0.057,  "adt": 0.141},
+    }
+    data_abs = {
+        # SOTA ──────────────────────────────────────────────────────────────────
+        "SpatialTrackerV2":   {"drivetrack": 0.008,  "pstudio": 0.192,  "adt": 0.179},
+        "TAPIP3D+DA3":        {"drivetrack": 0.006,  "pstudio": 0.131,  "adt": 0.164},
+        "TAPIP3D+MegaSAM":    {"drivetrack": 0.000,  "pstudio": 0.000,  "adt": 0.000},
+        "TrackCraft3R":       {"drivetrack": 0.002,  "pstudio": 0.025,  "adt": 0.032},
+        # Ours ──────────────────────────────────────────────────────────────────
+        "SEA-RAFT+DA3":       {"drivetrack": 0.005,  "pstudio": 0.165,  "adt": 0.273},
+        "SEA-RAFT+MegaSAM":   {"drivetrack": 0.000,  "pstudio": 0.082,  "adt": 0.209},
+        "SEA-RAFT+DA3 bidir": {"drivetrack": 0.005,  "pstudio": 0.165,  "adt": 0.273},
+        "v33":                {"drivetrack": 0.082,  "pstudio": 0.186,  "adt": 0.272},
+        "v34":                {"drivetrack": 0.001,  "pstudio": 0.092,  "adt": 0.208},
+        "v35":                {"drivetrack": 0.130,  "pstudio": 0.274,  "adt": 0.298},
+        "v36":                {"drivetrack": 0.130,  "pstudio": 0.249,  "adt": 0.298},
+    }
+    # fmt: on
+
+    # Map METHODS list → data dicts (same order as METHODS)
+    _keys = [
+        "SpatialTrackerV2", "TAPIP3D+DA3", "TAPIP3D+MegaSAM", "TrackCraft3R",
+        "SEA-RAFT+DA3", "SEA-RAFT+MegaSAM", "SEA-RAFT+DA3 bidir",
+        "v33", "v34", "v35", "v36",
+    ]
     NaN = float("nan")
-
-    # ── SEA-RAFT + DA3 (use the _fix run) ─────────────────────────────────────
-    searaft_da3 = _read_summary(
-        REPO / "result/metric3d_searaft_fix_20260618-1718/summary.md"
-    )
-    # ── v33 (use the _fix run) ────────────────────────────────────────────────
-    v33 = _read_summary(REPO / "result/metric3d_v33_fix_20260618-1718/summary.md")
-    # ── SEA-RAFT + MegaSAM (drivetrack+pstudio from overnight run; ADT from s2 run) ──
-    searaft_msam = _read_summary(
-        REPO / "result/metric3d_searaft_megasam_minival_20260626-0903/summary.md"
-    )
-    adt_searaft_msam_dirs = sorted(
-        REPO.glob("result/metric3d_searaft_megasam_s2_adt_*/summary.md")
-    )
-    if adt_searaft_msam_dirs:
-        searaft_msam.update(_read_summary(adt_searaft_msam_dirs[-1]))
-    # ── v34 (drivetrack+pstudio from minival run; ADT from s2 run) ────────────
-    v34_dirs = sorted(REPO.glob("result/metric3d_v34_megasam_minival_*/summary.md"))
-    v34 = _read_summary(v34_dirs[-1]) if v34_dirs else {}
-    adt_v34_dirs = sorted(REPO.glob("result/metric3d_v34_megasam_s2_adt_*/summary.md"))
-    if adt_v34_dirs:
-        v34.update(_read_summary(adt_v34_dirs[-1]))
-    # ── v35 (DINOv3 image features + depth patch; drivetrack/pstudio/adt separate runs) ──
-    v35: dict = {}
-    v35.update(_read_summary(REPO / "result/metric3d_v35_20260702-0846/summary.md"))
-    v35.update(
-        _read_summary(REPO / "result/metric3d_v35_pstudio_adt_20260702-0910/summary.md")
-    )
-    v35_adt_dirs = sorted(REPO.glob("result/metric3d_v35_adt_*/summary.md"))
-    if v35_adt_dirs:
-        v35.update(_read_summary(v35_adt_dirs[-1]))
-    # ── SEA-RAFT bidir (bidirectional flow, no learned refinement) ────────────
-    searaft_bidir_dirs = sorted(REPO.glob("result/metric3d_searaft_bidir_*/summary.md"))
-    searaft_bidir = _read_summary(searaft_bidir_dirs[-1]) if searaft_bidir_dirs else {}
-    # ── v36 (v35 + bidirectional flow) ────────────────────────────────────────
-    v36_dirs = sorted(REPO.glob("result/metric3d_v36_bidir_*/summary.md"))
-    v36 = _read_summary(v36_dirs[-1]) if v36_dirs else {}
-
-    # ── TAPIP3D + DA3 (official TAPIP3D eval JSONs for normalised; absolute eval for metric-AJ) ──
-    tapip3d_da3_norm = {}
-    tapip3d_da3_abs = {}
-    tapip3d_dir = Path(
-        "/home/mas/proj/study/TAPIP3D/outputs/auto_generated"
-        "/tapip3d_kubric_24frames_384trajs_2026-06-24_18-55-53"
-    )
-    for s in SUBSETS:
-        j = tapip3d_dir / f"metrics_{s}_da3_minival.json"
-        if j.exists():
-            d = json.loads(j.read_text())
-            tapip3d_da3_norm[s] = d.get(
-                f"{s}_da3_minival-metrics/mean/tapvid3d_average_jaccard_best", NaN
-            )
-    abs_dir = REPO / "result/tapip3d_absolute_eval_20260625-1318/metric_results"
-    for s in SUBSETS:
-        j = abs_dir / f"{s}.json"
-        if j.exists():
-            clips = json.loads(j.read_text())
-            vals = [c["metric_average_jaccard"] for c in clips]
-            tapip3d_da3_abs[s] = float(np.mean(vals)) if vals else NaN
-
-    # ── TAPIP3D + MegaSAM (image-only, no GT poses) ───────────────────────────
-    # drivetrack/pstudio: DROID-SLAM depth failure → 0.00% / 0.27% normalised
-    # ADT: tapvid3d_average_jaccard_best = 0.003550 from
-    #   tapip3d_kubric_24frames_384trajs_2026-06-30_19-56-12
-    tapip3d_msam_norm = {
-        "drivetrack": 0.0000,
-        "pstudio": 0.0027,
-        "adt": 0.0036,
-    }
-    tapip3d_msam_abs = {
-        "drivetrack": 0.0000,
-        "pstudio": 0.0000,
-        "adt": 0.0000,
-    }
-
-    # SpatialTrackerV2: bidir+fixed_cam+replace_ratio=1.0 (paper protocol), all 50 clips
-    spatrackerv2_norm = {"drivetrack": 0.0168, "pstudio": 0.0119, "adt": 0.0246}
-    spatrackerv2_abs = {"drivetrack": 0.0084, "pstudio": 0.1921, "adt": 0.1787}
-
-    def _get(table: dict, subset: str, key: str) -> float:
-        return table.get(subset, {}).get(key, NaN)
-
-    # method index → {subset: value}
-    # Order mirrors METHODS list: SOTA first, then ours.
-    # Indices 0,1,2 use plain {subset: float} dicts; rest use summary.md dicts.
     norm_aj: dict[int, dict[str, float]] = {}
     abs_aj: dict[int, dict[str, float]] = {}
-    for m_idx, (norm_src, abs_src) in enumerate(
-        [
-            (spatrackerv2_norm, spatrackerv2_abs),  # 0 SpatialTrackerV2
-            (tapip3d_da3_norm, tapip3d_da3_abs),  # 1 TAPIP3D+DA3
-            (tapip3d_msam_norm, tapip3d_msam_abs),  # 2 TAPIP3D+MegaSAM
-            (searaft_da3, searaft_da3),  # 3 SEA-RAFT+DA3 (Ours)
-            (searaft_msam, searaft_msam),  # 4 SEA-RAFT+MegaSAM (Ours)
-            (searaft_bidir, searaft_bidir),  # 5 SEA-RAFT+DA3 bidir (Ours)
-            (v33, v33),  # 6 DA3+SSM (Ours)
-            (v34, v34),  # 7 MegaSAM+SSM (Ours)
-            (v35, v35),  # 8 DINOv3+SSM (Ours)
-            (v36, v36),  # 9 DINOv3+SSM bidir (Ours)
-        ]
-    ):
-        norm_aj[m_idx] = {}
-        abs_aj[m_idx] = {}
-        for s in SUBSETS:
-            if m_idx < SOTA_COUNT:  # plain {subset: float} dicts
-                norm_aj[m_idx][s] = float(norm_src.get(s, NaN))
-                abs_aj[m_idx][s] = float(abs_src.get(s, NaN))
-            else:  # summary.md {subset: {key: float}} dicts
-                norm_aj[m_idx][s] = _get(norm_src, s, "3d_aj")
-                abs_aj[m_idx][s] = _get(abs_src, s, "metric_aj")
+    for m_idx, key in enumerate(_keys):
+        norm_aj[m_idx] = {s: data_norm[key].get(s, NaN) for s in SUBSETS}
+        abs_aj[m_idx] = {s: data_abs[key].get(s, NaN) for s in SUBSETS}
 
     return norm_aj, abs_aj
 
@@ -213,7 +126,7 @@ def make_figure(
     group_w = n_subsets * bar_w + group_gap
     x_centers = np.arange(n_methods) * group_w
 
-    fig, ax = plt.subplots(figsize=(12, 5))
+    fig, ax = plt.subplots(figsize=(14, 5))
 
     offsets = np.linspace(-(n_subsets - 1) / 2, (n_subsets - 1) / 2, n_subsets) * bar_w
     legend_handles = []
