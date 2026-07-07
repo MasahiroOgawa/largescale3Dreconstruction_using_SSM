@@ -228,7 +228,7 @@ def render_tracking_d4rt_html(
     pred_visibility_NT: np.ndarray,  # (N, F)     float 0/1
     out_path: str | Path,
     fps: int = 15,
-    tail_len: int | None = None,  # None = 3 s worth of frames at the given fps
+    tail_seconds: float = 3.0,
     head_size: float = 5.0,
     vis_thresh: float = 0.5,
     max_tracks: int = 64,
@@ -256,8 +256,7 @@ def render_tracking_d4rt_html(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if tail_len is None:
-        tail_len = max(1, round(3.0 * fps))
+    tail_len = max(1, round(tail_seconds * fps))
 
     N_full, F, _ = pred_tracks_NT3.shape
 
@@ -342,13 +341,12 @@ def render_tracking_d4rt_html(
         # Trace 1 (or 0 without pcloud): track tails + heads
         xs, ys, zs, clrs, szs = [], [], [], [], []
 
-        # Tail: oldest step drawn first so head paints over it
+        # Tail: oldest step first; constant small size so dense dots merge into a line
         for k in range(tail_len, 0, -1):
             t_k = t - k
             if t_k < 0:
                 continue
-            alpha = (1.0 - k / (tail_len + 1)) ** 1.5
-            sz = max(1.5, head_size * (1.0 - 0.6 * k / tail_len))
+            alpha = 1.0 - k / (tail_len + 1)  # linear fade: old→transparent, new→opaque
             for n in range(N):
                 if vis[n, t_k] < vis_thresh:
                     continue
@@ -359,7 +357,7 @@ def render_tracking_d4rt_html(
                 ys.append(float(p[1]))
                 zs.append(float(p[2]))
                 clrs.append(_rgba(n, alpha))
-                szs.append(sz)
+                szs.append(1.5)
 
         # Head: current-frame dot, full opacity
         for n in range(N):

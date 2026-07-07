@@ -227,6 +227,12 @@ def main() -> int:
     ap.add_argument("--scaling", choices=["none", "median", "anchor"], default="none")
     ap.add_argument("--fps", type=int, default=15)
     ap.add_argument(
+        "--tail-seconds",
+        type=float,
+        default=3.0,
+        help="D4RT: seconds of track history shown as fading trail (default 3.0)",
+    )
+    ap.add_argument(
         "--pcloud-stride",
         type=int,
         default=16,
@@ -397,6 +403,7 @@ def main() -> int:
                         vis_NF,
                         args.out_dir / f"{stem}_d4rt.html",
                         fps=args.fps,
+                        tail_seconds=args.tail_seconds,
                         max_tracks=args.max_tracks,
                         images_rgb=frames_rgb,
                         depth_hw=depth_np,
