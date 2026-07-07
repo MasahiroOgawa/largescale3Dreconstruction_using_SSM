@@ -341,12 +341,13 @@ def render_tracking_d4rt_html(
         # Trace 1 (or 0 without pcloud): track tails + heads
         xs, ys, zs, clrs, szs = [], [], [], [], []
 
-        # Tail: oldest step first; constant small size so dense dots merge into a line
+        # Tail: oldest step first; 3 px dots at 0.15–0.9 opacity fade into a visible trail
         for k in range(tail_len, 0, -1):
             t_k = t - k
             if t_k < 0:
                 continue
-            alpha = 1.0 - k / (tail_len + 1)  # linear fade: old→transparent, new→opaque
+            # alpha: 0.15 (oldest) → 0.90 (newest) so the full tail stays readable
+            alpha = 0.15 + 0.75 * (1.0 - k / tail_len)
             for n in range(N):
                 if vis[n, t_k] < vis_thresh:
                     continue
@@ -357,7 +358,7 @@ def render_tracking_d4rt_html(
                 ys.append(float(p[1]))
                 zs.append(float(p[2]))
                 clrs.append(_rgba(n, alpha))
-                szs.append(1.5)
+                szs.append(3.0)
 
         # Head: current-frame dot, full opacity
         for n in range(N):
