@@ -1,3 +1,4 @@
+- [Repo split: visionMamba3 + vmamba3-3Dpointtracker](memory/project_repo_split.md) — monorepo split; package renamed to visionmamba3; third_party as symlinks
 - [Use uv for third-party repo venvs, not python -m venv](memory/feedback_uv_venv.md) — fork to MasahiroOgawa/, create feature/uv branch, add pyproject.toml, use uv run
 - [Diagrams first for cross-file plans](memory/feedback_diagrams_first.md) — add ASCII flowcharts (baseline/modified/diff) to the plan before file lists
 - [Prefer git submodule over pip for hackable upstream deps](memory/feedback_submodule_over_pip.md) — research/architecture deps go to `third_party/<name>/`
