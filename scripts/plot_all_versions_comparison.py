@@ -80,27 +80,27 @@ def main() -> None:
     for label, mr_dir in [
         ("v19", EVAL_TRACKER / "v19_20260526-1610_official" / "metric_results"),
         ("v20", EVAL_TRACKER / "v20_20260527-0913_official" / "metric_results"),
-        ("v21", OUTPUTS / "track_v21_20260528-1202" / "eval" / "metric_results"),
-        ("v22", OUTPUTS / "track_v22_20260528-1721" / "eval" / "metric_results"),
-        ("v23", OUTPUTS / "track_v23_20260528-1922" / "eval" / "metric_results"),
-        ("v25", OUTPUTS / "track_v25_20260529-1214" / "eval" / "metric_results"),
-        ("v26", OUTPUTS / "track_v26_20260529-1808" / "eval" / "metric_results"),
-        ("v28", OUTPUTS / "track_v28_20260531-1802" / "eval" / "metric_results"),
-        ("v29b", OUTPUTS / "track_v29b_20260602-1149" / "eval" / "metric_results"),
-        ("v30", OUTPUTS / "track_v30_20260602-1900" / "eval" / "metric_results"),
+        ("v21", OUTPUTS / "20260528-1202_track_v21" / "eval" / "metric_results"),
+        ("v22", OUTPUTS / "20260528-1721_track_v22" / "eval" / "metric_results"),
+        ("v23", OUTPUTS / "20260528-1922_track_v23" / "eval" / "metric_results"),
+        ("v25", OUTPUTS / "20260529-1214_track_v25" / "eval" / "metric_results"),
+        ("v26", OUTPUTS / "20260529-1808_track_v26" / "eval" / "metric_results"),
+        ("v28", OUTPUTS / "20260531-1802_track_v28" / "eval" / "metric_results"),
+        ("v29b", OUTPUTS / "20260602-1149_track_v29b" / "eval" / "metric_results"),
+        ("v30", OUTPUTS / "20260602-1900_track_v30" / "eval" / "metric_results"),
     ]:
         if mr_dir.exists():
             minival_mamba3.append((label, _load(mr_dir)))
 
     # ── SEA-RAFT+DA3 training-free (minival, teal) ────────────────────────────
-    searaft_dir = OUTPUTS / "searaft_20260615-1908" / "metric_results"
+    searaft_dir = OUTPUTS / "20260615-1908_searaft" / "metric_results"
     searaft = _load(searaft_dir) if searaft_dir.exists() else None
 
     # ── v32/v33 learned refiners (minival, purple) ────────────────────────────
     refiner_runs: list[tuple[str, dict]] = []
     for label, mr_dir in [
-        ("v32", OUTPUTS / "v32_eval_20260617-0925" / "metric_results"),
-        ("v33", OUTPUTS / "v33_eval_20260618-0818" / "metric_results"),
+        ("v32", OUTPUTS / "20260617-0925_v32_eval" / "metric_results"),
+        ("v33", OUTPUTS / "20260618-0818_v33_eval" / "metric_results"),
     ]:
         if mr_dir.exists():
             refiner_runs.append((label, _load(mr_dir)))
