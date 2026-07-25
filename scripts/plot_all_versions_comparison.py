@@ -27,6 +27,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
+plt.rcParams.update({"font.size": 20})  # 2x doubled base font (default 10)
+
 BASE = Path(__file__).parent.parent
 OUTPUTS = BASE / "result"
 EVAL_TRACKER = OUTPUTS / "eval_tracker"
@@ -189,21 +191,21 @@ def main() -> None:
                     f"{v * 100:.1f}",
                     ha="center",
                     va="bottom",
-                    fontsize=6,
+                    fontsize=(6 * 2),
                     rotation=90 if n_methods > 20 else 0,
                 )
 
     ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, fontsize=11)
-    ax.set_ylabel("3D-AJ (%)", fontsize=11)
+    ax.set_xticklabels(x_labels, fontsize=(11 * 2))
+    ax.set_ylabel("3D-AJ (%)", fontsize=(11 * 2))
     ax.set_title(
         "TAPVid-3D 3D-AJ — all versions v5–v33 + SEA-RAFT+DA3 (median scaling)\n"
         "solid red = Mamba-3 on minival  |  hatched red = Mamba-3 on full-eval (diff. test set)  |"
         "  teal = SEA-RAFT+DA3 (training-free)  |  purple = Mamba-3 refiner on SEA-RAFT",
-        fontsize=9,
+        fontsize=(9 * 2),
     )
     ax.grid(axis="y", alpha=0.3)
-    ax.legend(fontsize=7, ncol=3, loc="upper right")
+    ax.legend(fontsize=(7 * 2), ncol=3, loc="upper right")
     fig.tight_layout()
 
     out_dir = OUTPUTS / "comparison_all_v1_v33"
