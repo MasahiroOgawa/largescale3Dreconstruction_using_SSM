@@ -37,7 +37,13 @@ fi
 
 mkdir -p "$OUT"
 echo "=== DA3-SMALL symmetric depth fine-tune ($(date -Is)) ==="
+# --super 3 = GT supervision, no teacher (train_super.py:51-55 maps 1/2/3 to the DA3-SMALL
+# teacher / the DA3-LARGE teacher / ground truth). That is the CM24 depth-fine-tune stage,
+# whose signal is ETH3D depth ground truth rather than a teacher.
+# --sub 3 = "all" scope, the only branch that reads --lr-attn/--lr-head/--lr-other
+# (train_super.py:347-357); the other scopes hard-code their LRs and would ignore them.
 CUDA_VISIBLE_DEVICES=0 uv run python -m mamba3_attn.train.train_super \
+    --super 3 --sub 3 \
     --no-mamba3-swap \
     --steps 1000 --warmup-steps 100 --decay-steps 200 \
     --lr-attn 1.0e-5 --lr-head 1.0e-5 --lr-other 3.0e-5 \
