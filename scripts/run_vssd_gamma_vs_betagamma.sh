@@ -14,14 +14,16 @@
 # already collapsed to 0.1739. Restoring the LARGE path is development work, not a run.
 # The teacher choice does not bias gamma against beta,gamma: both arms share it.
 #
-# STEPS = 12000, not CM12's 20000, to fit both arms plus Phase-C and eval before the
-# morning. Checkpoints every 2000 mean that if an arm runs long there is always a usable
-# earlier checkpoint, and the trend across them shows whether accuracy had plateaued --
-# which is the thing to check before reading anything into the final number.
+# STEPS = 20000 matches CM12 exactly, so these rows compare directly against the published
+# CM24 numbers instead of carrying a shorter-budget caveat. Measured rate is ~0.76 s/step
+# (--sub 1 trains only the 15M mixer), so three arms fit the window with room to spare.
+# Checkpoints every 2000 mean an arm cut short still leaves a usable earlier checkpoint,
+# and the trend across them shows whether it had plateaued -- the thing to check before
+# reading anything into a final number.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-STEPS=${STEPS:-12000}
+STEPS=${STEPS:-20000}
 FT_STEPS=1000
 
 run_arm() {                       # run_arm <variant> <tag>
@@ -61,11 +63,14 @@ eval_ckpt() {                     # eval_ckpt <dir> <tag>
       || echo "[$tag] eval did not complete -- checkpoint kept at $ck"
 }
 
-run_arm vssd_bg vssd_bg           # ours first: it is the one that must land
-run_arm vssd    vssd_gamma
+# Priority order: if the window runs out, it runs out on the arm we can already cite.
+run_arm vssd_bg vssd_bg           # ours -- the one that must land
+run_arm vssd    vssd_gamma        # the operator the tracker deploys
+run_arm mamba3  bidir             # bidirectional, for a same-budget three-way
 
 eval_ckpt result/runs/depth_ft_vssd_bg      vssd_bg
 eval_ckpt result/runs/depth_ft_vssd_gamma   vssd_gamma
+eval_ckpt result/runs/depth_ft_bidir        bidir
 eval_ckpt result/runs/depth_ft_da3small_baseline da3small   # last night's, eval never finished
 
 echo "=== all arms complete ($(date -Is)) ==="
