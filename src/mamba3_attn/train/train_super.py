@@ -38,7 +38,7 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from ..data.view_split import split_views, write_split
 from ..eval.da3_reference import DEFAULT_HF_MODEL, load_da3
-from ..mamba3 import Mamba3SelfAttention
+from ..mamba3 import Mamba3SelfAttention, Mamba3VSSDAttention
 from ..patch import install_mamba3, count_mamba3_attn
 from .da3_loss import DA3LossWeights, da3_paper_loss
 from .gt_ray import gt_ray_map
@@ -282,10 +282,14 @@ def set_trainables(
     cam_params: list[nn.Parameter] = []
     other_params: list[nn.Parameter] = []
 
-    # Mamba-3 attentions
+    # Mamba-3 attentions. Both operator families, not just the SSD one: the VSSD
+    # classes do not subclass Mamba3SelfAttention, so matching on that alone selected
+    # zero parameters for --variant vssd and vssd_bg and the distillation trained
+    # nothing at all. Mamba3VSSDBetaGammaAttention subclasses Mamba3VSSDAttention, so
+    # the pair covers all three.
     if scope in ("attn", "all"):
         for m in student.model.modules():
-            if isinstance(m, Mamba3SelfAttention):
+            if isinstance(m, (Mamba3SelfAttention, Mamba3VSSDAttention)):
                 for p in m.parameters():
                     p.requires_grad_(True)
                     attn_params.append(p)
@@ -609,7 +613,7 @@ def main() -> None:
     ap.add_argument("--decay-steps", type=int, default=100)
     ap.add_argument("--chunk-size", type=int, default=128)
     ap.add_argument("--state-dim", type=int, default=64)
-    ap.add_argument("--variant", choices=["mamba3", "vssd"], default="mamba3",
+    ap.add_argument("--variant", choices=["mamba3", "vssd", "vssd_bg"], default="mamba3",
                     help="Mamba-3 attention variant. 'mamba3' (default) = full SSD with "
                     "bidirectional + trapezoidal mask. 'vssd' = NC-SSD (doc/attention §6) — "
                     "single global state, no T×T mask, ~1.5× faster than SSD on CIFAR-10.")
