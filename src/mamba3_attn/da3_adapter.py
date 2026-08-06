@@ -18,7 +18,8 @@ from typing import Optional
 
 from torch import Tensor, nn
 
-from .mamba3 import Mamba3SelfAttention, Mamba3VSSDAttention
+from .mamba3 import (Mamba3SelfAttention, Mamba3VSSDAttention,
+                     Mamba3VSSDBetaGammaAttention)
 
 
 class Mamba3Attention(nn.Module):
@@ -101,3 +102,26 @@ class Mamba3VSSDAdapter(nn.Module):
     def forward(self, x: Tensor, pos: Optional[Tensor] = None, attn_mask: Optional[Tensor] = None) -> Tensor:
         y = self.inner(x, pos=pos, attn_mask=attn_mask)
         return self.proj_drop(y)
+
+
+class Mamba3VSSDBetaGammaAdapter(Mamba3VSSDAdapter):
+    """DA3-shaped wrapper around :class:`Mamba3VSSDBetaGammaAttention`.
+
+    Identical plumbing to :class:`Mamba3VSSDAdapter` -- only the inner operator differs,
+    so `install_mamba3(variant="vssd_bg")` constructs it with the same kwargs. The second
+    pool costs ~8% more parameters than VSSD-gamma, which is inherent to the operator (a
+    second query and scalar projection), so a swap at "matched parameters" is matched on
+    the backbone, not on this module.
+    """
+
+    def __init__(self, dim: int, **kwargs) -> None:
+        super().__init__(dim, **kwargs)
+        inner = self.inner
+        self.inner = Mamba3VSSDBetaGammaAttention(
+            dim=dim,
+            num_heads=inner.num_heads,
+            state_dim=inner.state_dim,
+            rope=inner.rope,
+            out_proj=True,
+            proj_bias=kwargs.get("proj_bias", True),
+        )

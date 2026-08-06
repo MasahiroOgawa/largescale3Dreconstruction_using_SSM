@@ -259,7 +259,9 @@ class Mamba3SelfAttention(nn.Module):
         Returns:
             y: (B, T, D)
         """
-        Bp, Cp, Vp, delta, A_log, lam = self.projections(x)
+        # 7-tuple since projections.py was refreshed for rope_angles; `angles` is
+        # None whenever rope_angles=False, which is every path in this repo.
+        Bp, Cp, Vp, delta, A_log, lam, _angles = self.projections(x)
 
         if self.rope is not None and pos is not None:
             Bp = self.rope(Bp, pos)
@@ -293,3 +295,25 @@ class Mamba3SelfAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(Bsz, T, H * hd)
         y = self.post_norm(y)
         return self.proj(y)
+
+
+def rotate_pairs(t, cos, sin):
+    """Rotate *adjacent* channel pairs (t0,t1), (t2,t3), ... of `t` by cos/sin.
+
+    Ported verbatim from visionMamba3's rope2d.py, which is the single source of the
+    rotation convention: 2-D RoPE and the complex-SSM rotary must rotate in the SAME
+    planes or the two encodings land in disjoint subspaces (measured there as 1.3e-2
+    mismatched against 2.2e-7 matched, costing 12 accuracy points).
+    """
+    pairs = t.unflatten(-1, (t.shape[-1] // 2, 2))
+    t0, t1 = pairs[..., 0], pairs[..., 1]
+    return torch.stack([t0 * cos - t1 * sin, t0 * sin + t1 * cos], dim=-1).flatten(-2)
+
+
+def apply_cumulative_rope(t, theta):
+    """Mamba-3's complex-SSM rotary: rotate by the per-pair cumulative angle.
+
+    Unused by the DA3 swap, which keeps DA3's own RoPE2D and leaves this off, but
+    vssd_attention.py imports it unconditionally so it has to exist.
+    """
+    return rotate_pairs(t, torch.cos(theta), torch.sin(theta))

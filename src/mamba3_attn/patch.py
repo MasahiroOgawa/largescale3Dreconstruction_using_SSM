@@ -21,13 +21,15 @@ from typing import Literal
 
 from torch import nn
 
-from .da3_adapter import Mamba3Attention, Mamba3VSSDAdapter
+from .da3_adapter import (Mamba3Attention, Mamba3VSSDAdapter,
+                          Mamba3VSSDBetaGammaAdapter)
 
 # Map variant name → DA3-shaped attention class. Adding a new variant means
 # extending this dict and (if needed) the inner operator in mamba3/.
 _VARIANT_CLASSES: dict[str, type[nn.Module]] = {
     "mamba3": Mamba3Attention,
     "vssd": Mamba3VSSDAdapter,
+    "vssd_bg": Mamba3VSSDBetaGammaAdapter,
 }
 
 
@@ -49,7 +51,7 @@ def _infer_dim(attn: nn.Module) -> int:
 
 def _swap_attn(
     block: nn.Module, *,
-    variant: Literal["mamba3", "vssd"] = "mamba3",
+    variant: Literal["mamba3", "vssd", "vssd_bg"] = "mamba3",
     state_dim: int = 64, bidirectional: bool = True, three_term: bool = True,
     use_fused_kernel: bool = True, chunk_size: int | None = None,
 ) -> None:
@@ -105,7 +107,7 @@ def _backbone_blocks(net: nn.Module) -> list[nn.Module] | None:
 def install_mamba3(
     net: nn.Module,
     which: Literal["backbone_only", "all"] = "all",
-    variant: Literal["mamba3", "vssd"] = "mamba3",
+    variant: Literal["mamba3", "vssd", "vssd_bg"] = "mamba3",
     state_dim: int = 64,
     bidirectional: bool = True,
     three_term: bool = True,
