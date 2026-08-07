@@ -19,7 +19,11 @@
 # does not, since its mask collapses to a per-token vector with no |i-j| term of its own. The
 # module is DA3's own instance, shared: zero parameters, zero buffers, total unchanged at
 # 39.861M. Phase-B and Phase-C both take the flag so the student is built identically in each.
-# The DA3-SMALL baseline does NOT get it -- it is compared exactly as published.
+# Where the encoding is applied is part of Vision Mamba-3's design, derived in the method
+# section rather than added for this run: VSSD-gamma's mask carries no |i-j| term, so it
+# needs a positional encoding to function. DA3-SMALL is run as published, which is what a
+# published baseline means. Both arms get the same ETH3D fine-tune, and that -- not the
+# encoding -- is the axis that has to be matched for the comparison to be like-for-like.
 #
 # STEPS = 12000, below CM12's 20000. Measured 1.648 s/step for LARGE + relational, so
 # 20000 x 3 arms is ~30 h and does not fit the window; 12000 is the largest equal budget
