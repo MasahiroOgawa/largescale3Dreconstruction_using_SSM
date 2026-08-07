@@ -151,7 +151,12 @@ def _capture_dpt_hook(model: nn.Module, captured: dict):
     return model.head.register_forward_hook(hook)
 
 
-FEAT_LAYERS = (5, 7, 9, 11)
+FEAT_LAYERS = (5, 7, 9, 11)          # student side, 12 blocks
+
+# Teacher-side indices. SMALL is the same 12-block network as the student, so layer i
+# means the same thing on both sides. LARGE has 24 blocks, so the four supervision points
+# are placed at the matched fractional depth (CM30, doc/PLAN.md:2098).
+TEACHER_LAYERS = {1: (5, 7, 9, 11), 2: (11, 15, 19, 23)}
 
 
 @torch.inference_mode()
@@ -208,6 +213,42 @@ def _feature_distill_loss(student_feats: list[Tensor], teacher_feats: list[Tenso
         t_n = torch.nn.functional.normalize(t, dim=-1)
         cos_loss = 1.0 - (s_n * t_n).sum(dim=-1).mean()
         total = total + l2 + cos_loss
+    return total / max(len(student_feats), 1)
+
+
+def _relational_distill_loss(student_feats: list[Tensor], teacher_feats: list[Tensor],
+                             max_tokens: int = 1024) -> Tensor:
+    """Match token-to-token similarity structure rather than the features themselves.
+
+    `_feature_distill_loss` subtracts student from teacher elementwise, so it needs equal
+    channel counts. Against DA3-LARGE (1024-d vs the student's 384-d) that forced a
+    trainable per-layer Linear(384->1024) between the student and the loss -- and that
+    projector is thrown away before deployment. The student could therefore satisfy the
+    objective from a low-dimensional subspace and let the projector supply the apparent
+    richness, which is what CM30 measured: last-layer rank 40 against CM12's 62, collapsed
+    at every layer (doc/PLAN.md:15.31).
+
+    A Gram matrix over tokens is (N, N) whichever channel count produced it, so there is
+    no projector to exploit and nothing is discarded between training and deployment. It
+    also penalises the collapse directly: a student squeezed into ~40 dimensions makes far
+    too many token pairs look alike, and its off-diagonal structure cannot match.
+
+    Tokens are subsampled because N = 1296 at 504/14 gives a 1296^2 matrix per view per
+    layer; the same indices are used for both sides so the pairs compared are the same.
+    """
+    total = student_feats[0].new_zeros(())
+    for f_s, f_t in zip(student_feats, teacher_feats):
+        s = f_s.float()
+        t = f_t.float().detach()
+        b, v, hp, wp, _ = s.shape
+        s = s.reshape(b * v, hp * wp, s.shape[-1])
+        t = t.reshape(b * v, hp * wp, t.shape[-1])
+        if s.shape[1] > max_tokens:
+            idx = torch.randperm(s.shape[1], device=s.device)[:max_tokens]
+            s, t = s[:, idx], t[:, idx]
+        s = torch.nn.functional.normalize(s, dim=-1)
+        t = torch.nn.functional.normalize(t, dim=-1)
+        total = total + (s @ s.transpose(-1, -2) - t @ t.transpose(-1, -2)).pow(2).mean()
     return total / max(len(student_feats), 1)
 
 
@@ -503,13 +544,18 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
             seed=cfg.seed, require_gt=require_gt, scenes=cfg.scenes,
         )
 
-    # Feature distillation enabled only for super-phase 1 (DA3-SMALL teacher,
-    # dim-matched). LARGE teacher (super 2) has 1024-dim features that don't
-    # match the student's 384-dim — dimensions can't align without a projector.
-    feat_distill = cfg.super_phase == 1 and cfg.lambda_feat > 0
+    # Both teachers now. SMALL is dim-matched, so the elementwise feature loss applies.
+    # LARGE is not, and instead of a trainable projector (see _relational_distill_loss)
+    # it is supervised on token-to-token structure, which needs no dimension match.
+    feat_distill = cfg.super_phase in (1, 2) and cfg.lambda_feat > 0
+    relational = cfg.super_phase == 2
     export_layers = FEAT_LAYERS if feat_distill else None
+    teacher_layers = TEACHER_LAYERS[cfg.super_phase] if feat_distill else None
     if feat_distill:
-        print(f"[train_super] feature distillation ENABLED at layers {FEAT_LAYERS}", flush=True)
+        print(f"[train_super] {'relational' if relational else 'feature'} distillation: "
+              f"student layers {export_layers} <- teacher layers {teacher_layers}", flush=True)
+    if feat_distill:
+        pass   # mode and layer mapping are already logged just above
 
     test_caches: dict[str, MultiViewBatch] = {}
     if cfg.test_scenes:
@@ -528,7 +574,7 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
         batch = next(data)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             target, gt_kwargs, t_feats = build_target(
-                batch, teacher, cfg.image_size, device, export_feat_layers=export_layers,
+                batch, teacher, cfg.image_size, device, export_feat_layers=teacher_layers,
             )
             student_extrinsics = gt_kwargs.get("gt_w2c") if cfg.cam_posed else None
             student_intrinsics = gt_kwargs.get("gt_intrinsics") if cfg.cam_posed else None
@@ -543,7 +589,8 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
 
             l_feat = loss.new_zeros(())
             if feat_distill and t_feats is not None and "feats" in s_out:
-                l_feat = _feature_distill_loss(s_out["feats"], t_feats)
+                l_feat = (_relational_distill_loss(s_out["feats"], t_feats) if relational
+                          else _feature_distill_loss(s_out["feats"], t_feats))
                 loss = loss + cfg.lambda_feat * l_feat
 
         opt.zero_grad(set_to_none=True)

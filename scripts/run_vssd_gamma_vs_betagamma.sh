@@ -6,24 +6,23 @@
 # step count, same Phase-C -- so the comparison between them is clean even though the
 # budget is below CM12's.
 #
-# TEACHER IS DA3-SMALL (--super 1), not DA3-LARGE, and that is forced rather than chosen.
-# train_super.py:505 gates feature distillation on `super_phase == 1`, the DistillProjector
-# that CM20 used to bridge 384->1024 no longer exists in src/, and FEAT_LAYERS = (5,7,9,11)
-# are the 12-block SMALL teacher's indices with no LARGE equivalent. Running --super 2 today
-# would therefore distill with no feature term at all -- strictly weaker than CM20, which
-# already collapsed to 0.1739. Restoring the LARGE path is development work, not a run.
-# The teacher choice does not bias gamma against beta,gamma: both arms share it.
+# TEACHER IS DA3-LARGE (--super 2), supervised on token-to-token structure rather than
+# raw features. The elementwise feature loss needs equal channel counts, so 384 against
+# LARGE's 1024 previously required a trainable Linear(384->1024) that was discarded before
+# deployment -- the loophole that let CM30's student satisfy the objective from a ~40-dim
+# subspace (last-layer rank 40 against CM12's 62, collapsed at every layer). A Gram matrix
+# over tokens is (N,N) whichever channel count produced it, so there is no projector to
+# exploit and the collapse is penalised directly.
 #
-# STEPS = 20000 matches CM12 exactly, so these rows compare directly against the published
-# CM24 numbers instead of carrying a shorter-budget caveat. Measured rate is ~0.76 s/step
-# (--sub 1 trains only the 15M mixer), so three arms fit the window with room to spare.
-# Checkpoints every 2000 mean an arm cut short still leaves a usable earlier checkpoint,
-# and the trend across them shows whether it had plateaued -- the thing to check before
-# reading anything into a final number.
+# STEPS = 12000, below CM12's 20000. Measured 1.648 s/step for LARGE + relational, so
+# 20000 x 3 arms is ~30 h and does not fit the window; 12000 is the largest equal budget
+# that lands before morning. These rows are therefore internally comparable but not
+# directly comparable to the published CM24 number.
+#
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-STEPS=${STEPS:-20000}
+STEPS=${STEPS:-12000}
 FT_STEPS=1000
 
 run_arm() {                       # run_arm <variant> <tag>
@@ -33,7 +32,7 @@ run_arm() {                       # run_arm <variant> <tag>
 
   echo "=== [$tag] Phase-B distill, $STEPS steps ($(date -Is)) ==="
   CUDA_VISIBLE_DEVICES=0 uv run python -m mamba3_attn.train.train_super \
-      --super 1 --sub 1 --variant "$variant" \
+      --super 2 --sub 1 --variant "$variant" \
       --steps "$STEPS" --ckpt-every 2000 \
       --out-dir "$dist" 2>&1 | tee "$dist/train.log" || { echo "[$tag] distill FAILED"; return 1; }
 
