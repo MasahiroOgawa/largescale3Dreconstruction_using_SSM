@@ -114,7 +114,7 @@ def install_mamba3(
     use_fused_kernel: bool = True,
     chunk_size: int | None = None,
     layer_indices: list[int] | None = None,
-    rope_first_layer: bool = False,
+    rope_all_layers: bool = False,
 ) -> int:
     """Swap self/cross attention to a Mamba-3-family operator across the DA3 network.
 
@@ -132,16 +132,24 @@ def install_mamba3(
               `bidirectional`, `three_term`, `chunk_size`, `use_fused_kernel`
               are silently ignored.
         state_dim, bidirectional, three_term: forwarded to the variant class.
-        rope_first_layer: give the first backbone block DA3's own 2-D RoPE when it
-            does not already carry one. DA3-SMALL applies RoPE only from block 4
-            onward, so blocks 0-3 hand the mixer no positional signal at all. Softmax
-            attention tolerates that; VSSD-gamma does not, because its mask collapses
-            to a per-token vector with no |i-j| term of its own (\S3.2's asymmetry
-            argument, and the CIFAR grid where 2-D RoPE is worth +2.64 to VSSD-gamma).
-            The module is DA3's own instance, shared: it has zero parameters and zero
-            buffers, so this adds no capacity and cannot change the rotation
-            convention. Only the image backbone -- cam_enc trunk carries camera
-            tokens, where a 2-D grid position is meaningless.
+        rope_all_layers: give every backbone block DA3's own 2-D RoPE. DA3-SMALL
+            applies it only from block 4 onward, leaving 0-3 without.
+
+            RoPE is not additive and never enters the residual stream: it rotates Q/K
+            inside the score computation and is discarded. So a layer without it mixes
+            tokens with no positional term at all -- applying it once at the input does
+            not make later layers position-aware, unlike an absolute encoding added to
+            the embedding. That is tolerable for the scan operators, whose mask decays
+            with |i-j| intrinsically, and not for VSSD-gamma / VSSD-beta,gamma, whose
+            mask collapses to a per-token vector with no |i-j| term at all (\S3.2's
+            asymmetry argument). It also matches what the CIFAR grid measured: one
+            shared RoPE2D passed to every mixer, which is where +2.64 for VSSD-gamma
+            comes from.
+
+            The module is DA3's own instance, shared: zero parameters and zero buffers,
+            so this adds no capacity and cannot change the rotation convention. Image
+            backbone only -- cam_enc trunk carries camera tokens, where a 2-D grid
+            position is meaningless.
         layer_indices: when set, restricts the swap to these flat indices.
             Numbering covers backbone first (0..N_bb-1), then cam_enc trunk
             (N_bb..N_bb+N_cam-1). When None, all layers covered by `which` are
@@ -167,8 +175,8 @@ def install_mamba3(
             if indices is None or i in indices:
                 _swap_attn(block, **kw)
                 count += 1
-        if rope_first_layer:
-            _attach_rope_to_first(blocks)
+        if rope_all_layers:
+            _attach_rope_to_backbone(blocks)
 
     if which == "all":
         cam_enc = getattr(net, "cam_enc", None)
@@ -186,8 +194,8 @@ def install_mamba3(
 
 
 
-def _attach_rope_to_first(blocks) -> bool:
-    """Lend DA3's own RoPE to the first backbone block, if it has none.
+def _attach_rope_to_backbone(blocks) -> int:
+    """Lend DA3's own RoPE to every backbone block that has none.
 
     Borrowed rather than constructed: RotaryPositionEmbedding2D holds no parameters and
     no buffers, so sharing one instance adds nothing to the model and guarantees the
@@ -206,12 +214,16 @@ def _attach_rope_to_first(blocks) -> bool:
         return getattr(attn, "rope", None) or getattr(getattr(attn, "inner", None), "rope", None)
 
     donor = next((r for r in (_rope_of(b) for b in blocks) if r is not None), None)
-    first = getattr(blocks[0], "attn", None)
-    if donor is None or first is None or _rope_of(blocks[0]) is not None:
-        return False
-    target = getattr(first, "inner", first)
-    target.rope = donor
-    return True
+    if donor is None:
+        return 0
+    filled = 0
+    for b in blocks:
+        attn = getattr(b, "attn", None)
+        if attn is None or _rope_of(b) is not None:
+            continue
+        getattr(attn, "inner", attn).rope = donor
+        filled += 1
+    return filled
 
 
 def count_mamba3_attn(net: nn.Module) -> int:

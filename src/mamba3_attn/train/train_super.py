@@ -90,7 +90,7 @@ class SuperPhaseConfig:
     # Used for the per-scene-overfit "ceiling" baseline (PLAN §15.59 row 1) where
     # we want the same training recipe applied to the un-patched architecture.
     no_mamba3_swap: bool = False
-    rope_first_layer: bool = False
+    rope_all_layers: bool = False
     # Per-scene overfit (PLAN §15.59). When `scene_overfit` is set, training pulls
     # `n_views` per step from the train half of `split_views(...)` instead of cycling
     # across multiple scenes. The held-out test indices are written to `split.json`.
@@ -475,7 +475,7 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
             student.model, which="all", variant=cfg.variant, state_dim=cfg.state_dim,
             use_fused_kernel=cfg.use_fused_kernel, chunk_size=cfg.chunk_size,
             layer_indices=cfg.swap_layers,
-            rope_first_layer=cfg.rope_first_layer,
+            rope_all_layers=cfg.rope_all_layers,
         )
         n_swapped = count_mamba3_attn(student.model)
         layer_tag = f" (layers={cfg.swap_layers})" if cfg.swap_layers is not None else ""
@@ -682,11 +682,12 @@ def main() -> None:
     ap.add_argument("--lr-attn", type=float, default=None)
     ap.add_argument("--lr-head", type=float, default=None)
     ap.add_argument("--lr-other", type=float, default=None)
-    ap.add_argument("--rope-first-layer", action="store_true",
-                    help="Give backbone block 0 DA3's own 2-D RoPE (it has none: DA3 "
-                    "starts RoPE at block 4). Zero added parameters -- the module is "
-                    "shared. Applies to the swapped variants only; DA3-SMALL stays as "
-                    "published.")
+    ap.add_argument("--rope-all-layers", action="store_true",
+                    help="Give every backbone block DA3's own 2-D RoPE (DA3 starts at "
+                    "block 4, leaving 0-3 without). RoPE acts inside each score "
+                    "computation and is not carried in the residual, so a layer without "
+                    "it mixes with no positional term. Zero added parameters -- the "
+                    "module is shared.")
     ap.add_argument("--no-mamba3-swap", action="store_true",
                     help="Train un-patched DA3-SMALL (per-scene-overfit ceiling baseline).")
     ap.add_argument("--use-kendall-gal", action="store_true",
@@ -752,7 +753,7 @@ def main() -> None:
         lr_head=args.lr_head,
         lr_other=args.lr_other,
         no_mamba3_swap=args.no_mamba3_swap,
-        rope_first_layer=args.rope_first_layer,
+        rope_all_layers=args.rope_all_layers,
         swap_layers=args.swap_layer,
         cam_posed=args.cam_posed,
         scenes=scenes_list,
