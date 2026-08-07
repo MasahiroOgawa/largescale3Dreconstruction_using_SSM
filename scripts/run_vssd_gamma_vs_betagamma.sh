@@ -14,6 +14,13 @@
 # over tokens is (N,N) whichever channel count produced it, so there is no projector to
 # exploit and the collapse is penalised directly.
 #
+# --rope-first-layer gives backbone block 0 DA3's own 2-D RoPE. DA3 starts RoPE at block 4,
+# so blocks 0-3 hand the mixer no positional signal at all; softmax tolerates that, VSSD-gamma
+# does not, since its mask collapses to a per-token vector with no |i-j| term of its own. The
+# module is DA3's own instance, shared: zero parameters, zero buffers, total unchanged at
+# 39.861M. Phase-B and Phase-C both take the flag so the student is built identically in each.
+# The DA3-SMALL baseline does NOT get it -- it is compared exactly as published.
+#
 # STEPS = 12000, below CM12's 20000. Measured 1.648 s/step for LARGE + relational, so
 # 20000 x 3 arms is ~30 h and does not fit the window; 12000 is the largest equal budget
 # that lands before morning. These rows are therefore internally comparable but not
@@ -32,7 +39,7 @@ run_arm() {                       # run_arm <variant> <tag>
 
   echo "=== [$tag] Phase-B distill, $STEPS steps ($(date -Is)) ==="
   CUDA_VISIBLE_DEVICES=0 uv run python -m mamba3_attn.train.train_super \
-      --super 2 --sub 1 --variant "$variant" \
+      --super 2 --sub 1 --variant "$variant" --rope-first-layer \
       --steps "$STEPS" --ckpt-every 2000 \
       --out-dir "$dist" 2>&1 | tee "$dist/train.log" || { echo "[$tag] distill FAILED"; return 1; }
 
@@ -42,7 +49,7 @@ run_arm() {                       # run_arm <variant> <tag>
   [ -n "$init" ] || { echo "[$tag] no distill checkpoint"; return 1; }
   echo "=== [$tag] Phase-C depth fine-tune from $init ($(date -Is)) ==="
   CUDA_VISIBLE_DEVICES=0 uv run python -m mamba3_attn.train.train_super \
-      --super 3 --sub 3 --variant "$variant" --init-ckpt "$init" \
+      --super 3 --sub 3 --variant "$variant" --rope-first-layer --init-ckpt "$init" \
       --steps "$FT_STEPS" --warmup-steps 100 --decay-steps 200 \
       --lr-attn 1.0e-5 --lr-head 1.0e-5 --lr-other 3.0e-5 \
       --out-dir "$ft" 2>&1 | tee "$ft/train.log" || { echo "[$tag] Phase-C FAILED"; return 1; }

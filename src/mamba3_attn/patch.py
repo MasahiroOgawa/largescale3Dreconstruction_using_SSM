@@ -114,6 +114,7 @@ def install_mamba3(
     use_fused_kernel: bool = True,
     chunk_size: int | None = None,
     layer_indices: list[int] | None = None,
+    rope_first_layer: bool = False,
 ) -> int:
     """Swap self/cross attention to a Mamba-3-family operator across the DA3 network.
 
@@ -131,6 +132,16 @@ def install_mamba3(
               `bidirectional`, `three_term`, `chunk_size`, `use_fused_kernel`
               are silently ignored.
         state_dim, bidirectional, three_term: forwarded to the variant class.
+        rope_first_layer: give the first backbone block DA3's own 2-D RoPE when it
+            does not already carry one. DA3-SMALL applies RoPE only from block 4
+            onward, so blocks 0-3 hand the mixer no positional signal at all. Softmax
+            attention tolerates that; VSSD-gamma does not, because its mask collapses
+            to a per-token vector with no |i-j| term of its own (\S3.2's asymmetry
+            argument, and the CIFAR grid where 2-D RoPE is worth +2.64 to VSSD-gamma).
+            The module is DA3's own instance, shared: it has zero parameters and zero
+            buffers, so this adds no capacity and cannot change the rotation
+            convention. Only the image backbone -- cam_enc trunk carries camera
+            tokens, where a 2-D grid position is meaningless.
         layer_indices: when set, restricts the swap to these flat indices.
             Numbering covers backbone first (0..N_bb-1), then cam_enc trunk
             (N_bb..N_bb+N_cam-1). When None, all layers covered by `which` are
@@ -156,6 +167,8 @@ def install_mamba3(
             if indices is None or i in indices:
                 _swap_attn(block, **kw)
                 count += 1
+        if rope_first_layer:
+            _attach_rope_to_first(blocks)
 
     if which == "all":
         cam_enc = getattr(net, "cam_enc", None)
@@ -170,6 +183,35 @@ def install_mamba3(
                     count += 1
 
     return count
+
+
+
+def _attach_rope_to_first(blocks) -> bool:
+    """Lend DA3's own RoPE to the first backbone block, if it has none.
+
+    Borrowed rather than constructed: RotaryPositionEmbedding2D holds no parameters and
+    no buffers, so sharing one instance adds nothing to the model and guarantees the
+    swapped mixer rotates in exactly the same planes as the blocks that already use it.
+    Building a second instance would risk the two drifting apart, which is the failure
+    that cost 12 accuracy points on CIFAR when 2-D RoPE and the complex rotary paired
+    channels differently.
+    """
+    def _rope_of(block):
+        # After the swap the operator lives on `attn.inner`, so the rope is one level
+        # deeper than on an un-swapped DA3 block. Look at both, or the donor search
+        # finds nothing and this silently does nothing at all.
+        attn = getattr(block, "attn", None)
+        if attn is None:
+            return None
+        return getattr(attn, "rope", None) or getattr(getattr(attn, "inner", None), "rope", None)
+
+    donor = next((r for r in (_rope_of(b) for b in blocks) if r is not None), None)
+    first = getattr(blocks[0], "attn", None)
+    if donor is None or first is None or _rope_of(blocks[0]) is not None:
+        return False
+    target = getattr(first, "inner", first)
+    target.rope = donor
+    return True
 
 
 def count_mamba3_attn(net: nn.Module) -> int:
