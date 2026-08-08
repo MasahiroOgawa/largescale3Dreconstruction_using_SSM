@@ -91,6 +91,7 @@ class SuperPhaseConfig:
     # we want the same training recipe applied to the un-patched architecture.
     no_mamba3_swap: bool = False
     rope_all_layers: bool = False
+    scheduler: str = "wsd"
     # Per-scene overfit (PLAN §15.59). When `scene_overfit` is set, training pulls
     # `n_views` per step from the train half of `split_views(...)` instead of cycling
     # across multiple scenes. The held-out test indices are written to `split.json`.
@@ -142,6 +143,21 @@ def _wsd_lambda(step: int, warmup: int, decay: int, total: int, floor: float = 0
         return 1.0
     prog = (step - stable_end) / max(1, decay)
     return floor + 0.5 * (1 - floor) * (1 + math.cos(math.pi * prog))
+
+
+def _cosine_lambda(step: int, warmup: int, total: int, floor: float = 0.0) -> float:
+    """Warmup then a single cosine decay over the whole run.
+
+    Unlike the WSD shape above, which holds the peak for most of the run and only decays in
+    its last `decay` steps, this decays from the first post-warmup step. That is what a
+    warm start wants: the rate is highest when the model is furthest from where it should
+    end up, and is already small long before the run finishes, so the final checkpoint is
+    taken from a settled model rather than mid-oscillation.
+    """
+    if step < warmup:
+        return step / max(1, warmup)
+    prog = (step - warmup) / max(1, total - warmup)
+    return floor + 0.5 * (1 - floor) * (1 + math.cos(math.pi * min(prog, 1.0)))
 
 
 def _capture_dpt_hook(model: nn.Module, captured: dict):
@@ -508,7 +524,12 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
           f"other={info['other']/1e6:.2f}M (total {n_total/1e6:.2f}M)", flush=True)
 
     opt = AdamW(groups)
-    sched = LambdaLR(opt, lambda s: _wsd_lambda(s, cfg.warmup_steps, cfg.decay_steps, cfg.steps))
+    if cfg.scheduler == "cosine":
+        sched = LambdaLR(opt, lambda s: _cosine_lambda(s, cfg.warmup_steps, cfg.steps))
+    else:
+        sched = LambdaLR(opt, lambda s: _wsd_lambda(s, cfg.warmup_steps, cfg.decay_steps, cfg.steps))
+    print(f"[train_super] lr schedule={cfg.scheduler} warmup={cfg.warmup_steps} "
+          f"steps={cfg.steps}", flush=True)
     use_amp = device.type == "cuda" and cfg.amp_dtype != "fp32"
     amp_dtype = _amp_dtype(cfg.amp_dtype)
 
@@ -687,6 +708,9 @@ def main() -> None:
     ap.add_argument("--lr-attn", type=float, default=None)
     ap.add_argument("--lr-head", type=float, default=None)
     ap.add_argument("--lr-other", type=float, default=None)
+    ap.add_argument("--scheduler", choices=["wsd", "cosine"], default="wsd",
+                    help="LR shape. 'cosine' decays from the first post-warmup step, which "
+                    "suits a warm start; 'wsd' holds the peak and decays only at the end.")
     ap.add_argument("--rope-all-layers", action="store_true",
                     help="Give every backbone block DA3's own 2-D RoPE (DA3 starts at "
                     "block 4, leaving 0-3 without). RoPE acts inside each score "
@@ -759,6 +783,7 @@ def main() -> None:
         lr_other=args.lr_other,
         no_mamba3_swap=args.no_mamba3_swap,
         rope_all_layers=args.rope_all_layers,
+        scheduler=args.scheduler,
         swap_layers=args.swap_layer,
         cam_posed=args.cam_posed,
         scenes=scenes_list,
