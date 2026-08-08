@@ -384,7 +384,12 @@ def set_trainables(
     # Per-group LRs depending on scope
     groups: list[dict] = []
     if scope == "attn":
-        groups = [{"params": attn_params, "lr": 3e-4, "tag": "attn"}]
+        # 3e-4 is CM12's rate for a fresh, randomly-initialised mixer. It is far too high
+        # for a warm start: continuing an already-converged mixer at it re-heats the
+        # solution rather than refining it, and the feature loss oscillates instead of
+        # descending. --lr-attn was previously accepted and then ignored here, so a
+        # continuation run had no way to lower it.
+        groups = [{"params": attn_params, "lr": lr_attn or 3e-4, "tag": "attn"}]
     elif scope == "head":
         if dpt_params:
             groups.append({"params": dpt_params, "lr": 5e-5, "tag": "dpt"})
