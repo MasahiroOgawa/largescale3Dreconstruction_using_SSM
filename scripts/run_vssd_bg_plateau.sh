@@ -36,7 +36,7 @@ CUDA_VISIBLE_DEVICES=0 uv run python -m mamba3_attn.train.train_super \
     --init-ckpt "$prev" \
     --scheduler plateau --val-scenes eth3d:relief_2,eth3d:electro \
     --test-every 1000 --test-n-views 4 --test-n-batches 4 \
-    --plateau-factor 0.5 --plateau-patience 2 --plateau-min-lr 1e-6 \
+    --plateau-factor 0.5 --plateau-patience 2 --plateau-min-lr 1e-6 --plateau-metric L_D \
     --warmup-steps 100 --steps "$STEPS" --ckpt-every 1000 --lr-attn 5.0e-5 \
     --out-dir "$dist" 2>&1 | tee "$dist/train.log" || { echo "Phase-B FAILED"; exit 1; }
 
@@ -46,7 +46,7 @@ CUDA_VISIBLE_DEVICES=0 uv run python -m mamba3_attn.train.train_super \
     --init-ckpt "$(ls -t $dist/ckpt_*.pt | head -1)" \
     --scheduler plateau --val-scenes eth3d:relief_2,eth3d:electro \
     --test-every 250 --test-n-views 4 --test-n-batches 4 \
-    --plateau-factor 0.5 --plateau-patience 2 --plateau-min-lr 1e-7 \
+    --plateau-factor 0.5 --plateau-patience 2 --plateau-min-lr 1e-7 --plateau-metric L_D \
     --warmup-steps 50 --steps 1000 \
     --lr-attn 1.0e-5 --lr-head 1.0e-5 --lr-other 3.0e-5 \
     --out-dir "$ft" 2>&1 | tee "$ft/train.log" || { echo "Phase-C FAILED"; exit 1; }

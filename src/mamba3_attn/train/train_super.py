@@ -103,6 +103,9 @@ class SuperPhaseConfig:
     plateau_factor: float = 0.5
     plateau_patience: int = 2
     plateau_min_lr: float = 1e-6
+    # Which held-out term the schedule watches. "L_D" (GT depth) by default: it is the term
+    # abs_rel reflects, and unlike "total" it is not swamped by the ray/camera term.
+    plateau_metric: str = "L_D"
     # Per-scene overfit (PLAN §15.59). When `scene_overfit` is set, training pulls
     # `n_views` per step from the train half of `split_views(...)` instead of cycling
     # across multiple scenes. The held-out test indices are written to `split.json`.
@@ -285,12 +288,17 @@ def _eval_test_loss(
     student, test_caches: dict, rng, n_views: int, n_batches: int,
     image_size: int, device, weights, amp_dtype, use_amp: bool, cam_posed: bool,
 ) -> dict[str, float]:
-    """Average DA3 paper loss (same form as training) over fixed test scenes.
+    """Average DA3 paper loss against GROUND TRUTH over fixed held-out scenes.
 
-    Used by the in-training test-loss diagnostic (`--test-scenes`). No
-    augmentation, no grad — pure forward + loss compute. Reuses the same
-    `build_target` / `_student_forward` / `da3_paper_loss` path as training
-    so the numbers are directly comparable to the train-step loss line.
+    No augmentation, no grad — pure forward + loss compute.
+
+    Not on the same scale as the train-step loss line, and deliberately so: this calls
+    `build_target(batch, None, ...)`, which targets ground-truth depth and rays, whereas
+    distillation training (super 1/2) passes the teacher and targets the teacher's own
+    predictions. Ground truth is the right target here because it is what `abs_rel` is
+    ultimately scored against — a distilled model that tracks its teacher ever more
+    closely while drifting from GT is not improving at the reported task. Expect the two
+    numbers to differ by orders of magnitude; compare each against itself over time.
     """
     keys = ("L_D", "L_M", "L_grad", "L_P", "L_C")
     totals: list[float] = []
@@ -697,11 +705,12 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
             log_lines.append(test_line)
             if plateau:
                 before = opt.param_groups[0]["lr"]
-                sched.step(test_metrics["total"])
+                sched.step(test_metrics[cfg.plateau_metric])
                 after = opt.param_groups[0]["lr"]
                 if after < before:
                     drop = (f"[{cfg.super_phase}-{cfg.sub_phase}] step {step + 1:5d}/{cfg.steps}  "
-                            f"PLATEAU  val loss stalled -> lr {before:.2e} -> {after:.2e}")
+                            f"PLATEAU  held-out {cfg.plateau_metric} stalled at "
+                            f"{test_metrics[cfg.plateau_metric]:.4f} -> lr {before:.2e} -> {after:.2e}")
                     print(drop, flush=True)
                     log_lines.append(drop)
             loss_history.append({
@@ -764,6 +773,9 @@ def main() -> None:
     ap.add_argument("--plateau-patience", type=int, default=2,
                     help="Validation checks without relative improvement before the LR is cut.")
     ap.add_argument("--plateau-min-lr", type=float, default=1e-6)
+    ap.add_argument("--plateau-metric", choices=["L_D", "total"], default="L_D",
+                    help="Held-out term the plateau watches. L_D is GT depth loss, which is "
+                         "what abs_rel reflects; total is dominated by the ray term.")
     ap.add_argument("--scheduler", choices=["wsd", "cosine", "plateau"], default="wsd",
                     help="LR shape. 'cosine' decays from the first post-warmup step, which "
                     "suits a warm start; 'wsd' holds the peak and decays only at the end.")
@@ -854,6 +866,7 @@ def main() -> None:
         plateau_factor=args.plateau_factor,
         plateau_patience=args.plateau_patience,
         plateau_min_lr=args.plateau_min_lr,
+        plateau_metric=args.plateau_metric,
         swap_layers=args.swap_layer,
         cam_posed=args.cam_posed,
         scenes=scenes_list,
