@@ -54,6 +54,7 @@ def _swap_attn(
     variant: Literal["mamba3", "vssd", "vssd_bg"] = "mamba3",
     state_dim: int = 64, bidirectional: bool = True, three_term: bool = True,
     use_fused_kernel: bool = True, chunk_size: int | None = None,
+    no_rope: bool = False,
 ) -> None:
     """Replace `block.attn` in-place with the variant attention class of matching (dim, num_heads)."""
     if not hasattr(block, "attn"):
@@ -61,7 +62,12 @@ def _swap_attn(
     old = block.attn
     dim = _infer_dim(old)
     num_heads = _infer_num_heads(old)
-    rope = getattr(old, "rope", None)
+    # no_rope reproduces the pre-inheritance behaviour: before the operator update the
+    # swapped module was constructed without DA3's rope, so blocks 4-11 lost the 2-D RoPE
+    # they had as softmax blocks. That is the configuration the 0.053 reference (CM22) was
+    # trained under, and it is not reachable by turning off --rope-all-layers, which only
+    # governs blocks 0-3.
+    rope = None if no_rope else getattr(old, "rope", None)
     proj_bias = True
     if hasattr(old, "proj") and isinstance(old.proj, nn.Linear):
         proj_bias = old.proj.bias is not None
@@ -116,6 +122,7 @@ def install_mamba3(
     layer_indices: list[int] | None = None,
     rope_all_layers: bool = False,
     rope_first_layer: bool = False,
+    no_rope: bool = False,
 ) -> int:
     """Swap self/cross attention to a Mamba-3-family operator across the DA3 network.
 
@@ -166,7 +173,7 @@ def install_mamba3(
     target_cls = _VARIANT_CLASSES[variant]
     kw = dict(variant=variant, state_dim=state_dim, bidirectional=bidirectional,
               three_term=three_term, use_fused_kernel=use_fused_kernel,
-              chunk_size=chunk_size)
+              chunk_size=chunk_size, no_rope=no_rope)
 
     indices = set(layer_indices) if layer_indices is not None else None
 
@@ -180,7 +187,10 @@ def install_mamba3(
         # DA3-SMALL), rope_first_layer fills only block 0. Neither touches blocks 4-11,
         # which carry DA3's own -- stripping those would damage pretrained weights rather
         # than ablate an addition of ours.
-        if rope_all_layers:
+        # no_rope wins: lending the donor back would undo the strip it just performed.
+        if no_rope:
+            pass
+        elif rope_all_layers:
             _attach_rope_to_backbone(blocks)
         elif rope_first_layer:
             _attach_rope_to_backbone(blocks, limit=1)
