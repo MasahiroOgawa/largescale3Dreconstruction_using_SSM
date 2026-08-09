@@ -632,15 +632,14 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
     test_caches: dict[str, MultiViewBatch] = {}
     if cfg.val_scenes:
         cfg.test_scenes = cfg.val_scenes
+    import random as _random
     if cfg.test_scenes:
-        import random as _random
         for ds, sc in cfg.test_scenes:
             print(f"[train_super] loading test scene {ds}/{sc} for in-training loss", flush=True)
             test_caches[f"{ds}/{sc}"] = load_full_scene_cache(
                 ds, sc, Path("data"), image_size=cfg.image_size,
                 candidate_views=cfg.candidate_views, frame_stride=cfg.frame_stride,
             )
-        test_rng = _random.Random(cfg.seed ^ 0xBEEF)
     loss_history: list[dict] = []
 
     log_lines: list[str] = []
@@ -688,8 +687,14 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
             log_lines.append(line)
 
         if test_caches and ((step + 1) % cfg.test_every == 0 or step == cfg.steps - 1):
+            # Fresh RNG from a fixed seed at every check, so all checks score the SAME
+            # views. A single long-lived RNG advances on each call, which makes each
+            # check a different random subset -- movement then mixes model change with
+            # sample change, and a plateau schedule reading it reacts to whichever views
+            # happened to be drawn. Observed: held-out L_D fell 142 -> 115 -> 102 and then
+            # jumped to 135 with L_M nearly doubling in the same check.
             test_metrics = _eval_test_loss(
-                student, test_caches, test_rng,
+                student, test_caches, _random.Random(cfg.seed ^ 0xBEEF),
                 n_views=cfg.test_n_views, n_batches=cfg.test_n_batches,
                 image_size=cfg.image_size, device=device, weights=cfg.weights,
                 amp_dtype=amp_dtype, use_amp=use_amp, cam_posed=cfg.cam_posed,
