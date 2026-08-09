@@ -92,6 +92,7 @@ class SuperPhaseConfig:
     # we want the same training recipe applied to the un-patched architecture.
     no_mamba3_swap: bool = False
     rope_all_layers: bool = False
+    rope_first_layer: bool = False
     scheduler: str = "wsd"
     # Validation scenes for the plateau schedule. Distinct from `test_scenes`, which are
     # only logged: `val_scenes` are ALSO removed from the training pool, so the signal the
@@ -516,6 +517,7 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
             use_fused_kernel=cfg.use_fused_kernel, chunk_size=cfg.chunk_size,
             layer_indices=cfg.swap_layers,
             rope_all_layers=cfg.rope_all_layers,
+            rope_first_layer=cfg.rope_first_layer,
         )
         n_swapped = count_mamba3_attn(student.model)
         layer_tag = f" (layers={cfg.swap_layers})" if cfg.swap_layers is not None else ""
@@ -784,6 +786,10 @@ def main() -> None:
     ap.add_argument("--scheduler", choices=["wsd", "cosine", "plateau"], default="wsd",
                     help="LR shape. 'cosine' decays from the first post-warmup step, which "
                     "suits a warm start; 'wsd' holds the peak and decays only at the end.")
+    ap.add_argument("--rope-first-layer", action="store_true",
+                    help="Give block 0 DA3's 2-D RoPE and leave blocks 1-3 without. "
+                         "Blocks 4-11 carry DA3's own either way. Mutually exclusive "
+                         "with --rope-all-layers.")
     ap.add_argument("--rope-all-layers", action="store_true",
                     help="Give every backbone block DA3's own 2-D RoPE (DA3 starts at "
                     "block 4, leaving 0-3 without). RoPE acts inside each score "
@@ -831,6 +837,8 @@ def main() -> None:
     if args.scheduler == "plateau" and not args.val_scenes:
         ap.error("--scheduler plateau needs --val-scenes: with no validation signal the "
                  "schedule would never step and the LR would stay at its initial value.")
+    if args.rope_all_layers and args.rope_first_layer:
+        ap.error("--rope-all-layers and --rope-first-layer are mutually exclusive")
     if args.scenes and args.scene_overfit:
         ap.error("--scenes and --scene-overfit are mutually exclusive")
     scenes_list: Optional[list[tuple[str, str]]] = None
@@ -865,6 +873,7 @@ def main() -> None:
         lr_other=args.lr_other,
         no_mamba3_swap=args.no_mamba3_swap,
         rope_all_layers=args.rope_all_layers,
+        rope_first_layer=args.rope_first_layer,
         scheduler=args.scheduler,
         val_scenes=([tuple(x.split(":", 1)) for x in args.val_scenes.split(",")]
                     if args.val_scenes else None),

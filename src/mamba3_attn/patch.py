@@ -115,6 +115,7 @@ def install_mamba3(
     chunk_size: int | None = None,
     layer_indices: list[int] | None = None,
     rope_all_layers: bool = False,
+    rope_first_layer: bool = False,
 ) -> int:
     """Swap self/cross attention to a Mamba-3-family operator across the DA3 network.
 
@@ -175,8 +176,14 @@ def install_mamba3(
             if indices is None or i in indices:
                 _swap_attn(block, **kw)
                 count += 1
+        # Mutually exclusive: rope_all_layers fills every block that lacks RoPE (0-3 on
+        # DA3-SMALL), rope_first_layer fills only block 0. Neither touches blocks 4-11,
+        # which carry DA3's own -- stripping those would damage pretrained weights rather
+        # than ablate an addition of ours.
         if rope_all_layers:
             _attach_rope_to_backbone(blocks)
+        elif rope_first_layer:
+            _attach_rope_to_backbone(blocks, limit=1)
 
     if which == "all":
         cam_enc = getattr(net, "cam_enc", None)
@@ -194,7 +201,7 @@ def install_mamba3(
 
 
 
-def _attach_rope_to_backbone(blocks) -> int:
+def _attach_rope_to_backbone(blocks, limit: int | None = None) -> int:
     """Lend DA3's own RoPE to every backbone block that has none.
 
     Borrowed rather than constructed: RotaryPositionEmbedding2D holds no parameters and
@@ -218,6 +225,8 @@ def _attach_rope_to_backbone(blocks) -> int:
         return 0
     filled = 0
     for b in blocks:
+        if limit is not None and filled >= limit:
+            break
         attn = getattr(b, "attn", None)
         if attn is None or _rope_of(b) is not None:
             continue
