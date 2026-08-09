@@ -34,7 +34,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LambdaLR
+from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 
 from ..data.view_split import split_views, write_split
 from ..eval.da3_reference import DEFAULT_HF_MODEL, load_da3
@@ -43,6 +43,7 @@ from ..patch import install_mamba3, count_mamba3_attn
 from .da3_loss import DA3LossWeights, da3_paper_loss
 from .gt_ray import gt_ray_map
 from .multi_view import (
+    _build_train_scene_list,
     MultiViewBatch, _slice_batch, iter_single_scene, load_full_scene_cache,
     multi_view_iterator,
 )
@@ -92,6 +93,16 @@ class SuperPhaseConfig:
     no_mamba3_swap: bool = False
     rope_all_layers: bool = False
     scheduler: str = "wsd"
+    # Validation scenes for the plateau schedule. Distinct from `test_scenes`, which are
+    # only logged: `val_scenes` are ALSO removed from the training pool, so the signal the
+    # LR reacts to is genuine held-out loss rather than training loss under another name.
+    # (`_build_train_scene_list` returns every train scene regardless of `test_scenes`, so
+    # without this exclusion the "TEST loss" line is measured on scenes the model trains
+    # on.) Never the eval scene: `terrains` is reserved for reporting and is rejected.
+    val_scenes: Optional[list[tuple[str, str]]] = None
+    plateau_factor: float = 0.5
+    plateau_patience: int = 2
+    plateau_min_lr: float = 1e-6
     # Per-scene overfit (PLAN §15.59). When `scene_overfit` is set, training pulls
     # `n_views` per step from the train half of `split_views(...)` instead of cycling
     # across multiple scenes. The held-out test indices are written to `split.json`.
@@ -524,16 +535,41 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
           f"other={info['other']/1e6:.2f}M (total {n_total/1e6:.2f}M)", flush=True)
 
     opt = AdamW(groups)
-    if cfg.scheduler == "cosine":
+    # Plateau is closed-loop: it reacts to measured validation loss instead of assuming a
+    # decay shape up front. Cosine and WSD both commit to a curve chosen before the run and
+    # cannot notice that the loss stopped moving -- which is how a continuation can spend
+    # 11000 steps at a rate that is no longer improving anything.
+    plateau = cfg.scheduler == "plateau"
+    if plateau and not cfg.val_scenes:
+        raise ValueError("--scheduler plateau needs --val-scenes: with no validation signal "
+                         "it would never step and the LR would stay at its initial value.")
+    if plateau:
+        sched = ReduceLROnPlateau(
+            opt, mode="min", factor=cfg.plateau_factor, patience=cfg.plateau_patience,
+            threshold=1e-3, threshold_mode="rel", min_lr=cfg.plateau_min_lr,
+        )
+    elif cfg.scheduler == "cosine":
         sched = LambdaLR(opt, lambda s: _cosine_lambda(s, cfg.warmup_steps, cfg.steps))
     else:
         sched = LambdaLR(opt, lambda s: _wsd_lambda(s, cfg.warmup_steps, cfg.decay_steps, cfg.steps))
     print(f"[train_super] lr schedule={cfg.scheduler} warmup={cfg.warmup_steps} "
-          f"steps={cfg.steps}", flush=True)
+          f"steps={cfg.steps}"
+          + (f" factor={cfg.plateau_factor} patience={cfg.plateau_patience} "
+             f"min_lr={cfg.plateau_min_lr:g} on val every {cfg.test_every}" if plateau else ""),
+          flush=True)
     use_amp = device.type == "cuda" and cfg.amp_dtype != "fp32"
     amp_dtype = _amp_dtype(cfg.amp_dtype)
 
     require_gt = cfg.super_phase == 3
+
+    train_scenes = cfg.scenes
+    if cfg.val_scenes:
+        pool = list(cfg.scenes) if cfg.scenes else _build_train_scene_list(Path("data"))
+        held = set(cfg.val_scenes)
+        train_scenes = [p for p in pool if p not in held]
+        print(f"[train_super] validation split: {len(held)} scene(s) held out of "
+              f"{len(pool)} -> {len(train_scenes)} for training", flush=True)
+
     if cfg.scene_overfit is not None:
         if cfg.super_phase != 3:
             raise ValueError(
@@ -569,7 +605,7 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
     else:
         data = multi_view_iterator(
             Path("data"), n_views=cfg.n_views, image_size=cfg.image_size,
-            seed=cfg.seed, require_gt=require_gt, scenes=cfg.scenes,
+            seed=cfg.seed, require_gt=require_gt, scenes=train_scenes,
         )
 
     # Both teachers now. SMALL is dim-matched, so the elementwise feature loss applies.
@@ -586,6 +622,8 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
         pass   # mode and layer mapping are already logged just above
 
     test_caches: dict[str, MultiViewBatch] = {}
+    if cfg.val_scenes:
+        cfg.test_scenes = cfg.val_scenes
     if cfg.test_scenes:
         import random as _random
         for ds, sc in cfg.test_scenes:
@@ -626,7 +664,8 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
         if cfg.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(flat, cfg.grad_clip)
         opt.step()
-        sched.step()
+        if not plateau:      # plateau steps on the validation loss, not per batch
+            sched.step()
 
         if step % cfg.log_every == 0 or step == cfg.steps - 1:
             line = (
@@ -656,6 +695,15 @@ def train(cfg: SuperPhaseConfig, out_dir: Path) -> None:
             )
             print(test_line, flush=True)
             log_lines.append(test_line)
+            if plateau:
+                before = opt.param_groups[0]["lr"]
+                sched.step(test_metrics["total"])
+                after = opt.param_groups[0]["lr"]
+                if after < before:
+                    drop = (f"[{cfg.super_phase}-{cfg.sub_phase}] step {step + 1:5d}/{cfg.steps}  "
+                            f"PLATEAU  val loss stalled -> lr {before:.2e} -> {after:.2e}")
+                    print(drop, flush=True)
+                    log_lines.append(drop)
             loss_history.append({
                 "step": step + 1,
                 "train_loss": float(loss.item()),
@@ -708,7 +756,15 @@ def main() -> None:
     ap.add_argument("--lr-attn", type=float, default=None)
     ap.add_argument("--lr-head", type=float, default=None)
     ap.add_argument("--lr-other", type=float, default=None)
-    ap.add_argument("--scheduler", choices=["wsd", "cosine"], default="wsd",
+    ap.add_argument("--val-scenes", type=str, default=None,
+                    help="Comma-separated ds:scene held out of training and used as the "
+                         "validation signal for --scheduler plateau, e.g. "
+                         "'eth3d:relief_2,eth3d:electro'. Rejects the reserved eval scene.")
+    ap.add_argument("--plateau-factor", type=float, default=0.5)
+    ap.add_argument("--plateau-patience", type=int, default=2,
+                    help="Validation checks without relative improvement before the LR is cut.")
+    ap.add_argument("--plateau-min-lr", type=float, default=1e-6)
+    ap.add_argument("--scheduler", choices=["wsd", "cosine", "plateau"], default="wsd",
                     help="LR shape. 'cosine' decays from the first post-warmup step, which "
                     "suits a warm start; 'wsd' holds the peak and decays only at the end.")
     ap.add_argument("--rope-all-layers", action="store_true",
@@ -749,6 +805,15 @@ def main() -> None:
     args = ap.parse_args()
     if args.cam_posed and args.super_phase != 3:
         ap.error("--cam-posed requires --super 3 (GT extrinsics needed)")
+    if args.val_scenes:
+        from ..data.eth3d_multi import HELD_OUT as _ETH3D_HELD_OUT
+        bad = [x for x in args.val_scenes.split(",") if x.split(":", 1)[-1] == _ETH3D_HELD_OUT]
+        if bad:
+            ap.error(f"--val-scenes contains the reserved eval scene ({', '.join(bad)}). "
+                     "Tuning the learning rate on the scene we report on would leak it.")
+    if args.scheduler == "plateau" and not args.val_scenes:
+        ap.error("--scheduler plateau needs --val-scenes: with no validation signal the "
+                 "schedule would never step and the LR would stay at its initial value.")
     if args.scenes and args.scene_overfit:
         ap.error("--scenes and --scene-overfit are mutually exclusive")
     scenes_list: Optional[list[tuple[str, str]]] = None
@@ -784,6 +849,11 @@ def main() -> None:
         no_mamba3_swap=args.no_mamba3_swap,
         rope_all_layers=args.rope_all_layers,
         scheduler=args.scheduler,
+        val_scenes=([tuple(x.split(":", 1)) for x in args.val_scenes.split(",")]
+                    if args.val_scenes else None),
+        plateau_factor=args.plateau_factor,
+        plateau_patience=args.plateau_patience,
+        plateau_min_lr=args.plateau_min_lr,
         swap_layers=args.swap_layer,
         cam_posed=args.cam_posed,
         scenes=scenes_list,
